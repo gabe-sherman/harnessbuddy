@@ -23,8 +23,18 @@ code and documentation until the project has real workflows to generalize from.
 
 ## Plans
 
-Scoped implementation plans live in `plans/`. Check `plans/README.md` before
-starting feature work, then follow the plan that matches the requested task.
+Scoped implementation plans live in `plans/`. When working on a GitHub issue:
+
+1. Find the task number in the issue title (e.g. "Task 4: CLI Wiring").
+2. Open `plans/tasks/task-NN-slug.md` for the matching task number — this file
+   contains the full requirements and acceptance criteria.
+3. Read `plans/library_builder_oss_fuzz.md` for the design decisions and
+   constraints that apply across all tasks.
+4. Read `plans/python_code_standards.md` for coding, linting, and testing
+   standards.
+
+If working from a GitHub issue that links directly to a plan file, open that
+file first — it is the authoritative spec for the task.
 
 ## Project-Local Skills
 
