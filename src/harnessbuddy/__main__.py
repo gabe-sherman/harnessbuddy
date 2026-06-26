@@ -1,10 +1,4 @@
-from harnessbuddy import __version__
-
-
-def main() -> int:
-    print(f"harnessbuddy {__version__}")
-    return 0
-
+from harnessbuddy.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

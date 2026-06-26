@@ -26,6 +26,13 @@ code and documentation until the project has real workflows to generalize from.
 Scoped implementation plans live in `plans/`. Check `plans/README.md` before
 starting feature work, then follow the plan that matches the requested task.
 
+## Project-Local Skills
+
+Reusable Codex skills live in `codex-skills/`. When the user invokes `$dev`,
+`$implement`, `$review`, or `$test` in this repository and that skill is not already
+available globally, read the matching `codex-skills/<name>/SKILL.md` and follow it as
+the active workflow.
+
 ## Expected Workflow
 
 The core workflow should become:
