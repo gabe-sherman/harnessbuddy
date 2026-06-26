@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from harnessbuddy.cli import build_parser, main
@@ -21,8 +24,172 @@ def test_generate_help_exits_zero() -> None:
     assert exc_info.value.code == 0
 
 
-def test_generate_exits_zero() -> None:
-    assert main(["generate", _REPO]) == 0
+# Integration tests — local fixture repos, no network
+
+
+def test_generate_success_local_repo(local_repo_with_origin: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    project_dir = output_dir / local_repo_with_origin.name
+    assert project_dir.is_dir()
+    assert (project_dir / "Dockerfile").exists()
+    assert (project_dir / "build.sh").exists()
+    assert (project_dir / "project.yaml").exists()
+
+
+def test_generate_success_prints_summary(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Generated oss-fuzz project" in out
+    assert "Project name" in out
+    assert "Build system" in out
+    assert "Language" in out
+
+
+def test_generate_success_project_name_override(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(
+        [
+            "generate",
+            str(local_repo_with_origin),
+            "--output",
+            str(output_dir),
+            "--project-name",
+            "custom",
+        ]
+    )
+    assert rc == 0
+    assert (output_dir / "custom").is_dir()
+
+
+def test_generate_success_default_output_uses_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Build a repo whose name won't collide with the cwd output directory.
+    repo = tmp_path / "repos" / "srcrepo"
+    repo.mkdir(parents=True)
+    (repo / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.10)\nproject(srcrepo)\n")
+    include = repo / "include"
+    include.mkdir()
+    (include / "srcrepo.h").write_text("#pragma once\n")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/srcrepo.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    output_dir = tmp_path / "cwd"
+    output_dir.mkdir()
+    monkeypatch.chdir(output_dir)
+    rc = main(["generate", str(repo)])
+    assert rc == 0
+    assert (output_dir / "srcrepo").is_dir()
+
+
+def test_generate_nonexistent_path_exits_nonzero(tmp_path: Path) -> None:
+    missing = tmp_path / "does_not_exist"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(missing), "--output", str(output_dir)])
+    assert rc != 0
+
+
+def test_generate_nonexistent_path_prints_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "does_not_exist"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    main(["generate", str(missing), "--output", str(output_dir)])
+    err = capsys.readouterr().err
+    assert "Repository not found" in err
+
+
+def test_generate_no_origin_exits_nonzero(local_repo_without_origin: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_without_origin), "--output", str(output_dir)])
+    assert rc != 0
+
+
+def test_generate_no_origin_prints_error(
+    local_repo_without_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    main(["generate", str(local_repo_without_origin), "--output", str(output_dir)])
+    err = capsys.readouterr().err
+    assert "cloneable git origin" in err
+
+
+def test_generate_no_cpp_signals_exits_nonzero(tmp_path: Path) -> None:
+    repo = tmp_path / "norepo"
+    repo.mkdir()
+    (repo / "README.md").write_text("hello\n")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/norepo.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(repo), "--output", str(output_dir)])
+    assert rc != 0
+
+
+def test_generate_no_cpp_signals_prints_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "norepo"
+    repo.mkdir()
+    (repo / "README.md").write_text("hello\n")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/norepo.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    main(["generate", str(repo), "--output", str(output_dir)])
+    err = capsys.readouterr().err
+    assert "C/C++" in err
+
+
+def test_generate_output_dir_exists_exits_nonzero(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    # pre-create the project directory to trigger OutputDirectoryExistsError
+    (output_dir / local_repo_with_origin.name).mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+
+
+def test_generate_output_dir_exists_prints_error(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    (output_dir / local_repo_with_origin.name).mkdir()
+    main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    err = capsys.readouterr().err
+    assert "already exists" in err
 
 
 def test_generate_parses_repo_url() -> None:
