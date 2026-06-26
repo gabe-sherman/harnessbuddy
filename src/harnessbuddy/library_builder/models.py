@@ -32,3 +32,10 @@ class AnalysisResult:
     clone_url: str
     repo_ref: str | None
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class GenerationResult:
+    project_name: str
+    output_path: Path
+    files: list[Path]
