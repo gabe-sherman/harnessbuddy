@@ -1,0 +1,10 @@
+.worktrees/
+.agent-work/
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.harnessbuddy/
+.ruff_cache/
+.mypy_cache/
