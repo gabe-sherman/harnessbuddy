@@ -1,0 +1,3 @@
+rule cc
+  command = $CC $cflags -c $in -o $out
+  description = CC $out
