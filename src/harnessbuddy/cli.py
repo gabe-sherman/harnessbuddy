@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -125,8 +126,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print("No C/C++ build signals found in this repository.", file=sys.stderr)
         return 1
 
+    exploration = None
+    if args.allow_host_build:
+        from harnessbuddy.library_builder.exploration import explore
+
+        with tempfile.TemporaryDirectory() as _workdir:
+            exploration = explore(analysis, Path(_workdir))
+
     try:
-        result = generate(analysis, output_parent)
+        result = generate(analysis, output_parent, exploration)
     except OutputDirectoryExistsError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -135,6 +143,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(f"  Project name:  {result.project_name}")
     print(f"  Build system:  {analysis.build_system.value}")
     print(f"  Language:      {analysis.language.value}")
+    if exploration is not None:
+        status = "succeeded" if exploration.succeeded else "failed"
+        print(f"  Host build exploration: {status}")
     for warning in analysis.warnings:
         print(f"  Warning: {warning}")
 

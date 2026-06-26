@@ -8,6 +8,7 @@ import pytest
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
+from harnessbuddy.library_builder.models import BuildExplorationResult, BuildSystem
 
 _FIXTURES = Path(__file__).parent.parent / "fixtures" / "repos"
 _FAKE_URL = "https://github.com/example/mylib.git"
@@ -319,3 +320,54 @@ def test_generation_result_files_count(tmp_path: Path) -> None:
 def test_generation_result_all_files_exist(tmp_path: Path) -> None:
     result = generate(_analysis("cmake_repo"), tmp_path)
     assert all(f.is_file() for f in result.files)
+
+
+# provenance.json — host_build_exploration
+
+
+def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
+    return BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=succeeded,
+        command=["cmake", "-B", "/tmp/build"],
+        stdout="-- Configuring done",
+        stderr="",
+        exit_code=0 if succeeded else 1,
+        duration_seconds=1.2,
+    )
+
+
+def test_provenance_no_exploration_omits_field(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path)
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert "host_build_exploration" not in provenance
+
+
+def test_provenance_with_exploration_includes_field(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration())
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert "host_build_exploration" in provenance
+
+
+def test_provenance_exploration_succeeded(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration(succeeded=True))
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert provenance["host_build_exploration"]["succeeded"] is True
+
+
+def test_provenance_exploration_failed(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration(succeeded=False))
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert provenance["host_build_exploration"]["succeeded"] is False
+
+
+def test_provenance_exploration_command(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration())
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert provenance["host_build_exploration"]["command"] == ["cmake", "-B", "/tmp/build"]
+
+
+def test_provenance_exploration_exit_code(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration())
+    provenance = json.loads((result.output_path / "provenance.json").read_text())
+    assert provenance["host_build_exploration"]["exit_code"] == 0

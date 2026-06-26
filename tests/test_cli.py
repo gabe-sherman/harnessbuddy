@@ -1,9 +1,12 @@
+import json
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from harnessbuddy.cli import build_parser, main
+from harnessbuddy.core.subprocesses import RunResult
 
 _REPO = "https://github.com/example/repo.git"
 
@@ -310,3 +313,57 @@ def test_generate_keep_workdir_default_is_false() -> None:
 def test_generate_parses_keep_workdir() -> None:
     args = build_parser().parse_args(["generate", _REPO, "--keep-workdir"])
     assert args.keep_workdir is True
+
+
+# --allow-host-build integration
+
+
+def _ok_run() -> RunResult:
+    return RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1)
+
+
+@patch("harnessbuddy.library_builder.exploration.run_command")
+def test_allow_host_build_includes_exploration_in_provenance(
+    mock_run: MagicMock, local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    mock_run.return_value = _ok_run()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--allow-host-build"]
+    )
+    assert rc == 0
+    project_dir = output_dir / local_repo_with_origin.name
+    provenance = json.loads((project_dir / "provenance.json").read_text())
+    assert "host_build_exploration" in provenance
+
+
+@patch("harnessbuddy.library_builder.exploration.run_command")
+def test_no_allow_host_build_omits_exploration_from_provenance(
+    mock_run: MagicMock, local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    project_dir = output_dir / local_repo_with_origin.name
+    provenance = json.loads((project_dir / "provenance.json").read_text())
+    assert "host_build_exploration" not in provenance
+    mock_run.assert_not_called()
+
+
+@patch("harnessbuddy.library_builder.exploration.run_command")
+def test_allow_host_build_prints_exploration_outcome(
+    mock_run: MagicMock,
+    local_repo_with_origin: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mock_run.return_value = _ok_run()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--allow-host-build"]
+    )
+    out = capsys.readouterr().out
+    assert "Host build exploration" in out
