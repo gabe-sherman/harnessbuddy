@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
@@ -80,6 +81,65 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _cmd_generate(_args: argparse.Namespace) -> int:
-    print("harnessbuddy generate: not implemented yet", file=sys.stderr)
+def _cmd_generate(args: argparse.Namespace) -> int:
+    from harnessbuddy.core.paths import default_state_dir
+    from harnessbuddy.core.repos import (
+        NoCloneableOriginError,
+        RepositoryNotFoundError,
+        ingest_local,
+        ingest_url,
+    )
+    from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
+
+    output_parent = Path(args.output) if args.output else Path.cwd()
+
+    try:
+        if _is_url(args.repo_url):
+            source = ingest_url(
+                args.repo_url,
+                project_name=args.project_name,
+                repo_ref=args.repo_ref,
+                state_dir=default_state_dir(),
+            )
+        else:
+            source = ingest_local(
+                Path(args.repo_url),
+                project_name=args.project_name,
+                repo_ref=args.repo_ref,
+            )
+    except RepositoryNotFoundError as exc:
+        print(f"Repository not found: {exc}", file=sys.stderr)
+        return 1
+    except NoCloneableOriginError:
+        print(
+            "No cloneable git origin found. Provide a URL instead of a local path,"
+            " or add a remote origin.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        analysis = analyze(source)
+    except UnsupportedRepositoryError:
+        print("No C/C++ build signals found in this repository.", file=sys.stderr)
+        return 1
+
+    try:
+        result = generate(analysis, output_parent)
+    except OutputDirectoryExistsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"Generated oss-fuzz project: {result.output_path}")
+    print(f"  Project name:  {result.project_name}")
+    print(f"  Build system:  {analysis.build_system.value}")
+    print(f"  Language:      {analysis.language.value}")
+    for warning in analysis.warnings:
+        print(f"  Warning: {warning}")
+
     return 0
+
+
+def _is_url(value: str) -> bool:
+    return value.startswith(("https://", "http://", "git://", "ssh://", "git@"))
