@@ -116,9 +116,7 @@ def test_generate_nonexistent_path_prints_error(
     assert "Repository not found" in err
 
 
-def test_generate_no_origin_exits_nonzero(
-    local_repo_without_origin: Path, tmp_path: Path
-) -> None:
+def test_generate_no_origin_exits_nonzero(local_repo_without_origin: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     rc = main(["generate", str(local_repo_without_origin), "--output", str(output_dir)])
