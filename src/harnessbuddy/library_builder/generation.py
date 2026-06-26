@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from harnessbuddy.library_builder.models import AnalysisResult, GenerationResult, Language
+from harnessbuddy.library_builder.models import (
+    AnalysisResult,
+    BuildExplorationResult,
+    GenerationResult,
+    Language,
+)
 
 _DOCKERFILE_NO_REF = (
     "FROM gcr.io/oss-fuzz-base/base-builder\n"
@@ -81,7 +86,11 @@ class OutputDirectoryExistsError(Exception):
     """Target output directory already exists."""
 
 
-def generate(analysis: AnalysisResult, output_parent: Path) -> GenerationResult:
+def generate(
+    analysis: AnalysisResult,
+    output_parent: Path,
+    exploration: BuildExplorationResult | None = None,
+) -> GenerationResult:
     """Generate a complete oss-fuzz project skeleton from a static analysis result."""
     output_path = output_parent / analysis.project_name
     if output_path.exists():
@@ -99,7 +108,7 @@ def generate(analysis: AnalysisResult, output_parent: Path) -> GenerationResult:
         _write_build_library_sh(output_path, analysis),
         _write_compile_harnesses_sh(output_path),
         _write_default_fuzzer(output_path / "harness_source"),
-        _write_provenance_json(output_path, analysis),
+        _write_provenance_json(output_path, analysis, exploration),
     ]
 
     return GenerationResult(
@@ -157,9 +166,13 @@ def _write_default_fuzzer(harness_dir: Path) -> Path:
     return path
 
 
-def _write_provenance_json(output_path: Path, analysis: AnalysisResult) -> Path:
+def _write_provenance_json(
+    output_path: Path,
+    analysis: AnalysisResult,
+    exploration: BuildExplorationResult | None = None,
+) -> Path:
     path = output_path / "provenance.json"
-    provenance = {
+    provenance: dict[str, object] = {
         "project_name": analysis.project_name,
         "build_system": analysis.build_system.value,
         "build_files": sorted(
@@ -172,5 +185,15 @@ def _write_provenance_json(output_path: Path, analysis: AnalysisResult) -> Path:
         "output_path": str(output_path),
         "warnings": analysis.warnings,
     }
+    if exploration is not None:
+        provenance["host_build_exploration"] = {
+            "build_system": exploration.build_system.value,
+            "succeeded": exploration.succeeded,
+            "command": exploration.command,
+            "stdout": exploration.stdout,
+            "stderr": exploration.stderr,
+            "exit_code": exploration.exit_code,
+            "duration_seconds": exploration.duration_seconds,
+        }
     path.write_text(json.dumps(provenance, indent=2) + "\n")
     return path

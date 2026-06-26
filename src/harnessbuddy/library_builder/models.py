@@ -35,6 +35,17 @@ class AnalysisResult:
 
 
 @dataclass
+class BuildExplorationResult:
+    build_system: BuildSystem
+    succeeded: bool
+    command: list[str]
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_seconds: float
+
+
+@dataclass
 class GenerationResult:
     project_name: str
     output_path: Path
