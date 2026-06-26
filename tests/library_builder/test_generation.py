@@ -171,9 +171,48 @@ def test_build_library_sh_build_system_comment(
 def test_build_library_sh_creates_build_env(tmp_path: Path) -> None:
     result = generate(_analysis("cmake_repo"), tmp_path)
     content = (result.output_path / "build_library.sh").read_text()
-    assert "$WORK/harnessbuddy/build.env" in content
+    assert "../build.env" in content
     assert "HB_INCLUDE_FLAGS" in content
     assert "HB_LIBRARY_FLAGS" in content
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_cmd"),
+    [
+        ("cmake_repo", "cmake -B ../build"),
+        ("meson_repo", "meson setup"),
+        ("autotools_repo", "./configure"),
+        ("makefile_repo", "make -j"),
+        ("ninja_repo", "ninja"),
+    ],
+)
+def test_build_library_sh_build_command(
+    fixture_name: str, expected_cmd: str, tmp_path: Path
+) -> None:
+    result = generate(_analysis(fixture_name), tmp_path)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert expected_cmd in content
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
+def test_build_library_sh_include_flags(fixture_name: str, tmp_path: Path) -> None:
+    result = generate(_analysis(fixture_name), tmp_path)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "-I../install/include" in content
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
+def test_build_library_sh_library_flags(fixture_name: str, tmp_path: Path) -> None:
+    result = generate(_analysis(fixture_name), tmp_path)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "-L../install/lib" in content
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
+def test_build_library_sh_build_env_path(fixture_name: str, tmp_path: Path) -> None:
+    result = generate(_analysis(fixture_name), tmp_path)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "../build.env" in content
 
 
 # compile_harnesses.sh
@@ -188,7 +227,13 @@ def test_compile_harnesses_sh_shebang_and_set(tmp_path: Path) -> None:
 def test_compile_harnesses_sh_sources_build_env(tmp_path: Path) -> None:
     result = generate(_analysis("cmake_repo"), tmp_path)
     content = (result.output_path / "compile_harnesses.sh").read_text()
-    assert 'source "$WORK/harnessbuddy/build.env"' in content
+    assert 'source "../build.env"' in content
+
+
+def test_compile_harnesses_sh_build_env_path(tmp_path: Path) -> None:
+    result = generate(_analysis("cmake_repo"), tmp_path)
+    content = (result.output_path / "compile_harnesses.sh").read_text()
+    assert "../build.env" in content
 
 
 def test_compile_harnesses_sh_handles_c(tmp_path: Path) -> None:
@@ -371,3 +416,19 @@ def test_provenance_exploration_exit_code(tmp_path: Path) -> None:
     result = generate(_analysis("cmake_repo"), tmp_path, _fake_exploration())
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["host_build_exploration"]["exit_code"] == 0
+
+
+# zlib-specific integration test (no network — uses local cmake_repo fixture)
+
+
+def test_zlib_cmake_build_library_sh(tmp_path: Path) -> None:
+    source = RepoSource(
+        source_path=_FIXTURES / "cmake_repo",
+        clone_url="https://github.com/madler/zlib.git",
+        project_name="zlib",
+        repo_ref="v1.3.2",
+    )
+    result = generate(analyze(source), tmp_path)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "cmake" in content
+    assert "../build" in content
