@@ -6,6 +6,7 @@ from pathlib import Path
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
+    BuildSystem,
     GenerationResult,
     Language,
 )
@@ -31,24 +32,96 @@ _BUILD_SH = (
     '#!/bin/bash\nset -euo pipefail\n\n"$SRC/build_library.sh"\n"$SRC/compile_harnesses.sh"\n'
 )
 
-_BUILD_LIBRARY_SH = (
+_BUILD_ENV_FOOTER = (
+    "\ncat > ../build.env <<'EOF'\n"
+    'HB_INCLUDE_FLAGS="-I../install/include"\n'
+    'HB_LIBRARY_FLAGS="-L../install/lib"\n'
+    "EOF\n"
+)
+
+_BUILD_LIBRARY_SH_CMAKE = (
     "#!/bin/bash\n"
     "set -euo pipefail\n"
     "\n"
-    "# build system: {build_system}\n"
-    'mkdir -p "$WORK/harnessbuddy"\n'
-    "cat > \"$WORK/harnessbuddy/build.env\" <<'EOF'\n"
-    'HB_INCLUDE_FLAGS=""\n'
-    'HB_LIBRARY_FLAGS=""\n'
-    "EOF\n"
+    "# build system: cmake\n"
+    "\n"
+    "cmake -B ../build \\\n"
+    '  -DCMAKE_C_COMPILER="$CC" \\\n'
+    '  -DCMAKE_CXX_COMPILER="$CXX" \\\n'
+    '  -DCMAKE_C_FLAGS="$CFLAGS" \\\n'
+    '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
+    "  -DCMAKE_INSTALL_PREFIX=../install \\\n"
+    "  -DBUILD_SHARED_LIBS=OFF\n"
+    "cmake --build ../build -- -j$(nproc)\n"
+    "cmake --install ../build\n" + _BUILD_ENV_FOOTER
 )
+
+_BUILD_LIBRARY_SH_MESON = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n"
+    "\n"
+    "# build system: meson\n"
+    "\n"
+    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+    "  meson setup ../build --prefix=../install --default-library=static\n"
+    "ninja -C ../build\n"
+    "ninja -C ../build install\n" + _BUILD_ENV_FOOTER
+)
+
+_BUILD_LIBRARY_SH_AUTOTOOLS = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n"
+    "\n"
+    "# build system: autotools\n"
+    "\n"
+    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+    "  ./configure --prefix=../install --enable-static --disable-shared\n"
+    "make -j$(nproc)\n"
+    "make install\n" + _BUILD_ENV_FOOTER
+)
+
+_BUILD_LIBRARY_SH_MAKEFILE = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n"
+    "\n"
+    "# build system: makefile\n"
+    "\n"
+    "make -j$(nproc) \\\n"
+    '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+    "  PREFIX=../install\n"
+    "make install PREFIX=../install\n" + _BUILD_ENV_FOOTER
+)
+
+_BUILD_LIBRARY_SH_NINJA = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n"
+    "\n"
+    "# build system: ninja\n"
+    "\n"
+    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+    "  ninja -j$(nproc)\n"
+    "# best-effort; no standard install convention\n" + _BUILD_ENV_FOOTER
+)
+
+_BUILD_LIBRARY_SH_UNKNOWN = (
+    "#!/bin/bash\nset -euo pipefail\n\n# build system: unknown\n" + _BUILD_ENV_FOOTER
+)
+
+_BUILD_LIBRARY_SH_BY_BUILD_SYSTEM: dict[BuildSystem, str] = {
+    BuildSystem.CMAKE: _BUILD_LIBRARY_SH_CMAKE,
+    BuildSystem.MESON: _BUILD_LIBRARY_SH_MESON,
+    BuildSystem.AUTOTOOLS: _BUILD_LIBRARY_SH_AUTOTOOLS,
+    BuildSystem.MAKEFILE: _BUILD_LIBRARY_SH_MAKEFILE,
+    BuildSystem.NINJA: _BUILD_LIBRARY_SH_NINJA,
+    BuildSystem.UNKNOWN: _BUILD_LIBRARY_SH_UNKNOWN,
+}
 
 _COMPILE_HARNESSES_SH = (
     "#!/bin/bash\n"
     "set -euo pipefail\n"
     "\n"
     "# shellcheck source=/dev/null\n"
-    'source "$WORK/harnessbuddy/build.env"\n'
+    'source "../build.env"\n'
     "\n"
     'HARNESS_DIR="/src/harness_source"\n'
     "\n"
@@ -150,7 +223,7 @@ def _write_build_sh(output_path: Path) -> Path:
 
 def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path:
     path = output_path / "build_library.sh"
-    path.write_text(_BUILD_LIBRARY_SH.format(build_system=analysis.build_system.value))
+    path.write_text(_BUILD_LIBRARY_SH_BY_BUILD_SYSTEM[analysis.build_system])
     return path
 
 
