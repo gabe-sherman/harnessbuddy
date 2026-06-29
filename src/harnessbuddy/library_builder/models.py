@@ -38,6 +38,7 @@ class AnalysisResult:
     repo_ref: str | None
     warnings: list[str] = field(default_factory=list)
     autotools_setup: AutotoolsSetup | None = None
+    system_packages: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -57,3 +58,7 @@ class GenerationResult:
     project_name: str
     output_path: Path
     files: list[Path]
+
+
+class OutputDirectoryExistsError(Exception):
+    """Target output directory already exists."""

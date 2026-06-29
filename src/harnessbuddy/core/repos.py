@@ -41,16 +41,10 @@ def ingest_url(
     """Clone a remote repository into state_dir and return a RepoSource."""
     name = project_name or name_from_url(url)
     dest = state_dir / name / "src"
-    if dest.parent.exists():
-        erase = input(f"Directory {dest.parent} already exists. Clear it? (y/n)")
-        if erase == "y":
-            logger.info("Clearing artifact path %s", str(dest.parent))
-            shutil.rmtree(dest.parent)
-        else:
-            return RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "clone", url, str(dest)], check=True)
+    repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
+    if not dest.parent.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", url, str(dest)], check=True)
     return RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
 
 

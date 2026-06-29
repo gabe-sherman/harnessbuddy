@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import shutil
 import stat
 from pathlib import Path
 
 from harnessbuddy.core.subprocesses import run_command_streaming
-from harnessbuddy.library_builder.generation import build_library_script
 from harnessbuddy.library_builder.models import AnalysisResult, BuildExplorationResult, BuildSystem
+from harnessbuddy.library_builder.scripts import build_library_script
 
 
 def explore(
@@ -22,8 +23,13 @@ def explore(
     install_dir = workdir / "install"
     env_file = workdir / "build.env"
 
-    build_dir.mkdir(parents=True, exist_ok=True)
-    install_dir.mkdir(parents=True, exist_ok=True)
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
+
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+    install_dir.mkdir(parents=True)
 
     script = build_library_script(
         analysis.build_system,

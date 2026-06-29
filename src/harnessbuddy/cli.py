@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +19,7 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--agent",
         choices=["codex", "claude"],
-        required=True,
+        default=None,
         metavar="codex|claude",
         help="Agent backend for fallback. Overridden by --no-agents.",
     )
@@ -78,6 +79,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "generate":
         return _cmd_generate(args)
     return 0
+
+
+def load_system_deps(analysis: AnalysisResult) -> None:
+    """Populate analysis.system_packages from system_deps.json written by a prior agent run.
+
+    system_deps.json lives in the source directory and is written by the library builder
+    agent when it identifies required apt packages. Loading it here means subsequent runs
+    can embed the packages into the generated Dockerfile and setup.sh without re-running
+    the agent.
+    """
+    deps_file = analysis.source_path / "system_deps.json"
+    if not deps_file.exists():
+        return
+    try:
+        data = json.loads(deps_file.read_text())
+        packages = data.get("apt_packages", [])
+        if isinstance(packages, list):
+            analysis.system_packages = [str(p) for p in packages]
+    except (json.JSONDecodeError, OSError):
+        pass
 
 
 def build_library(
@@ -146,6 +167,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return 1
 
     workspace = project_dir(state_dir, analysis.project_name)
+    load_system_deps(analysis)
     agent = None if args.no_agents else args.agent
     print(f"Running host build in {workspace} ...")
     if agent:
@@ -157,10 +179,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print("Agent finished.")
 
     if not result.succeeded:
-        print(f"Failed to produce valid build: {result.stdout}")
-        exit()
+        print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
+        return 1
 
-    print(f"Successfully created library build script at {workspace / 'src' / 'build_library.sh'}")
+    from harnessbuddy.library_builder.local.generation import generate_local
+    from harnessbuddy.library_builder.models import OutputDirectoryExistsError
+    from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
+
+    try:
+        local_result = generate_local(analysis, output_parent, result)
+        oss_fuzz_result = generate_oss_fuzz(analysis, output_parent, result)
+    except OutputDirectoryExistsError as exc:
+        print(f"Output directory already exists: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Local build:  {local_result.output_path}")
+    print(f"OSS-Fuzz:     {oss_fuzz_result.output_path}")
 
     return 0
 

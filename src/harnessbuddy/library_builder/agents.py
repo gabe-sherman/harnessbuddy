@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from harnessbuddy.core.subprocesses import run_command_streaming
@@ -18,6 +19,24 @@ _INLINE_INSTRUCTIONS: str = (
 
 _ACTION_REQUIRED = "ACTION_REQUIRED"
 
+_BUDGET_PATTERN = re.compile(
+    "|".join((
+        # Claude: 5-hour session limit
+        r"reached the 5 hour limit",
+        r"session time limit",
+        # Codex/OpenAI: quota and rate limit errors
+        r"usage limit (?:reached|exceeded)",
+        r"reached (?:your|the).{0,80}usage limit",
+        r"rate limit (?:reached|exceeded)",
+        r"quota (?:exceeded|reached)",
+        r"exceeded your current quota",
+        r"too many requests",
+        r"\b429\b",
+        r"try again (?:after|in) \d+",
+    )),
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 class BuildFailureError(Exception):
     """Agent output contained ACTION_REQUIRED, signaling a user-resolvable roadblock."""
@@ -26,6 +45,16 @@ class BuildFailureError(Exception):
         super().__init__(
             f"Agent requires user action. Review the output below, resolve the issue, "
             f"then retry.\n\n{output}"
+        )
+        self.output = output
+
+
+class LLMBudgetError(Exception):
+    """Agent exited because it hit a usage limit (Claude 5-hour limit or Codex quota)."""
+
+    def __init__(self, output: str) -> None:
+        super().__init__(
+            f"Agent hit a usage or rate limit. Review the output below and retry later.\n\n{output}"
         )
         self.output = output
 
@@ -74,6 +103,11 @@ def invoke_library_builder_agent(
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     run_result = run_command_streaming(cmd, analysis.source_path, timeout)
+
+    if run_result.exit_code != 0:
+        combined = run_result.stdout + run_result.stderr
+        if _BUDGET_PATTERN.search(combined):
+            raise LLMBudgetError(combined)
 
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
