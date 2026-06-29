@@ -33,7 +33,9 @@ def test_generate_help_exits_zero() -> None:
 def test_generate_success_local_repo(local_repo_with_origin: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+    )
     assert rc == 0
     project_dir = output_dir / local_repo_with_origin.name
     assert project_dir.is_dir()
@@ -47,7 +49,9 @@ def test_generate_success_prints_summary(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "Generated oss-fuzz project" in out
@@ -69,6 +73,7 @@ def test_generate_success_project_name_override(
             str(output_dir),
             "--project-name",
             "custom",
+            "--no-agents",
         ]
     )
     assert rc == 0
@@ -95,7 +100,7 @@ def test_generate_success_default_output_uses_cwd(
     output_dir = tmp_path / "cwd"
     output_dir.mkdir()
     monkeypatch.chdir(output_dir)
-    rc = main(["generate", str(repo)])
+    rc = main(["generate", str(repo), "--no-agents"])
     assert rc == 0
     assert (output_dir / "srcrepo").is_dir()
 
@@ -330,7 +335,14 @@ def test_allow_host_build_includes_exploration_in_provenance(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     rc = main(
-        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--allow-host-build"]
+        [
+            "generate",
+            str(local_repo_with_origin),
+            "--output",
+            str(output_dir),
+            "--no-agents",
+            "--allow-host-build",
+        ]
     )
     assert rc == 0
     project_dir = output_dir / local_repo_with_origin.name
@@ -344,7 +356,9 @@ def test_no_allow_host_build_omits_exploration_from_provenance(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+    )
     assert rc == 0
     project_dir = output_dir / local_repo_with_origin.name
     provenance = json.loads((project_dir / "provenance.json").read_text())
@@ -363,7 +377,181 @@ def test_allow_host_build_prints_exploration_outcome(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     main(
-        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--allow-host-build"]
+        [
+            "generate",
+            str(local_repo_with_origin),
+            "--output",
+            str(output_dir),
+            "--no-agents",
+            "--allow-host-build",
+        ]
     )
     out = capsys.readouterr().out
     assert "Host build exploration" in out
+
+
+# --sandbox-test
+
+
+def test_generate_sandbox_test_default_is_false() -> None:
+    args = build_parser().parse_args(["generate", _REPO])
+    assert args.sandbox_test is False
+
+
+def test_generate_parses_sandbox_test() -> None:
+    args = build_parser().parse_args(["generate", _REPO, "--sandbox-test"])
+    assert args.sandbox_test is True
+
+
+# agent mode dispatch
+
+
+def _agent_result(output_path: Path, succeeded: bool = True) -> object:
+    from harnessbuddy.library_builder.models import AgentResult
+
+    return AgentResult(
+        succeeded=succeeded,
+        output_path=output_path,
+        files=[],
+        exit_code=0 if succeeded else 1,
+        duration_seconds=0.1,
+    )
+
+
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_agent_mode_is_default(
+    mock_agent: MagicMock, local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path)
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    mock_agent.assert_called_once()
+
+
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_no_agents_skips_agent(
+    mock_agent: MagicMock, local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    main(["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"])
+    mock_agent.assert_not_called()
+
+
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_agent_failure_exits_nonzero(
+    mock_agent: MagicMock, local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path, succeeded=False)
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+
+
+@patch("harnessbuddy.library_builder.sandbox.sandbox_test")
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_sandbox_test_runs_when_flag_set(
+    mock_agent: MagicMock,
+    mock_sandbox: MagicMock,
+    local_repo_with_origin: Path,
+    tmp_path: Path,
+) -> None:
+    from harnessbuddy.library_builder.models import SandboxResult
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path)
+    mock_sandbox.return_value = SandboxResult(
+        succeeded=True,
+        skipped=False,
+        skip_reason="",
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=0.5,
+    )
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--sandbox-test"]
+    )
+    assert rc == 0
+    mock_sandbox.assert_called_once()
+
+
+@patch("harnessbuddy.library_builder.sandbox.sandbox_test")
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_sandbox_test_not_run_without_flag(
+    mock_agent: MagicMock,
+    mock_sandbox: MagicMock,
+    local_repo_with_origin: Path,
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path)
+    main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    mock_sandbox.assert_not_called()
+
+
+@patch("harnessbuddy.library_builder.sandbox.sandbox_test")
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_sandbox_failure_exits_nonzero(
+    mock_agent: MagicMock,
+    mock_sandbox: MagicMock,
+    local_repo_with_origin: Path,
+    tmp_path: Path,
+) -> None:
+    from harnessbuddy.library_builder.models import SandboxResult
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path)
+    mock_sandbox.return_value = SandboxResult(
+        succeeded=False,
+        skipped=False,
+        skip_reason="",
+        stdout="",
+        stderr="docker error",
+        exit_code=1,
+        duration_seconds=1.0,
+    )
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--sandbox-test"]
+    )
+    assert rc != 0
+
+
+@patch("harnessbuddy.library_builder.sandbox.sandbox_test")
+@patch("harnessbuddy.library_builder.agents.agent_generate")
+def test_sandbox_skipped_exits_zero(
+    mock_agent: MagicMock,
+    mock_sandbox: MagicMock,
+    local_repo_with_origin: Path,
+    tmp_path: Path,
+) -> None:
+    from harnessbuddy.library_builder.models import SandboxResult
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    output_path = output_dir / local_repo_with_origin.name
+    mock_agent.return_value = _agent_result(output_path)
+    mock_sandbox.return_value = SandboxResult(
+        succeeded=False,
+        skipped=True,
+        skip_reason="docker not found on PATH",
+        stdout="",
+        stderr="",
+        exit_code=-1,
+        duration_seconds=0.0,
+    )
+    rc = main(
+        ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--sandbox-test"]
+    )
+    assert rc == 0

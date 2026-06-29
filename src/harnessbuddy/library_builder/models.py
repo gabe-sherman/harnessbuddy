@@ -50,3 +50,23 @@ class GenerationResult:
     project_name: str
     output_path: Path
     files: list[Path]
+
+
+@dataclass
+class AgentResult:
+    succeeded: bool
+    output_path: Path
+    files: list[Path]
+    exit_code: int
+    duration_seconds: float
+
+
+@dataclass
+class SandboxResult:
+    succeeded: bool
+    skipped: bool
+    skip_reason: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_seconds: float

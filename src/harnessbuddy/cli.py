@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
+
+from harnessbuddy.library_builder.models import (
+    AgentResult,
+    AnalysisResult,
+    BuildExplorationResult,
+    GenerationResult,
+    SandboxResult,
+)
 
 
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
@@ -47,7 +54,12 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--allow-host-build",
         action="store_true",
-        help="Allow host-side build exploration (v1: permission-only, no host builds run).",
+        help="Allow host-side build exploration (only applies with --no-agents).",
+    )
+    p.add_argument(
+        "--sandbox-test",
+        action="store_true",
+        help="Run docker build on the generated project to validate it.",
     )
     p.add_argument(
         "--keep-workdir",
@@ -91,7 +103,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         ingest_url,
     )
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
-    from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
 
     output_parent = Path(args.output) if args.output else Path.cwd()
 
@@ -126,7 +137,42 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print("No C/C++ build signals found in this repository.", file=sys.stderr)
         return 1
 
-    exploration = None
+    if args.no_agents:
+        return _run_static(args, analysis, output_parent)
+
+    output_path = output_parent / analysis.project_name
+    if output_path.exists():
+        print(f"Output directory already exists: {output_path}", file=sys.stderr)
+        return 1
+    output_path.mkdir(parents=True)
+
+    from harnessbuddy.library_builder.agents import agent_generate
+
+    agent_result = agent_generate(analysis, output_path)
+    _print_agent_summary(agent_result, analysis)
+
+    if not agent_result.succeeded:
+        return 1
+
+    if args.sandbox_test:
+        from harnessbuddy.library_builder.sandbox import sandbox_test
+
+        sandbox = sandbox_test(output_path)
+        _print_sandbox_summary(sandbox)
+        if not sandbox.succeeded and not sandbox.skipped:
+            return 1
+
+    return 0
+
+
+def _run_static(
+    args: argparse.Namespace, analysis: AnalysisResult, output_parent: Path
+) -> int:
+    import tempfile
+
+    from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
+
+    exploration: BuildExplorationResult | None = None
     if args.allow_host_build:
         from harnessbuddy.library_builder.exploration import explore
 
@@ -139,6 +185,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    _print_static_summary(result, analysis, exploration)
+    return 0
+
+
+def _print_static_summary(
+    result: GenerationResult,
+    analysis: AnalysisResult,
+    exploration: BuildExplorationResult | None,
+) -> None:
     print(f"Generated oss-fuzz project: {result.output_path}")
     print(f"  Project name:  {result.project_name}")
     print(f"  Build system:  {analysis.build_system.value}")
@@ -149,7 +204,30 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     for warning in analysis.warnings:
         print(f"  Warning: {warning}")
 
-    return 0
+
+def _print_agent_summary(agent_result: AgentResult, analysis: AnalysisResult) -> None:
+    status = "succeeded" if agent_result.succeeded else "failed"
+    print(f"Generated oss-fuzz project (agent): {agent_result.output_path}  [{status}]")
+    print(f"  Project name:  {analysis.project_name}")
+    print(f"  Build system:  {analysis.build_system.value}")
+    print(f"  Language:      {analysis.language.value}")
+    print(f"  Files written: {len(agent_result.files)}")
+    print(f"  Duration:      {agent_result.duration_seconds:.1f}s")
+    for warning in analysis.warnings:
+        print(f"  Warning: {warning}")
+
+
+def _print_sandbox_summary(sandbox: SandboxResult) -> None:
+    if sandbox.skipped:
+        print(f"  Sandbox test:  skipped ({sandbox.skip_reason})")
+    elif sandbox.succeeded:
+        print("  Sandbox test:  passed")
+    else:
+        print("  Sandbox test:  failed")
+        if sandbox.stderr:
+            print("  Docker stderr (last 20 lines):")
+            for line in sandbox.stderr.splitlines()[-20:]:
+                print(f"    {line}")
 
 
 def _is_url(value: str) -> bool:

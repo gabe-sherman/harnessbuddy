@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 from harnessbuddy.library_builder.models import (
@@ -35,8 +36,11 @@ _BUILD_SH = (
 _BUILD_ENV_FOOTER = (
     "\ncat > ../build.env <<'EOF'\n"
     'HB_INCLUDE_FLAGS="-I../install/include"\n'
-    'HB_LIBRARY_FLAGS="-L../install/lib"\n'
     "EOF\n"
+    "\n"
+    "_hb_libs=$(find ../install/lib -name '*.a' 2>/dev/null \\\n"
+    "  | sed 's|.*/lib\\([^/]*\\)\\.a|-l\\1|' | tr '\\n' ' ')\n"
+    'echo "HB_LIBRARY_FLAGS=\\"-L../install/lib $_hb_libs\\"" >> ../build.env\n'
 )
 
 _BUILD_LIBRARY_SH_CMAKE = (
@@ -218,18 +222,21 @@ def _write_dockerfile(output_path: Path, analysis: AnalysisResult) -> Path:
 def _write_build_sh(output_path: Path) -> Path:
     path = output_path / "build.sh"
     path.write_text(_BUILD_SH)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
 def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path:
     path = output_path / "build_library.sh"
     path.write_text(_BUILD_LIBRARY_SH_BY_BUILD_SYSTEM[analysis.build_system])
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
 def _write_compile_harnesses_sh(output_path: Path) -> Path:
     path = output_path / "compile_harnesses.sh"
     path.write_text(_COMPILE_HARNESSES_SH)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
