@@ -49,7 +49,7 @@ def explore(
             duration_seconds=0.0,
         )
 
-    command = ["bash", str(script_path)]
+    command = ["bash", str(script_path.name)]
     result = run_command_streaming(command, analysis.source_path, timeout)
 
     succeeded = result.exit_code == 0

@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harnessbuddy.library_builder.models import AnalysisResult, BuildExplorationResult
 
 
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
@@ -10,6 +14,13 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         "repo_url",
         metavar="REPO_URL",
         help="Repository URL or local path to analyze.",
+    )
+    p.add_argument(
+        "--agent",
+        choices=["codex", "claude"],
+        required=True,
+        metavar="codex|claude",
+        help="Agent backend for fallback. Overridden by --no-agents.",
     )
     p.add_argument(
         "--output",
@@ -35,13 +46,6 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         "--no-agents",
         action="store_true",
         help="Disable all agent fallback regardless of --agent.",
-    )
-    p.add_argument(
-        "--agent",
-        choices=["auto", "codex", "claude"],
-        default="auto",
-        metavar="auto|codex|claude",
-        help="Agent backend for fallback (default: auto). Overridden by --no-agents.",
     )
     p.add_argument(
         "--keep-workdir",
@@ -76,6 +80,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def build_library(
+    analysis: AnalysisResult,
+    workspace: Path,
+    *,
+    agent: str | None = None,
+    timeout: int = 300,
+) -> BuildExplorationResult:
+    """Run explore, then optionally fall back to an LLM agent if the build fails.
+
+    Returns the final BuildExplorationResult. result.llm_used is True when the
+    agent path was taken.
+    """
+    from harnessbuddy.library_builder.exploration import explore
+
+    result = explore(analysis, workspace, timeout=timeout)
+    if not result.succeeded and agent is not None:
+        from harnessbuddy.library_builder.agents import invoke_library_builder_agent
+        result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
+    return result
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.core.paths import default_state_dir, project_dir
     from harnessbuddy.core.repos import (
@@ -85,8 +110,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         ingest_url,
     )
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
-    from harnessbuddy.library_builder.exploration import explore
-    from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
 
     output_parent = Path(args.output) if args.output else Path.cwd()
     state_dir = default_state_dir()
@@ -123,32 +146,21 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return 1
 
     workspace = project_dir(state_dir, analysis.project_name)
+    agent = None if args.no_agents else args.agent
     print(f"Running host build in {workspace} ...")
-    exploration = explore(analysis, workspace)
+    if agent:
+        print(f"Agent fallback enabled ({agent}).")
 
-    if not exploration.succeeded and not args.no_agents:
-        tool = args.agent
-        if tool is not None:
-            from harnessbuddy.library_builder.agents import invoke_library_builder_agent
-            print(f"Host build failed — invoking {tool} agent to fix it...")
-            invoke_library_builder_agent(analysis, exploration, workspace, tool=tool)
-            print("Agent finished.")
+    result = build_library(analysis, workspace, agent=agent)
 
-    try:
-        result = generate(analysis, output_parent, exploration)
-    except OutputDirectoryExistsError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    if result.llm_used:
+        print("Agent finished.")
 
-    print(f"Generated oss-fuzz project: {result.output_path}")
-    print(f"  Project name:  {result.project_name}")
-    print(f"  Build system:  {analysis.build_system.value}")
-    print(f"  Language:      {analysis.language.value}")
-    build_status = "succeeded" if exploration.succeeded else "failed"
-    print(f"  Host build:    {build_status}")
-    print(f"  Workspace:     {workspace}")
-    for warning in analysis.warnings:
-        print(f"  Warning: {warning}")
+    if not result.succeeded:
+        print(f"Failed to produce valid build: {result.stdout}")
+        exit()
+
+    print(f"Successfully created library build script at {workspace / 'src' / 'build_library.sh'}")
 
     return 0
 

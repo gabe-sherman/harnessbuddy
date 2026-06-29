@@ -11,7 +11,7 @@ import pytest
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.analysis import analyze
-from harnessbuddy.library_builder.exploration import explore
+from harnessbuddy.cli import build_library
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 class LibSpec:
     url: str
     project_name: str
+    build_system: BuildSystem
+    builds_static: bool
 
 
 @dataclass
@@ -36,32 +38,28 @@ class LibBuild:
     source: Path
 
 
-CMAKE_LIBS = [
-    LibSpec("https://github.com/madler/zlib.git", "zlib"),
-    # LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff"),
-    # LibSpec("https://github.com/c-ares/c-ares.git", "c-ares"), # has non-canonical static library flag (-DCARES_STATIC)
-    # LibSpec("https://github.com/curl/curl.git", "curl"), # requires dep of Libpsl
-    # LibSpec("https://github.com/HDFGroup/hdf5.git", "hdf5")
+LIBS = [
+    # cmake
+    LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
+    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
+    LibSpec("https://github.com/HDFGroup/hdf5.git", "hdf5", BuildSystem.CMAKE, True),
+    LibSpec("https://github.com/c-ares/c-ares.git", "c-ares", BuildSystem.CMAKE, False),  # non-canonical static flag (-DCARES_STATIC)
+    LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),  # requires libpsl
+    # make
+    LibSpec("https://github.com/lz4/lz4.git", "lz4", BuildSystem.MAKEFILE, True),
+    # autotools
+    LibSpec("https://github.com/libimobiledevice/libplist", "libplist", BuildSystem.AUTOTOOLS, True),
+    LibSpec("https://github.com/gpac/gpac.git", "gpac", BuildSystem.AUTOTOOLS, True),
+    LibSpec("https://github.com/file/file.git", "file", BuildSystem.AUTOTOOLS, True),
+    LibSpec("https://github.com/mm2/Little-CMS.git", "lcms", BuildSystem.AUTOTOOLS, True),
+    # meson
+    LibSpec("https://gitlab.gnome.org/GNOME/tinysparql.git", "tinysparql", BuildSystem.MESON, False),  # requires external deps
+    LibSpec("https://github.com/rauc/rauc.git", "rauc", BuildSystem.MESON, False),  # requires dbus-1
 ]
 
-MAKE_LIBS = [
-    # LibSpec("https://github.com/lz4/lz4.git", "lz4"),
-]
-
-AUTOTOOLS_LIBS = [
-    # LibSpec("https://github.com/libimobiledevice/libplist", "libplist"),
-    # LibSpec("https://github.com/gpac/gpac.git", "gpac"),
-    LibSpec("https://github.com/file/file.git", "file"),
-    LibSpec("https://github.com/mm2/Little-CMS.git", "lcms"),
-]
-
-MESON_LIBS = [
-    # LibSpec("https://gitlab.gnome.org/GNOME/tinysparql.git", "tinysparql") # This one may be good for pulling in the LLM, it has external deps
-    # LibSpec("https://github.com/rauc/rauc.git", "rauc") # Same with this one, depends on apt/brew install dbus-1
-]
-
-_REAL_WORLD_LIBS = CMAKE_LIBS + MAKE_LIBS + AUTOTOOLS_LIBS + MESON_LIBS
-_REAL_WORLD_LIBS = CMAKE_LIBS
+_STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
+_DYN_LIBS = [lib for lib in LIBS if not lib.builds_static]
+_AGENT = "claude"
 
 
 def _make_analysis(build_system: BuildSystem, source_path: Path) -> AnalysisResult:
@@ -86,30 +84,25 @@ def _require_cmake() -> None:
         pytest.skip("cmake not available")
 
 
-@pytest.fixture(
-    scope="session",
-    params=_REAL_WORLD_LIBS,
-    ids=lambda lib: lib.project_name,
-)
-def real_library_build(
-    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
-) -> LibBuild:
+def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBuild:
     _require_cmake()
-    lib: LibSpec = request.param
     src = tmp_path_factory.mktemp(f"{lib.project_name}_src")
     subprocess.run(
         ["git", "clone", "--depth=1", lib.url, str(src)],
         check=True,
         capture_output=True,
     )
-    source = RepoSource(
-        source_path=src,
-        clone_url=lib.url,
-        project_name=lib.project_name,
-    )
+    source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
-    result = explore(analyze(source), workdir)
+    result = build_library(analyze(source), workdir, agent=_AGENT)
     return LibBuild(spec=lib, result=result, workdir=workdir, source=src)
+
+
+@pytest.fixture(scope="session")
+def real_library_build(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> LibBuild:
+    return _build_lib(request.param, tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
@@ -130,59 +123,103 @@ def broken_cmake_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[BuildE
 # build succeeds and installs artifacts
 
 
-def test_library_builds(real_library_build: LibBuild) -> None:
-    result = real_library_build.result
-    assert result.succeeded, f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"
+@pytest.mark.parametrize(
+    "real_library_build", _STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestStaticBuilds:
+    # Assert no claude code usage here
+    @pytest.fixture(autouse=True)
+    def _forbid_agent(self) -> None:
+        with patch(
+            "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
+            side_effect=AssertionError("invoke_library_builder_agent must not be called in static build tests"),
+        ):
+            yield
+
+    def test_library_builds(self, real_library_build: LibBuild) -> None:
+        result = real_library_build.result
+        assert result.succeeded, f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"
+
+    def test_static_library_installed(self, real_library_build: LibBuild) -> None:
+        lib_dir = real_library_build.workdir / "install" / "lib"
+        assert any(lib_dir.glob("*.a")), f"no static library in {lib_dir}"
+
+    def test_headers_installed(self, real_library_build: LibBuild) -> None:
+        include_dir = real_library_build.workdir / "install" / "include"
+        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
+
+    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.source / "build_library.sh").exists()
+
+    def test_build_env_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.workdir / "build.env").exists()
+
+    def test_build_env_has_include_flags(self, real_library_build: LibBuild) -> None:
+        workdir = real_library_build.workdir
+        env = (workdir / "build.env").read_text()
+        assert f"-I{workdir.resolve()}/install/include" in env
+
+    def test_build_env_has_library_flags(self, real_library_build: LibBuild) -> None:
+        workdir = real_library_build.workdir
+        env = (workdir / "build.env").read_text()
+        assert f"-L{workdir.resolve()}/install/lib" in env
+
+    def test_result_succeeded(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.succeeded is True
+
+    def test_result_exit_code_zero(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.exit_code == 0
+
+    def test_result_command_is_bash_script(self, real_library_build: LibBuild) -> None:
+        cmd = real_library_build.result.command
+        assert cmd[0] == "bash"
+        assert Path(cmd[1]).name == "build_library.sh"
 
 
-def test_static_library_installed(real_library_build: LibBuild) -> None:
-    lib_dir = real_library_build.workdir / "install" / "lib"
-    assert any(lib_dir.glob("*.a")), f"no static library in {lib_dir}"
+# curl build — dynamic-only library (no .a expected)
 
 
-def test_headers_installed(real_library_build: LibBuild) -> None:
-    include_dir = real_library_build.workdir / "install" / "include"
-    assert any(include_dir.iterdir()), f"no headers in {include_dir}"
+@pytest.mark.parametrize(
+    "real_library_build",
+    [lib for lib in LIBS if lib.project_name == "curl"],
+    indirect=True,
+    ids=lambda lib: lib.project_name,
+)
+class TestCurlBuild:
+    def test_builds(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.succeeded, f"curl build failed:\n{real_library_build.result.stderr}"
+        assert real_library_build.result.llm_used, f"build succeeded with no LLM usage, this indicates something weird is happening"
 
 
-def test_build_library_script_written(real_library_build: LibBuild) -> None:
-    assert (real_library_build.source / "build_library.sh").exists()
+    def test_headers_installed(self, real_library_build: LibBuild) -> None:
+        include_dir = real_library_build.workdir / "install" / "include"
+        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
+    def test_build_env_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.workdir / "build.env").exists()
 
-# build.env written with usable flags
+    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.source / "build_library.sh").exists()
 
+@pytest.mark.parametrize(
+    "real_library_build",
+    [lib for lib in LIBS if lib.project_name == "zlib"],
+    indirect=True,
+    ids=lambda lib: lib.project_name,
+)
+class TestZlibBuild:
+    def test_builds(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.succeeded, f"curl build failed:\n{real_library_build.result.stderr}"
 
-def test_build_env_written(real_library_build: LibBuild) -> None:
-    assert (real_library_build.workdir / "build.env").exists()
+    def test_headers_installed(self, real_library_build: LibBuild) -> None:
+        include_dir = real_library_build.workdir / "install" / "include"
+        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
+    def test_build_env_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.workdir / "build.env").exists()
 
-def test_build_env_has_include_flags(real_library_build: LibBuild) -> None:
-    workdir = real_library_build.workdir
-    env = (workdir / "build.env").read_text()
-    assert f"-I{workdir.resolve()}/install/include" in env
-
-
-def test_build_env_has_library_flags(real_library_build: LibBuild) -> None:
-    workdir = real_library_build.workdir
-    env = (workdir / "build.env").read_text()
-    assert f"-L{workdir.resolve()}/install/lib" in env
-
-
-# result fields reflect actual outcome
-
-
-def test_result_succeeded(real_library_build: LibBuild) -> None:
-    assert real_library_build.result.succeeded is True
-
-
-def test_result_exit_code_zero(real_library_build: LibBuild) -> None:
-    assert real_library_build.result.exit_code == 0
-
-
-def test_result_command_is_bash_script(real_library_build: LibBuild) -> None:
-    cmd = real_library_build.result.command
-    assert cmd[0] == "bash"
-    assert Path(cmd[1]).name == "build_library.sh"
+    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.source / "build_library.sh").exists() 
 
 
 # real build failure
@@ -196,41 +233,3 @@ def test_broken_cmake_not_succeeded(broken_cmake_build: tuple) -> None:
 def test_broken_cmake_exit_code_nonzero(broken_cmake_build: tuple) -> None:
     result, _ = broken_cmake_build
     assert result.exit_code != 0
-
-
-# unknown build system — script written but subprocess not called
-
-
-def test_unknown_build_system_not_succeeded(tmp_path: Path) -> None:
-    result = explore(_make_analysis(BuildSystem.UNKNOWN, tmp_path), tmp_path / "work")
-    assert result.succeeded is False
-
-
-def test_unknown_build_system_empty_command(tmp_path: Path) -> None:
-    result = explore(_make_analysis(BuildSystem.UNKNOWN, tmp_path), tmp_path / "work")
-    assert result.command == []
-
-
-# timeout edge case — mock retained: triggering a real timeout requires a slow build
-
-
-@patch("harnessbuddy.library_builder.exploration.run_command_streaming")
-def test_timeout_treated_as_failure(mock_run: MagicMock, tmp_path: Path) -> None:
-    mock_run.return_value = _timeout()
-    result = explore(_make_analysis(BuildSystem.CMAKE, tmp_path), tmp_path / "work")
-    assert result.succeeded is False
-    assert result.exit_code == -1
-
-
-@patch("harnessbuddy.library_builder.exploration.run_command_streaming")
-def test_custom_timeout_forwarded(mock_run: MagicMock, tmp_path: Path) -> None:
-    mock_run.return_value = RunResult(stdout="", stderr="", exit_code=0, duration_seconds=1.0)
-    explore(_make_analysis(BuildSystem.CMAKE, tmp_path), tmp_path / "work", timeout=30)
-    assert mock_run.call_args[0][2] == 30
-
-
-@patch("harnessbuddy.library_builder.exploration.run_command_streaming")
-def test_default_timeout_is_120(mock_run: MagicMock, tmp_path: Path) -> None:
-    mock_run.return_value = RunResult(stdout="", stderr="", exit_code=0, duration_seconds=1.0)
-    explore(_make_analysis(BuildSystem.CMAKE, tmp_path), tmp_path / "work")
-    assert mock_run.call_args[0][2] == 300

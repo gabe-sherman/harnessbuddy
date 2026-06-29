@@ -183,12 +183,8 @@ def generate(
     exploration: BuildExplorationResult | None = None,
 ) -> GenerationResult:
     """Generate a complete oss-fuzz project skeleton from a static analysis result."""
-    output_path = output_parent / analysis.project_name
-    if output_path.exists():
-        raise OutputDirectoryExistsError(
-            f"Output directory already exists: {output_path}. "
-            "Remove it or choose a different --output directory."
-        )
+    output_path = output_parent / analysis.project_name / "output"
+
     output_path.mkdir(parents=True)
     (output_path / "harness_source").mkdir()
 

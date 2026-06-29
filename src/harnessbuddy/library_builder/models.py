@@ -49,6 +49,7 @@ class BuildExplorationResult:
     stderr: str
     exit_code: int
     duration_seconds: float
+    llm_used: bool = False
 
 
 @dataclass
