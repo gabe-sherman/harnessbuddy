@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -45,11 +44,6 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         help="Agent backend for fallback (default: auto). Overridden by --no-agents.",
     )
     p.add_argument(
-        "--allow-host-build",
-        action="store_true",
-        help="Allow host-side build exploration (v1: permission-only, no host builds run).",
-    )
-    p.add_argument(
         "--keep-workdir",
         action="store_true",
         help="Keep the working directory after the run.",
@@ -83,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
-    from harnessbuddy.core.paths import default_state_dir
+    from harnessbuddy.core.paths import default_state_dir, project_dir
     from harnessbuddy.core.repos import (
         NoCloneableOriginError,
         RepositoryNotFoundError,
@@ -91,9 +85,11 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         ingest_url,
     )
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.exploration import explore
     from harnessbuddy.library_builder.generation import OutputDirectoryExistsError, generate
 
     output_parent = Path(args.output) if args.output else Path.cwd()
+    state_dir = default_state_dir()
 
     try:
         if _is_url(args.repo_url):
@@ -101,7 +97,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
                 args.repo_url,
                 project_name=args.project_name,
                 repo_ref=args.repo_ref,
-                state_dir=default_state_dir(),
+                state_dir=state_dir,
             )
         else:
             source = ingest_local(
@@ -126,12 +122,17 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print("No C/C++ build signals found in this repository.", file=sys.stderr)
         return 1
 
-    exploration = None
-    if args.allow_host_build:
-        from harnessbuddy.library_builder.exploration import explore
+    workspace = project_dir(state_dir, analysis.project_name)
+    print(f"Running host build in {workspace} ...")
+    exploration = explore(analysis, workspace)
 
-        with tempfile.TemporaryDirectory() as _workdir:
-            exploration = explore(analysis, Path(_workdir))
+    if not exploration.succeeded and not args.no_agents:
+        tool = args.agent
+        if tool is not None:
+            from harnessbuddy.library_builder.agents import invoke_library_builder_agent
+            print(f"Host build failed — invoking {tool} agent to fix it...")
+            invoke_library_builder_agent(analysis, exploration, workspace, tool=tool)
+            print("Agent finished.")
 
     try:
         result = generate(analysis, output_parent, exploration)
@@ -143,9 +144,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(f"  Project name:  {result.project_name}")
     print(f"  Build system:  {analysis.build_system.value}")
     print(f"  Language:      {analysis.language.value}")
-    if exploration is not None:
-        status = "succeeded" if exploration.succeeded else "failed"
-        print(f"  Host build exploration: {status}")
+    build_status = "succeeded" if exploration.succeeded else "failed"
+    print(f"  Host build:    {build_status}")
+    print(f"  Workspace:     {workspace}")
     for warning in analysis.warnings:
         print(f"  Warning: {warning}")
 

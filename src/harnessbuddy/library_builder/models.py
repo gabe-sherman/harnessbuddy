@@ -10,8 +10,13 @@ class BuildSystem(Enum):
     MESON = "meson"
     AUTOTOOLS = "autotools"
     MAKEFILE = "makefile"
-    NINJA = "ninja"
     UNKNOWN = "unknown"
+
+
+class AutotoolsSetup(Enum):
+    CONFIGURE = "configure"   # configure script already present
+    AUTOGEN = "autogen"       # autogen.sh present, must run before configure
+    AUTORECONF = "autoreconf"  # only configure.ac / configure.in, need autoreconf -fiv
 
 
 class Language(Enum):
@@ -32,6 +37,7 @@ class AnalysisResult:
     clone_url: str
     repo_ref: str | None
     warnings: list[str] = field(default_factory=list)
+    autotools_setup: AutotoolsSetup | None = None
 
 
 @dataclass

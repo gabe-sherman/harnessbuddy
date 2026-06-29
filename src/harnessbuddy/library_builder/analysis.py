@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from harnessbuddy.core.repos import RepoSource
-from harnessbuddy.library_builder.models import AnalysisResult, BuildSystem, Language
+from harnessbuddy.library_builder.models import (
+    AnalysisResult,
+    AutotoolsSetup,
+    BuildSystem,
+    Language,
+)
 
 _C_HEADER_EXTENSIONS: frozenset[str] = frozenset({".h", ".hpp", ".hxx", ".hh"})
 _VCS_DIRS: frozenset[str] = frozenset({".git", ".hg", ".svn"})
@@ -13,7 +18,6 @@ _BUILD_SYSTEM_CHECKS: list[tuple[BuildSystem, list[str]]] = [
     (BuildSystem.MESON, ["meson.build"]),
     (BuildSystem.AUTOTOOLS, ["configure.ac", "configure.in", "configure"]),
     (BuildSystem.MAKEFILE, ["Makefile", "makefile"]),
-    (BuildSystem.NINJA, ["build.ninja"]),
 ]
 
 
@@ -40,6 +44,12 @@ def analyze(source: RepoSource) -> AnalysisResult:
     if not headers:
         warnings.append(f"No C/C++ header files found in {source.source_path}.")
 
+    autotools_setup = (
+        _detect_autotools_setup(source.source_path)
+        if build_system == BuildSystem.AUTOTOOLS
+        else None
+    )
+
     return AnalysisResult(
         project_name=source.project_name,
         source_path=source.source_path,
@@ -50,7 +60,20 @@ def analyze(source: RepoSource) -> AnalysisResult:
         clone_url=source.clone_url,
         repo_ref=source.repo_ref,
         warnings=warnings,
+        autotools_setup=autotools_setup,
     )
+
+
+def _detect_autotools_setup(root: Path) -> AutotoolsSetup:
+    """Detect how to bootstrap autotools for this repository.
+
+    Priority: configure script present > autogen.sh > autoreconf from configure.ac.
+    """
+    if (root / "configure").exists():
+        return AutotoolsSetup.CONFIGURE
+    if (root / "autogen.sh").exists():
+        return AutotoolsSetup.AUTOGEN
+    return AutotoolsSetup.AUTORECONF
 
 
 def _detect_build_system(root: Path) -> tuple[BuildSystem, list[Path]]:

@@ -14,6 +14,41 @@ class RunResult:
     duration_seconds: float
 
 
+def run_command_streaming(command: list[str], cwd: Path, timeout: int) -> RunResult:
+    """Run command, printing each line in real-time while capturing combined output."""
+    start = time.monotonic()
+    lines: list[str] = []
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        return RunResult(
+            stdout="".join(lines),
+            stderr="",
+            exit_code=-1,
+            duration_seconds=time.monotonic() - start,
+        )
+    return RunResult(
+        stdout="".join(lines),
+        stderr="",
+        exit_code=proc.returncode,
+        duration_seconds=time.monotonic() - start,
+    )
+
+
 def run_command(command: list[str], cwd: Path, timeout: int) -> RunResult:
     start = time.monotonic()
     try:

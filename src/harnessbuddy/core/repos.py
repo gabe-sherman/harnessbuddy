@@ -18,7 +18,7 @@ class RepoSource:
     source_path: Path
     clone_url: str
     project_name: str
-    repo_ref: str | None
+    repo_ref: str | None = None
 
 
 def name_from_url(url: str) -> str:
@@ -38,7 +38,7 @@ def ingest_url(
 ) -> RepoSource:
     """Clone a remote repository into state_dir and return a RepoSource."""
     name = project_name or name_from_url(url)
-    dest = state_dir / "repos" / name
+    dest = state_dir / name / "src"
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "clone", url, str(dest)], check=True)
     return RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)

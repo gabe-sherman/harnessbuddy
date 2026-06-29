@@ -5,125 +5,32 @@ from pathlib import Path
 
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
+    AutotoolsSetup,
     BuildExplorationResult,
     BuildSystem,
     GenerationResult,
     Language,
 )
 
-_DOCKERFILE_NO_REF = (
-    "FROM gcr.io/oss-fuzz-base/base-builder\n"
-    "RUN git clone {clone_url} $SRC/{project_name}\n"
-    "COPY harness_source $SRC/harness_source\n"
-    "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-    "WORKDIR $SRC/{project_name}\n"
-)
-
-_DOCKERFILE_WITH_REF = (
-    "FROM gcr.io/oss-fuzz-base/base-builder\n"
-    "RUN git clone {clone_url} $SRC/{project_name}\n"
-    "RUN git -C $SRC/{project_name} checkout {repo_ref}\n"
-    "COPY harness_source $SRC/harness_source\n"
-    "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-    "WORKDIR $SRC/{project_name}\n"
+_AUTOTOOLS_APT_DEPS = (
+    "RUN apt-get update && apt-get install -y --no-install-recommends"
+    " autoconf automake libtool pkg-config\n"
 )
 
 _BUILD_SH = (
     '#!/bin/bash\nset -euo pipefail\n\n"$SRC/build_library.sh"\n"$SRC/compile_harnesses.sh"\n'
 )
 
-_BUILD_ENV_FOOTER = (
-    "\ncat > ../build.env <<'EOF'\n"
-    'HB_INCLUDE_FLAGS="-I../install/include"\n'
-    'HB_LIBRARY_FLAGS="-L../install/lib"\n'
-    "EOF\n"
-)
-
-_BUILD_LIBRARY_SH_CMAKE = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    "# build system: cmake\n"
-    "\n"
-    "cmake -B ../build \\\n"
-    '  -DCMAKE_C_COMPILER="$CC" \\\n'
-    '  -DCMAKE_CXX_COMPILER="$CXX" \\\n'
-    '  -DCMAKE_C_FLAGS="$CFLAGS" \\\n'
-    '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
-    "  -DCMAKE_INSTALL_PREFIX=../install \\\n"
-    "  -DBUILD_SHARED_LIBS=OFF\n"
-    "cmake --build ../build -- -j$(nproc)\n"
-    "cmake --install ../build\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_MESON = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    "# build system: meson\n"
-    "\n"
-    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-    "  meson setup ../build --prefix=../install --default-library=static\n"
-    "ninja -C ../build\n"
-    "ninja -C ../build install\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_AUTOTOOLS = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    "# build system: autotools\n"
-    "\n"
-    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-    "  ./configure --prefix=../install --enable-static --disable-shared\n"
-    "make -j$(nproc)\n"
-    "make install\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_MAKEFILE = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    "# build system: makefile\n"
-    "\n"
-    "make -j$(nproc) \\\n"
-    '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-    "  PREFIX=../install\n"
-    "make install PREFIX=../install\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_NINJA = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    "# build system: ninja\n"
-    "\n"
-    'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-    "  ninja -j$(nproc)\n"
-    "# best-effort; no standard install convention\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_UNKNOWN = (
-    "#!/bin/bash\nset -euo pipefail\n\n# build system: unknown\n" + _BUILD_ENV_FOOTER
-)
-
-_BUILD_LIBRARY_SH_BY_BUILD_SYSTEM: dict[BuildSystem, str] = {
-    BuildSystem.CMAKE: _BUILD_LIBRARY_SH_CMAKE,
-    BuildSystem.MESON: _BUILD_LIBRARY_SH_MESON,
-    BuildSystem.AUTOTOOLS: _BUILD_LIBRARY_SH_AUTOTOOLS,
-    BuildSystem.MAKEFILE: _BUILD_LIBRARY_SH_MAKEFILE,
-    BuildSystem.NINJA: _BUILD_LIBRARY_SH_NINJA,
-    BuildSystem.UNKNOWN: _BUILD_LIBRARY_SH_UNKNOWN,
-}
-
 _COMPILE_HARNESSES_SH = (
     "#!/bin/bash\n"
     "set -euo pipefail\n"
     "\n"
-    "# shellcheck source=/dev/null\n"
-    'source "../build.env"\n'
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
     "\n"
-    'HARNESS_DIR="/src/harness_source"\n'
+    "# shellcheck source=/dev/null\n"
+    'source "$SCRIPT_DIR/build.env"\n'
+    "\n"
+    'HARNESS_DIR="$SCRIPT_DIR/harness_source"\n'
     "\n"
     'for harness in "$HARNESS_DIR"/*; do\n'
     '  [ -f "$harness" ] || continue\n'
@@ -153,6 +60,117 @@ _DEFAULT_FUZZER_CC = (
     "    return 0;\n"
     "}\n"
 )
+
+_HOST_ENV_FALLBACKS = (
+    '\nCC="${CC:-cc}"\n'
+    'CXX="${CXX:-c++}"\n'
+    'CFLAGS="${CFLAGS:-}"\n'
+    'CXXFLAGS="${CXXFLAGS:-}"\n'
+)
+
+
+def build_library_script(
+    build_system: BuildSystem,
+    source_dir: str,
+    build_dir: str,
+    install_dir: str,
+    env_file: str,
+    *,
+    host_fallbacks: bool = False,
+    autotools_setup: AutotoolsSetup | None = None,
+) -> str:
+    """Generate a build_library.sh script with parameterized paths.
+
+    Args:
+        build_system: detected build system.
+        source_dir: path string for the source directory.
+        build_dir: path string for the build directory (relative or absolute).
+        install_dir: path string for the install prefix.
+        env_file: path string where build.env will be written.
+        host_fallbacks: when True, add CC/CXX/CFLAGS/CXXFLAGS defaults for host builds.
+        autotools_setup: autotools bootstrap variant (only used when build_system is AUTOTOOLS).
+    """
+    header = "#!/bin/bash\nset -euo pipefail\n"
+    if host_fallbacks:
+        header += _HOST_ENV_FALLBACKS
+    else:
+        header += '\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    body = _build_body(build_system, source_dir, build_dir, install_dir, autotools_setup)
+    footer = (
+        f"\ncat > {env_file} <<'EOF'\n"
+        f'HB_INCLUDE_FLAGS="-I{install_dir}/include"\n'
+        f'HB_LIBRARY_FLAGS="-L{install_dir}/lib"\n'
+        "EOF\n"
+    )
+    return header + body + footer
+
+
+def _build_body(
+    build_system: BuildSystem,
+    source_dir: str,
+    build_dir: str,
+    install_dir: str,
+    autotools_setup: AutotoolsSetup | None = None,
+) -> str:
+    if build_system == BuildSystem.CMAKE:
+        return (
+            "\n"
+            "# build system: cmake\n"
+            "\n"
+            f"cmake -B {build_dir} -S {source_dir} \\\n"
+            '  -DCMAKE_C_COMPILER="$CC" \\\n'
+            '  -DCMAKE_CXX_COMPILER="$CXX" \\\n'
+            '  -DCMAKE_C_FLAGS="$CFLAGS" \\\n'
+            '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
+            f"  -DCMAKE_INSTALL_PREFIX={install_dir} \\\n"
+            "  -DBUILD_SHARED_LIBS=OFF\n"
+            f"cmake --build {build_dir} -- -j$(nproc)\n"
+            f"cmake --install {build_dir}\n"
+        )
+    if build_system == BuildSystem.MESON:
+        return (
+            "\n"
+            "# build system: meson\n"
+            "\n"
+            'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+            f"  meson setup {build_dir} {source_dir} \\\n"
+            f"    --prefix={install_dir} --default-library=static\n"
+            f"ninja -C {build_dir}\n"
+            f"ninja -C {build_dir} install\n"
+        )
+    if build_system == BuildSystem.AUTOTOOLS:
+        if autotools_setup == AutotoolsSetup.AUTOGEN:
+            # sometimes autogen already runs configure, run distclean to reset directory state
+            setup_step = f"(cd {source_dir} && ./autogen.sh && make distclean)\n"
+        elif autotools_setup == AutotoolsSetup.AUTORECONF:
+            setup_step = f"(cd {source_dir} && autoreconf -fiv)\n"
+        else:
+            setup_step = ""
+        return (
+            "\n"
+            "# build system: autotools\n"
+            "\n"
+            + setup_step
+            + f"mkdir -p {build_dir}\n"
+            "(\n"
+            f"  cd {build_dir}\n"
+            '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+            f"    {source_dir}/configure --prefix={install_dir} --enable-static --disable-shared\n"
+            "  make -j$(nproc)\n"
+            "  make install\n"
+            ")\n"
+        )
+    if build_system == BuildSystem.MAKEFILE:
+        return (
+            "\n"
+            "# build system: makefile\n"
+            "\n"
+            f"make -C {source_dir} -j$(nproc) \\\n"
+            '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
+            f"  PREFIX={install_dir}\n"
+            f"make -C {source_dir} install PREFIX={install_dir}\n"
+        )
+    return "\n# build system: unknown\n"
 
 
 class OutputDirectoryExistsError(Exception):
@@ -200,18 +218,20 @@ def _write_project_yaml(output_path: Path, analysis: AnalysisResult) -> Path:
 
 def _write_dockerfile(output_path: Path, analysis: AnalysisResult) -> Path:
     path = output_path / "Dockerfile"
-    if analysis.repo_ref is None:
-        content = _DOCKERFILE_NO_REF.format(
-            clone_url=analysis.clone_url,
-            project_name=analysis.project_name,
+    lines = ["FROM gcr.io/oss-fuzz-base/base-builder\n"]
+    if analysis.autotools_setup in {AutotoolsSetup.AUTOGEN, AutotoolsSetup.AUTORECONF}:
+        lines.append(_AUTOTOOLS_APT_DEPS)
+    lines.append(f"RUN git clone {analysis.clone_url} $SRC/{analysis.project_name}\n")
+    if analysis.repo_ref is not None:
+        lines.append(
+            f"RUN git -C $SRC/{analysis.project_name} checkout {analysis.repo_ref}\n"
         )
-    else:
-        content = _DOCKERFILE_WITH_REF.format(
-            clone_url=analysis.clone_url,
-            project_name=analysis.project_name,
-            repo_ref=analysis.repo_ref,
-        )
-    path.write_text(content)
+    lines += [
+        "COPY harness_source $SRC/harness_source\n",
+        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n",
+        f"WORKDIR $SRC/{analysis.project_name}\n",
+    ]
+    path.write_text("".join(lines))
     return path
 
 
@@ -223,7 +243,16 @@ def _write_build_sh(output_path: Path) -> Path:
 
 def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path:
     path = output_path / "build_library.sh"
-    path.write_text(_BUILD_LIBRARY_SH_BY_BUILD_SYSTEM[analysis.build_system])
+    path.write_text(
+        build_library_script(
+            analysis.build_system,
+            source_dir=f"$SCRIPT_DIR/{analysis.project_name}",
+            build_dir="$SCRIPT_DIR/build",
+            install_dir="$SCRIPT_DIR/install",
+            env_file="$SCRIPT_DIR/build.env",
+            autotools_setup=analysis.autotools_setup,
+        )
+    )
     return path
 
 
@@ -258,6 +287,8 @@ def _write_provenance_json(
         "output_path": str(output_path),
         "warnings": analysis.warnings,
     }
+    if analysis.autotools_setup is not None:
+        provenance["autotools_setup"] = analysis.autotools_setup.value
     if exploration is not None:
         provenance["host_build_exploration"] = {
             "build_system": exploration.build_system.value,
