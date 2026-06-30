@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -142,7 +143,7 @@ def broken_cmake_build(
 class TestStaticBuilds:
     # Assert no claude code usage here
     @pytest.fixture(autouse=True)
-    def _forbid_agent(self) -> None:
+    def _forbid_agent(self) -> types.GeneratorType:
         with patch(
             "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
             side_effect=AssertionError(

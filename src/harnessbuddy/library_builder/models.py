@@ -55,6 +55,7 @@ class BuildExplorationResult:
 @dataclass
 class HarnessExplorationResult:
     succeeded: bool
+    command: list[str]
     static_libs: list[Path]
     include_dir: Path
     transitive_link_flags: list[str]

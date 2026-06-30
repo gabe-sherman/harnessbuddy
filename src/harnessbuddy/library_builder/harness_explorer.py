@@ -47,6 +47,7 @@ def explore_harness_compilation(
     if not static_libs:
         return HarnessExplorationResult(
             succeeded=False,
+            command=[],
             static_libs=[],
             include_dir=include_dir,
             transitive_link_flags=[],
@@ -71,6 +72,7 @@ def explore_harness_compilation(
     for _ in range(_MAX_ATTEMPTS):
         intermediate = HarnessExplorationResult(
             succeeded=False,
+            command=[],
             static_libs=static_libs,
             include_dir=include_dir,
             transitive_link_flags=extra_flags,
@@ -80,7 +82,8 @@ def explore_harness_compilation(
         )
         script_path.write_text(build_harness_script(intermediate, whole_archive=True))
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        result = run_command(["bash", str(script_path.name)], workdir, timeout=60)
+        command = ["bash", str(script_path.name)]
+        result = run_command(command, workdir, timeout=60)
         last_stdout = result.stdout
         last_stderr = result.stderr
         last_exit = result.exit_code
@@ -88,6 +91,7 @@ def explore_harness_compilation(
         if result.exit_code == 0:
             return HarnessExplorationResult(
                 succeeded=True,
+                command=command,
                 static_libs=static_libs,
                 include_dir=include_dir,
                 transitive_link_flags=extra_flags,
@@ -112,6 +116,7 @@ def explore_harness_compilation(
 
     return HarnessExplorationResult(
         succeeded=False,
+        command=[],
         static_libs=static_libs,
         include_dir=include_dir,
         transitive_link_flags=extra_flags,

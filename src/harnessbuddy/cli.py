@@ -267,10 +267,13 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     parent_path = Path(args.output) if args.output else Path.cwd()
     base_output = parent_path / analysis.project_name / "output"
     if base_output.exists():
-        overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")
-        if overwrite != "y":
-            print("Chose to not overwrite, exiting...")
-            exit(0)
+        if sys.stdin.isatty():
+            overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")
+            if overwrite != "y":
+                print("Chose to not overwrite, exiting...")
+                exit(0)
+        else:
+            print(f"Output directory {base_output} already exists, overwriting ...")
         shutil.rmtree(base_output)
     local_output_path = base_output / "local"
     oss_output_path = base_output / "oss-fuzz"

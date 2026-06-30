@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import types
 import logging
 import subprocess
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -11,14 +11,11 @@ import pytest
 
 from harnessbuddy.cli import build_library
 from harnessbuddy.core.repos import RepoSource
-from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 from harnessbuddy.library_builder.models import (
-    AnalysisResult,
-    HarnessExplorationResult,
     BuildSystem,
-    Language,
+    HarnessExplorationResult,
 )
 
 logger = logging.getLogger(__name__)

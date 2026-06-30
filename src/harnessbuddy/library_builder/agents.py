@@ -222,6 +222,7 @@ def invoke_harness_builder_agent(
 
     return HarnessExplorationResult(
         succeeded=succeeded,
+        command=cmd,
         static_libs=harness.static_libs,
         include_dir=harness.include_dir,
         transitive_link_flags=harness.transitive_link_flags,

@@ -83,6 +83,7 @@ def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
 def _failed_harness(stderr: str) -> HarnessExplorationResult:
     return HarnessExplorationResult(
         succeeded=False,
+        command=[],
         static_libs=[],
         include_dir=Path("/tmp/install/include"),
         transitive_link_flags=[],

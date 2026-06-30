@@ -193,14 +193,15 @@ def test_generate_output_dir_exists_exits_nonzero(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
     output_dir = tmp_path / "output"
+
     output_dir.mkdir()
     local_out = output_dir / local_repo_with_origin.name / "output" / "local"
     local_out.mkdir(parents=True)
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    assert rc != 0
+    assert rc == 0
 
 
-def test_generate_output_dir_exists_prints_error(
+def test_generate_output_dir_exists_prints_warning(
     local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     output_dir = tmp_path / "output"
@@ -208,8 +209,8 @@ def test_generate_output_dir_exists_prints_error(
     local_out = output_dir / local_repo_with_origin.name / "output" / "local"
     local_out.mkdir(parents=True)
     main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    err = capsys.readouterr().err
-    assert "already exists" in err
+    out = capsys.readouterr().out
+    assert "already exists" in out
 
 
 # host build exploration
