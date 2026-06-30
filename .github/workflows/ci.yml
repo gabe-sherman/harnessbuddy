@@ -21,6 +21,7 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y cloc liblzma-dev
+      - run: ./tests/fixtures/create_fixtures.sh
       - run: uv sync --group dev
       - run: uv run pytest -q
 
