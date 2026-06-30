@@ -21,6 +21,11 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "agentic: invokes a live LLM agent subprocess (claude/codex); slow, requires agent CLI auth",
+    "build_matrix: clones and builds every library in the LIBS matrix; slow, network-heavy",
+]
+addopts = ["-m", "not agentic and not build_matrix"]
 
 [tool.ruff]
 line-length = 100

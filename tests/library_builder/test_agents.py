@@ -5,13 +5,16 @@ from pathlib import Path
 import pytest
 
 from harnessbuddy.library_builder.agents import (
+    build_harness_prompt,
     build_library_prompt,
+    invoke_harness_builder_agent,
     invoke_library_builder_agent,
 )
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
     BuildSystem,
+    HarnessExplorationResult,
     Language,
 )
 
@@ -72,6 +75,43 @@ def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
         invoke_library_builder_agent(
             _analysis(tmp_path),
             _failed_cmake_exploration(tmp_path),
+            tmp_path / "work",
+            tool="unknown",
+        )
+
+
+def _failed_harness(stderr: str) -> HarnessExplorationResult:
+    return HarnessExplorationResult(
+        succeeded=False,
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=[],
+        stdout="",
+        stderr=stderr,
+        exit_code=1,
+    )
+
+
+def test_harness_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
+    preamble_line = "PREAMBLE_LINE_THAT_MUST_NOT_APPEAR"
+    error_line = "UNIQUE_ERROR_LINE_THAT_MUST_APPEAR"
+    long_stderr = "\n".join([preamble_line] + ["filler"] * 400 + [error_line])
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        _failed_harness(long_stderr),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+    )
+    assert error_line in prompt
+    assert preamble_line not in prompt
+
+
+def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown agent tool"):
+        invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `foo'"),
+            tmp_path / "work" / "install",
             tmp_path / "work",
             tool="unknown",
         )

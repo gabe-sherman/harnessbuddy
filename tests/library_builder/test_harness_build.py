@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
-    BuildExplorationResult,
+    HarnessExplorationResult,
     BuildSystem,
     Language,
 )
@@ -34,7 +35,7 @@ class LibSpec:
 @dataclass
 class LibBuild:
     spec: LibSpec
-    result: BuildExplorationResult
+    result: HarnessExplorationResult
     workdir: Path
     source: Path
 
@@ -69,25 +70,8 @@ LIBS = [
 ]
 
 _STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
-_DYN_LIBS = [lib for lib in LIBS if not lib.builds_static]
+AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
 _AGENT = "claude"
-
-
-def _make_analysis(build_system: BuildSystem, source_path: Path) -> AnalysisResult:
-    return AnalysisResult(
-        project_name="testlib",
-        source_path=source_path,
-        build_system=build_system,
-        build_files=[],
-        headers=[],
-        language=Language.C,
-        clone_url="https://example.com/testlib.git",
-        repo_ref=None,
-    )
-
-
-def _timeout() -> RunResult:
-    return RunResult(stdout="", stderr="", exit_code=-1, duration_seconds=120.0)
 
 
 def _require_cmake() -> None:
@@ -119,13 +103,14 @@ def real_harness_build(
     return _build_lib(request.param, tmp_path_factory)
 
 
+@pytest.mark.build_matrix
 @pytest.mark.parametrize(
     "real_harness_build", _STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
 )
 class TestStaticBuilds:
     # Assert no claude code usage here
     @pytest.fixture(autouse=True)
-    def _forbid_agent(self) -> None:
+    def _forbid_agent(self) -> types.GeneratorType:
         with patch(
             "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
             side_effect=AssertionError(
@@ -170,14 +155,11 @@ class TestStaticBuilds:
     def test_result_exit_code_zero(self, real_harness_build: LibBuild) -> None:
         assert real_harness_build.result.exit_code == 0
 
-    def test_result_command_is_bash_script(self, real_harness_build: LibBuild) -> None:
-        cmd = real_harness_build.result.command
-        assert cmd[0] == "bash"
-        assert Path(cmd[1]).name == "build_library.sh"
 
-
+@pytest.mark.agentic
+@pytest.mark.build_matrix
 @pytest.mark.parametrize(
-    "real_harness_build", _DYN_LIBS, indirect=True, ids=lambda lib: lib.project_name
+    "real_harness_build", AGENTIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
 )
 class TestDynamicBuilds:
     def test_library_builds(self, real_harness_build: LibBuild) -> None:

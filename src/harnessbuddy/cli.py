@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from harnessbuddy.library_builder.models import AnalysisResult, BuildExplorationResult
+    from harnessbuddy.library_builder.models import (
+        AnalysisResult,
+        BuildExplorationResult,
+        HarnessExplorationResult,
+    )
 
 
 class _ProjectState(TypedDict):
@@ -195,6 +199,28 @@ def build_library(
     return result
 
 
+def build_harness(
+    analysis: AnalysisResult,
+    install_dir: Path,
+    workspace: Path,
+    *,
+    agent: str | None = None,
+) -> HarnessExplorationResult:
+    """Probe harness compilation, then optionally fall back to an LLM agent if it fails.
+
+    Returns the final HarnessExplorationResult. result.llm_used is True when the
+    agent path was taken.
+    """
+    from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
+
+    result = explore_harness_compilation(install_dir, workspace, analysis.language)
+    if not result.succeeded and agent is not None:
+        from harnessbuddy.library_builder.agents import invoke_harness_builder_agent
+
+        result = invoke_harness_builder_agent(analysis, result, install_dir, workspace, tool=agent)
+    return result
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
     from harnessbuddy.core.repos import (
@@ -279,7 +305,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return 1
 
     print("Successfully produced library build!")
-    from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
     from harnessbuddy.library_builder.local.generation import generate_local
     from harnessbuddy.library_builder.models import OutputDirectoryExistsError
     from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
@@ -287,7 +312,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
     install_dir = workspace / "install"
     print("Probing harness compilation ...")
-    harness_result = explore_harness_compilation(install_dir, workspace, analysis.language)
+    harness_result = build_harness(analysis, install_dir, workspace, agent=agent)
+
+    if harness_result.llm_used:
+        print("Harness agent finished.")
 
     # Translate any linker-reported missing libs to packages and persist immediately,
     # regardless of whether exploration succeeded or failed.

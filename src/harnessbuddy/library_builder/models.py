@@ -62,6 +62,7 @@ class HarnessExplorationResult:
     stderr: str
     exit_code: int
     missing_system_libs: list[str] = field(default_factory=list)
+    llm_used: bool = False
 
 
 @dataclass

@@ -166,3 +166,10 @@ def _symbol_to_flag(symbol: str) -> str | None:
         if pattern.search(symbol):
             return flag
     return None
+
+
+def _validate_harness_artifacts(workdir: Path) -> list[str]:
+    out_dir = workdir / "out"
+    if not out_dir.exists() or not any(out_dir.iterdir()):
+        return [f"no compiled harness binary found in {out_dir}"]
+    return []

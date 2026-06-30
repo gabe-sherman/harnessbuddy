@@ -68,7 +68,7 @@ LIBS = [
 ]
 
 _STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
-_DYN_LIBS = [lib for lib in LIBS if not lib.builds_static]
+AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
 _AGENT = "claude"
 
 
@@ -135,6 +135,7 @@ def broken_cmake_build(
 # build succeeds and installs artifacts
 
 
+@pytest.mark.build_matrix
 @pytest.mark.parametrize(
     "real_library_build", _STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
 )
@@ -192,6 +193,7 @@ class TestStaticBuilds:
         assert Path(cmd[1]).name == "build_library.sh"
 
 
+@pytest.mark.agentic
 @pytest.mark.parametrize(
     "real_library_build",
     [lib for lib in LIBS if lib.project_name == "curl"],

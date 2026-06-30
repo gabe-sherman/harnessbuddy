@@ -270,6 +270,26 @@ def test_no_agents_skips_agent_when_build_fails(
     mock_agent.assert_not_called()
 
 
+def test_no_agents_skips_harness_agent_when_compilation_fails(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.library_builder.agents.invoke_harness_builder_agent") as mock_agent:
+        main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+                "--no-agents",
+            ]
+        )
+    mock_agent.assert_not_called()
+
+
 # load_system_deps
 
 
