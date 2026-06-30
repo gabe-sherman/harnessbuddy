@@ -50,3 +50,6 @@ python3 -m pip install --break-system-packages \
     wheel \
     jinja2 \
     pyyaml
+
+# Install cloc to determine language for oss-fuzz project creation
+brew install cloc

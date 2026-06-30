@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from harnessbuddy.cli import build_parser, load_system_deps, main
+from harnessbuddy.cli import (
+    load_project_state,
+    load_system_deps,
+    main,
+    merge_packages_into_state,
+    save_project_state,
+)
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
@@ -309,6 +315,66 @@ def test_load_system_deps_handles_non_list_value(tmp_path: Path) -> None:
     analysis = _bare_analysis(tmp_path)
     load_system_deps(analysis)
     assert analysis.system_packages == []
+
+
+# load_project_state / save_project_state / merge_packages_into_state
+
+
+def test_load_project_state_absent_returns_empty(tmp_path: Path) -> None:
+    state = load_project_state(tmp_path / "state.json")
+    assert state["apt_packages"] == []
+    assert state["brew_packages"] == []
+    assert state["unknown_libs"] == []
+    assert state["sources"] == {}
+
+
+def test_save_and_load_project_state_roundtrip(tmp_path: Path) -> None:
+    state_file = tmp_path / "state.json"
+    state = load_project_state(state_file)
+    merge_packages_into_state(
+        state,
+        apt_packages=["libzstd-dev"],
+        brew_packages=["zstd"],
+        unknown_libs=[],
+        source_tag="linker",
+    )
+    save_project_state(state_file, state)
+    loaded = load_project_state(state_file)
+    assert loaded["apt_packages"] == ["libzstd-dev"]
+    assert loaded["brew_packages"] == ["zstd"]
+
+
+def test_merge_packages_unions_across_calls(tmp_path: Path) -> None:
+    state = load_project_state(tmp_path / "state.json")
+    merge_packages_into_state(
+        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="agent"
+    )
+    merge_packages_into_state(
+        state,
+        apt_packages=["libzstd-dev"],
+        brew_packages=["zstd"],
+        unknown_libs=[],
+        source_tag="linker",
+    )
+    assert state["apt_packages"] == ["libssl-dev", "libzstd-dev"]
+    assert state["brew_packages"] == ["zstd"]
+
+
+def test_merge_packages_deduplicates(tmp_path: Path) -> None:
+    state = load_project_state(tmp_path / "state.json")
+    merge_packages_into_state(
+        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="agent"
+    )
+    merge_packages_into_state(
+        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="linker"
+    )
+    assert state["apt_packages"] == ["libssl-dev"]
+
+
+def test_load_project_state_ignores_malformed_json(tmp_path: Path) -> None:
+    (tmp_path / "state.json").write_text("not json{{{")
+    state = load_project_state(tmp_path / "state.json")
+    assert state["apt_packages"] == []
 
 
 def test_generate_system_deps_loaded_from_source_path(

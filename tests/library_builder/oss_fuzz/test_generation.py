@@ -11,7 +11,6 @@ from harnessbuddy.library_builder.models import (
     AutotoolsSetup,
     BuildExplorationResult,
     BuildSystem,
-    OutputDirectoryExistsError,
 )
 from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
 
@@ -54,36 +53,37 @@ def _analysis(fixture_name: str, *, repo_ref: str | None = None):  # type: ignor
 
 @pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
 def test_all_files_generated(fixture_name: str, tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path)
+    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
     for name in _EXPECTED_TOP_LEVEL_FILES:
         assert (result.output_path / name).exists(), f"missing: {name}"
-    assert (result.output_path / "harness_source" / "default_fuzzer.cc").exists()
+    assert any((result.output_path / "harness_source").glob("default_fuzzer.*"))
 
 
 def test_generation_result_output_path(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
-    assert result.output_path == tmp_path / "mylib" / "output" / "oss-fuzz"
+    out = tmp_path / "out"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), out)
+    assert result.output_path == out
 
 
 def test_generation_result_project_name(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     assert result.project_name == "mylib"
 
 
 def test_generation_result_all_files_exist(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     assert all(f.is_file() for f in result.files)
 
 
 # project.yaml — full content assertions verify language mapping
 
 
-def test_project_yaml_cmake_language_c(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+def test_project_yaml_cmake_language_cpp(tmp_path: Path) -> None:
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     content = (result.output_path / "project.yaml").read_text()
     expected = (
-        "homepage: unknown\n"
-        "language: c\n"
+        f"homepage: {_FAKE_URL}\n"
+        "language: c++\n"
         "sanitizers:\n"
         "  - address\n"
         "  - undefined\n"
@@ -93,10 +93,10 @@ def test_project_yaml_cmake_language_c(tmp_path: Path) -> None:
 
 
 def test_project_yaml_meson_language_cpp(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("meson_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("meson_repo"), tmp_path / "out")
     content = (result.output_path / "project.yaml").read_text()
     expected = (
-        "homepage: unknown\n"
+        f"homepage: {_FAKE_URL}\n"
         "language: c++\n"
         "sanitizers:\n"
         "  - address\n"
@@ -110,7 +110,7 @@ def test_project_yaml_meson_language_cpp(tmp_path: Path) -> None:
 
 
 def test_dockerfile_no_ref(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
         "FROM gcr.io/oss-fuzz-base/base-builder\n"
@@ -123,7 +123,7 @@ def test_dockerfile_no_ref(tmp_path: Path) -> None:
 
 
 def test_dockerfile_with_ref(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo", repo_ref="v1.3.2"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo", repo_ref="v1.3.2"), tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
         "FROM gcr.io/oss-fuzz-base/base-builder\n"
@@ -153,7 +153,7 @@ def test_dockerfile_with_ref(tmp_path: Path) -> None:
 def test_build_library_sh_build_command(
     fixture_name: str, expected_cmd: str, tmp_path: Path
 ) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path)
+    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
     content = (result.output_path / "build_library.sh").read_text()
     assert expected_cmd in content
 
@@ -190,19 +190,19 @@ def test_compile_harnesses_sh_deterministic(tmp_path: Path) -> None:
     ],
 )
 def test_provenance_build_system(fixture_name: str, expected_bs: str, tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path)
+    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["build_system"] == expected_bs
 
 
 def test_provenance_cmake_build_files(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert "CMakeLists.txt" in provenance["build_files"]
 
 
 def test_provenance_headers_relative_paths(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert all("/" in h or h.endswith(".h") for h in provenance["headers"])
 
@@ -223,26 +223,28 @@ def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
 
 
 def test_provenance_no_exploration_omits_field(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert "host_build_exploration" not in provenance
 
 
 def test_provenance_with_exploration_includes_field(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path, _fake_exploration())
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _fake_exploration())
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert "host_build_exploration" in provenance
 
 
 def test_provenance_exploration_succeeded(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path, _fake_exploration(succeeded=True))
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _fake_exploration(succeeded=True)
+    )
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["host_build_exploration"]["succeeded"] is True
 
 
 def test_provenance_exploration_failed(tmp_path: Path) -> None:
     result = generate_oss_fuzz(
-        _analysis("cmake_repo"), tmp_path, _fake_exploration(succeeded=False)
+        _analysis("cmake_repo"), tmp_path / "out", _fake_exploration(succeeded=False)
     )
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["host_build_exploration"]["succeeded"] is False
@@ -251,22 +253,22 @@ def test_provenance_exploration_failed(tmp_path: Path) -> None:
 # autotools setup detection
 
 
-def test_autotools_setup_configure(tmp_path: Path) -> None:
+def test_autotools_setup_configure(tmp_path: Path) -> None:  # noqa: ARG001
     result = _analysis("autotools_configure_repo")
     assert result.autotools_setup == AutotoolsSetup.CONFIGURE
 
 
-def test_autotools_setup_autogen(tmp_path: Path) -> None:
+def test_autotools_setup_autogen(tmp_path: Path) -> None:  # noqa: ARG001
     result = _analysis("autotools_autogen_repo")
     assert result.autotools_setup == AutotoolsSetup.AUTOGEN
 
 
-def test_autotools_setup_autoreconf(tmp_path: Path) -> None:
+def test_autotools_setup_autoreconf(tmp_path: Path) -> None:  # noqa: ARG001
     result = _analysis("autotools_repo")
     assert result.autotools_setup == AutotoolsSetup.AUTORECONF
- 
 
-def test_non_autotools_setup_is_none(tmp_path: Path) -> None:
+
+def test_non_autotools_setup_is_none(tmp_path: Path) -> None:  # noqa: ARG001
     result = _analysis("cmake_repo")
     assert result.autotools_setup is None
 
@@ -275,20 +277,20 @@ def test_non_autotools_setup_is_none(tmp_path: Path) -> None:
 
 
 def test_build_library_sh_autotools_configure_no_setup_step(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path / "out")
     content = (result.output_path / "build_library.sh").read_text()
     assert "autoreconf" not in content
     assert "autogen.sh" not in content
 
 
 def test_build_library_sh_autotools_autogen_runs_autogen(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path / "out")
     content = (result.output_path / "build_library.sh").read_text()
     assert "./autogen.sh" in content
 
 
 def test_build_library_sh_autotools_autoreconf_runs_autoreconf(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path / "out")
     content = (result.output_path / "build_library.sh").read_text()
     assert "autoreconf -fiv" in content
 
@@ -297,13 +299,13 @@ def test_build_library_sh_autotools_autoreconf_runs_autoreconf(tmp_path: Path) -
 
 
 def test_dockerfile_autotools_configure_no_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     assert "apt-get" not in content
 
 
 def test_dockerfile_autotools_autogen_has_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     assert "apt-get install" in content
     assert "autoconf" in content
@@ -312,7 +314,7 @@ def test_dockerfile_autotools_autogen_has_apt_deps(tmp_path: Path) -> None:
 
 
 def test_dockerfile_autotools_autoreconf_has_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     assert "apt-get install" in content
     assert "autoconf" in content
@@ -332,20 +334,19 @@ def test_dockerfile_autotools_autoreconf_has_apt_deps(tmp_path: Path) -> None:
 def test_provenance_autotools_setup(
     fixture_name: str, expected_setup: str, tmp_path: Path
 ) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path)
+    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["autotools_setup"] == expected_setup
 
 
 def test_provenance_non_autotools_no_autotools_setup_key(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert "autotools_setup" not in provenance
 
 
 def test_existing_output_dir_raises(tmp_path: Path) -> None:
-    analysis = _analysis("cmake_repo")
-    output_path = tmp_path / analysis.project_name / "output" / "oss-fuzz"
+    output_path = tmp_path / "out"
     output_path.mkdir(parents=True)
-    with pytest.raises(OutputDirectoryExistsError):
-        generate_oss_fuzz(analysis, tmp_path)
+    with pytest.raises(FileExistsError):
+        generate_oss_fuzz(_analysis("cmake_repo"), output_path)

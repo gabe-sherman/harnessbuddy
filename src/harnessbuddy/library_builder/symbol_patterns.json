@@ -1,0 +1,65 @@
+{
+  "-lm": [
+    "^(sin|cos|tan|asin|acos|atan2?)(h?)([fl]?)$",
+    "^(pow|exp2?|expm1|log|log2|log10|log1p)([fl]?)$",
+    "^(sqrt|cbrt|hypot)([fl]?)$",
+    "^(fabs|floor|ceil|round|trunc|rint|nearbyint)([fl]?)$",
+    "^(fma|fmod|remainder|fdim|fmax|fmin)([fl]?)$",
+    "^(erf|erfc|lgamma|tgamma)([fl]?)$",
+    "^(ldexp|frexp|modf|scalbn|ilogb|logb)([fl]?)$"
+  ],
+  "-lz": [
+    "^(inflate|deflate)",
+    "^compress2?$",
+    "^uncompress2?$",
+    "^gz",
+    "^adler32",
+    "^crc32",
+    "^zlib"
+  ],
+  "-lpthread": ["^pthread_"],
+  "-lssl": ["^SSL_", "^TLS_"],
+  "-lcrypto": [
+    "^BIO_", "^X509_", "^EVP_", "^OPENSSL_", "^ERR_",
+    "^AES_", "^RAND_",
+    "^d2i_", "^i2d_", "^PEM_",
+    "^CRYPTO_", "^EC_", "^RSA_", "^DSA_", "^DH_"
+  ],
+  "-lbz2": ["^BZ2_"],
+  "-llzma": ["^lzma_"],
+  "-ldl": ["^dl(open|sym|close|error)$"],
+  "-lrt": [
+    "^clock_(gettime|getres|settime)$",
+    "^shm_(open|unlink)$",
+    "^aio_(read|write|error|return|suspend|cancel|fsync)$",
+    "^timer_(create|delete|gettime|settime|getoverrun)$",
+    "^mq_"
+  ],
+  "-lresolv": [
+    "^res_(init|query|search|querydomain|send|mkquery|nmkquery)$",
+    "^ns_initparse$",
+    "^dn_expand$"
+  ],
+  "-lzstd": ["^ZSTD_"],
+  "-llz4": ["^LZ4_", "^LZ4F_"],
+  "-liconv": ["^iconv"],
+  "-lxml2": ["^xml", "^XML_"],
+  "-lsqlite3": ["^sqlite3_"],
+  "-lpcre2-8": ["^pcre2_"],
+  "-lffi": ["^ffi_"],
+  "-lcurl": ["^curl_"],
+  "-levent": ["^event_base_", "^event_new$", "^event_add$", "^event_del$", "^evbuffer_", "^bufferevent_", "^evhttp_", "^evdns_"],
+  "-luv": ["^uv_"],
+  "-lpng": ["^png_"],
+  "-ljpeg": ["^jpeg_"],
+  "-lwebp": ["^WebP", "^WebPDecode", "^WebPEncode"],
+  "-lfreetype": ["^FT_"],
+  "-lsodium": ["^sodium_", "^crypto_sign", "^crypto_box", "^crypto_secretbox", "^crypto_hash", "^crypto_auth", "^randombytes_"],
+  "-lgcrypt": ["^gcry_"],
+  "-lssh2": ["^libssh2_"],
+  "-lseccomp": ["^seccomp_"],
+  "-lgmp": ["^mpz_", "^mpq_", "^mpf_", "^mpn_", "^__gmp"],
+  "-larchive": ["^archive_"],
+  "-lmagic": ["^magic_"],
+  "-lgit2": ["^git_"]
+}

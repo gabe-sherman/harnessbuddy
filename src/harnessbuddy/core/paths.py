@@ -18,3 +18,8 @@ def project_dir(state_dir: Path, project_name: str) -> Path:
 def project_src_dir(state_dir: Path, project_name: str) -> Path:
     """Return the cloned source directory (.harnessbuddy/<project>/src/)."""
     return state_dir / project_name / "src"
+
+
+def project_state_file(state_dir: Path, project_name: str) -> Path:
+    """Return the per-project persistent state file (.harnessbuddy/<project>/state.json)."""
+    return state_dir / project_name / "state.json"

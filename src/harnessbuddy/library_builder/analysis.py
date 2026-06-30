@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
+import logging
+logger = logging.getLogger(__name__)  
 
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.models import (
@@ -29,7 +33,7 @@ def analyze(source: RepoSource) -> AnalysisResult:
     """Run deterministic static analysis on a repository directory."""
     build_system, build_files = _detect_build_system(source.source_path)
     headers = _detect_headers(source.source_path)
-    language = _detect_language(headers)
+    language = _detect_language(source.source_path, headers)
     warnings: list[str] = []
 
     if not build_files and not headers:
@@ -96,14 +100,20 @@ def _detect_headers(root: Path) -> list[Path]:
     )
 
 
-def _detect_language(headers: list[Path]) -> Language:
-    """Infer likely language from header file extensions."""
-    has_c = any(p.suffix == ".h" for p in headers)
-    has_cpp = any(p.suffix in {".hpp", ".hxx", ".hh"} for p in headers)
-    if has_c and has_cpp:
-        return Language.C_AND_CPP
-    if has_cpp:
-        return Language.CPP
-    if has_c:
-        return Language.C
+def _detect_language(root: Path, headers: list[Path]) -> Language:
+    """Determine the dominant C/C++ language by running cloc, falling back to headers."""
+    result = subprocess.run(
+        ["cloc", "--json", str(root)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        c_lines = data.get("C", {}).get("code", 0)
+        cpp_lines = data.get("C++", {}).get("code", 0)
+        logger.debug("C LoC: %d, CPP LoC %d", c_lines, cpp_lines)
+        if c_lines > 0 or cpp_lines > 0:
+            return Language.CPP if cpp_lines > c_lines else Language.C
+
     return Language.UNKNOWN

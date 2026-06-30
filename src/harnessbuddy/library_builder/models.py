@@ -22,7 +22,6 @@ class AutotoolsSetup(Enum):
 class Language(Enum):
     C = "c"
     CPP = "cpp"
-    C_AND_CPP = "c_and_cpp"
     UNKNOWN = "unknown"
 
 
@@ -51,6 +50,18 @@ class BuildExplorationResult:
     exit_code: int
     duration_seconds: float
     llm_used: bool = False
+
+
+@dataclass
+class HarnessExplorationResult:
+    succeeded: bool
+    static_libs: list[Path]
+    include_dir: Path
+    transitive_link_flags: list[str]
+    stdout: str
+    stderr: str
+    exit_code: int
+    missing_system_libs: list[str] = field(default_factory=list)
 
 
 @dataclass
