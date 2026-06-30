@@ -8,3 +8,4 @@ dist/
 .harnessbuddy/
 .ruff_cache/
 .mypy_cache/
+tests/fixtures

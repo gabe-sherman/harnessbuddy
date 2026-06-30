@@ -116,7 +116,7 @@ def broken_cmake_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[BuildE
     )
     (src / "stub.h").write_text("#pragma once\n")
     workdir = tmp_path_factory.mktemp("broken_cmake_work")
-    result = explore(analyze(RepoSource(src, "https://example.com", "broken", None)), workdir)
+    result = build_library(analyze(RepoSource(src, "https://example.com", "broken", None)), workdir)
     return result, workdir
 
 
@@ -136,6 +136,49 @@ class TestStaticBuilds:
         ):
             yield
 
+    def test_library_builds(self, real_library_build: LibBuild) -> None:
+        result = real_library_build.result
+        assert result.succeeded, f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"
+
+    def test_static_library_installed(self, real_library_build: LibBuild) -> None:
+        lib_dir = real_library_build.workdir / "install" / "lib"
+        assert any(lib_dir.glob("*.a")), f"no static library in {lib_dir}"
+
+    def test_headers_installed(self, real_library_build: LibBuild) -> None:
+        include_dir = real_library_build.workdir / "install" / "include"
+        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
+
+    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.source / "build_library.sh").exists()
+
+    def test_build_env_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.workdir / "build.env").exists()
+
+    def test_build_env_has_include_flags(self, real_library_build: LibBuild) -> None:
+        workdir = real_library_build.workdir
+        env = (workdir / "build.env").read_text()
+        assert f"-I{workdir.resolve()}/install/include" in env
+
+    def test_build_env_has_library_flags(self, real_library_build: LibBuild) -> None:
+        workdir = real_library_build.workdir
+        env = (workdir / "build.env").read_text()
+        assert f"-L{workdir.resolve()}/install/lib" in env
+
+    def test_result_succeeded(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.succeeded is True
+
+    def test_result_exit_code_zero(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.result.exit_code == 0
+
+    def test_result_command_is_bash_script(self, real_library_build: LibBuild) -> None:
+        cmd = real_library_build.result.command
+        assert cmd[0] == "bash"
+        assert Path(cmd[1]).name == "build_library.sh"
+
+@pytest.mark.parametrize(
+    "real_library_build", _DYN_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestDynamicBuilds:
     def test_library_builds(self, real_library_build: LibBuild) -> None:
         result = real_library_build.result
         assert result.succeeded, f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"

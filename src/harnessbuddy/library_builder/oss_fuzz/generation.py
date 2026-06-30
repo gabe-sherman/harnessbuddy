@@ -95,7 +95,7 @@ def generate_oss_fuzz(
 def _write_project_yaml(output_path: Path, analysis: AnalysisResult) -> Path:
     path = output_path / "project.yaml"
     language = "c" if analysis.language == Language.C else "c++"
-    path.write_text(f"homepage: {analysis.clone_url}\nlanguage: {language}\n")
+    path.write_text(f"homepage: {analysis.clone_url}\nlanguage: {language}\nsanitizers:\n  - address\n  - undefined\nmain_repo: {analysis.clone_url}\n")
     return path
 
 
