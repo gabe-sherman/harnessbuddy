@@ -12,11 +12,7 @@ from harnessbuddy.library_builder.scripts import build_harness_script
 _MAX_ATTEMPTS = 5
 
 _PROBE_C = "#include <stddef.h>\n#include <stdint.h>\nint main(void) { return 0; }\n"
-_PROBE_CC = (
-    "#include <stddef.h>\n"
-    "#include <stdint.h>\n"
-    'extern "C" int main(void) { return 0; }\n'
-)
+_PROBE_CC = '#include <stddef.h>\n#include <stdint.h>\nextern "C" int main(void) { return 0; }\n'
 
 _PATTERNS_FILE = Path(__file__).parent / "symbol_patterns.json"
 
@@ -148,6 +144,7 @@ def _extract_undefined_symbols(stderr: str) -> list[str]:
     for m in re.finditer(r'"_([A-Za-z_][A-Za-z0-9_]*)",\s+referenced from:', stderr):
         symbols.append(m.group(1))
     return symbols
+
 
 def _requires_cxx(stderr: str) -> bool:
     return bool(_CXX_ABI_RE.search(stderr))

@@ -12,10 +12,7 @@ from harnessbuddy.library_builder.models import (
 )
 
 _HOST_ENV_FALLBACKS = (
-    '\nCC="${CC:-cc}"\n'
-    'CXX="${CXX:-c++}"\n'
-    'CFLAGS="${CFLAGS:-}"\n'
-    'CXXFLAGS="${CXXFLAGS:-}"\n'
+    '\nCC="${CC:-cc}"\nCXX="${CXX:-c++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
 )
 
 
@@ -101,9 +98,7 @@ def _build_body(
         return (
             "\n"
             "# build system: autotools\n"
-            "\n"
-            + setup_step
-            + f"mkdir -p {build_dir}\n"
+            "\n" + setup_step + f"mkdir -p {build_dir}\n"
             "(\n"
             f"  cd {build_dir}\n"
             '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
@@ -211,10 +206,7 @@ def build_harness_script(
             'CXXFLAGS="${CXXFLAGS:--O2 -g}"\n'
             "\n"
         )
-    preamble += (
-        'INSTALL_DIR="$SCRIPT_DIR/install"\n'
-        f'HARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'
-    )
+    preamble += f'INSTALL_DIR="$SCRIPT_DIR/install"\nHARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'
     if not oss_fuzz:
         preamble += 'OUT_DIR="$SCRIPT_DIR/out"\nmkdir -p "$OUT_DIR"\n'
     preamble += "\n"

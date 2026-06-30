@@ -106,15 +106,11 @@ def _write_dockerfile(output_path: Path, analysis: AnalysisResult) -> Path:
     apt_packages.extend(analysis.system_packages)
     if apt_packages:
         pkgs = " ".join(apt_packages)
-        lines.append(
-            f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n"
-        )
+        lines.append(f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n")
 
     lines.append(f"RUN git clone {analysis.clone_url} $SRC/{analysis.project_name}\n")
     if analysis.repo_ref is not None:
-        lines.append(
-            f"RUN git -C $SRC/{analysis.project_name} checkout {analysis.repo_ref}\n"
-        )
+        lines.append(f"RUN git -C $SRC/{analysis.project_name} checkout {analysis.repo_ref}\n")
     lines += [
         "COPY harness_source $SRC/harness_source\n",
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n",

@@ -4,15 +4,15 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from harnessbuddy.cli import build_library
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
-from harnessbuddy.cli import build_library
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
@@ -44,18 +44,28 @@ LIBS = [
     LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
     LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
     LibSpec("https://github.com/HDFGroup/hdf5.git", "hdf5", BuildSystem.CMAKE, True),
-    LibSpec("https://github.com/c-ares/c-ares.git", "c-ares", BuildSystem.CMAKE, False),  # non-canonical static flag (-DCARES_STATIC)
-    LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),  # requires libpsl
+    LibSpec(
+        "https://github.com/c-ares/c-ares.git", "c-ares", BuildSystem.CMAKE, False
+    ),  # non-canonical static flag (-DCARES_STATIC)
+    LibSpec(
+        "https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False
+    ),  # requires libpsl
     # make
     LibSpec("https://github.com/lz4/lz4.git", "lz4", BuildSystem.MAKEFILE, True),
     # autotools
-    LibSpec("https://github.com/libimobiledevice/libplist", "libplist", BuildSystem.AUTOTOOLS, True),
+    LibSpec(
+        "https://github.com/libimobiledevice/libplist", "libplist", BuildSystem.AUTOTOOLS, True
+    ),
     LibSpec("https://github.com/gpac/gpac.git", "gpac", BuildSystem.AUTOTOOLS, True),
     LibSpec("https://github.com/file/file.git", "file", BuildSystem.AUTOTOOLS, True),
     LibSpec("https://github.com/mm2/Little-CMS.git", "lcms", BuildSystem.AUTOTOOLS, True),
     # meson
-    LibSpec("https://gitlab.gnome.org/GNOME/tinysparql.git", "tinysparql", BuildSystem.MESON, False),  # requires external deps
-    LibSpec("https://github.com/rauc/rauc.git", "rauc", BuildSystem.MESON, False),  # requires dbus-1
+    LibSpec(
+        "https://gitlab.gnome.org/GNOME/tinysparql.git", "tinysparql", BuildSystem.MESON, False
+    ),  # requires external deps
+    LibSpec(
+        "https://github.com/rauc/rauc.git", "rauc", BuildSystem.MESON, False
+    ),  # requires dbus-1
 ]
 
 _STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
@@ -118,13 +128,17 @@ class TestStaticBuilds:
     def _forbid_agent(self) -> None:
         with patch(
             "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
-            side_effect=AssertionError("invoke_library_builder_agent must not be called in static build tests"),
+            side_effect=AssertionError(
+                "invoke_library_builder_agent must not be called in static build tests"
+            ),
         ):
             yield
 
     def test_library_builds(self, real_harness_build: LibBuild) -> None:
         result = real_harness_build.result
-        assert result.succeeded, f"{real_harness_build.spec.project_name} build failed:\n{result.stderr}"
+        assert result.succeeded, (
+            f"{real_harness_build.spec.project_name} build failed:\n{result.stderr}"
+        )
 
     def test_static_library_installed(self, real_harness_build: LibBuild) -> None:
         lib_dir = real_harness_build.workdir / "install" / "lib"
@@ -160,6 +174,7 @@ class TestStaticBuilds:
         cmd = real_harness_build.result.command
         assert cmd[0] == "bash"
         assert Path(cmd[1]).name == "build_library.sh"
+
 
 @pytest.mark.parametrize(
     "real_harness_build", _DYN_LIBS, indirect=True, ids=lambda lib: lib.project_name
@@ -167,7 +182,9 @@ class TestStaticBuilds:
 class TestDynamicBuilds:
     def test_library_builds(self, real_harness_build: LibBuild) -> None:
         result = real_harness_build.result
-        assert result.succeeded, f"{real_harness_build.spec.project_name} build failed:\n{result.stderr}"
+        assert result.succeeded, (
+            f"{real_harness_build.spec.project_name} build failed:\n{result.stderr}"
+        )
 
     def test_static_library_installed(self, real_harness_build: LibBuild) -> None:
         lib_dir = real_harness_build.workdir / "install" / "lib"
@@ -203,6 +220,7 @@ class TestDynamicBuilds:
         cmd = real_harness_build.result.command
         assert cmd[0] == "bash"
         assert Path(cmd[1]).name == "build_library.sh"
+
 
 @pytest.mark.parametrize(
     "real_harness_build",
@@ -212,14 +230,17 @@ class TestDynamicBuilds:
 )
 class TestZlibBuild:
     def test_builds(self, real_harness_build: LibBuild) -> None:
-        assert real_harness_build.result.succeeded, f"zlib build failed:\n{real_harness_build.result.stderr}"
+        assert real_harness_build.result.succeeded, (
+            f"zlib build failed:\n{real_harness_build.result.stderr}"
+        )
 
     def test_library_path_exists(self, real_harness_build: LibBuild) -> None:
         build_harness_source = real_harness_build.workdir / "build_harness.sh"
         assert build_harness_source.exists()
-        with open(build_harness_source, "r") as f:
+        with open(build_harness_source) as f:
             contents = f.read()
             assert "libz.a" in contents
+
 
 @pytest.mark.parametrize(
     "real_harness_build",
@@ -229,12 +250,13 @@ class TestZlibBuild:
 )
 class TestLibtiffBuild:
     def test_builds(self, real_harness_build: LibBuild) -> None:
-        assert real_harness_build.result.succeeded, f"libtiff build failed:\n{real_harness_build.result.stderr}"
+        assert real_harness_build.result.succeeded, (
+            f"libtiff build failed:\n{real_harness_build.result.stderr}"
+        )
 
     def test_system_package_inclusion(self, real_harness_build: LibBuild) -> None:
         build_harness_source = real_harness_build.workdir / "build_harness.sh"
         assert build_harness_source.exists()
-        with open(build_harness_source, "r") as f:
+        with open(build_harness_source) as f:
             contents = f.read()
-            assert "-llzma" in contents          
-
+            assert "-llzma" in contents

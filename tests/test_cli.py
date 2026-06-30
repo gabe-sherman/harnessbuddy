@@ -26,12 +26,15 @@ _REPO = "https://github.com/example/repo.git"
 @pytest.fixture(autouse=True)
 def mock_host_build() -> Generator[MagicMock]:
     """Stub out the actual host build so CLI tests don't invoke cmake/make/etc."""
-    with patch(
-        "harnessbuddy.library_builder.exploration.run_command_streaming",
-        return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-    ) as m, patch(
-        "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-        return_value=[],
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
+        ) as m,
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=[],
+        ),
     ):
         yield m
 
@@ -244,15 +247,17 @@ def test_no_agents_skips_agent_when_build_fails(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
-    with patch(
-        "harnessbuddy.library_builder.exploration.run_command_streaming",
-        return_value=failed_result,
-    ), patch(
-        "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-        return_value=["missing artifacts"],
-    ), patch(
-        "harnessbuddy.library_builder.agents.invoke_library_builder_agent"
-    ) as mock_agent:
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=["missing artifacts"],
+        ),
+        patch("harnessbuddy.library_builder.agents.invoke_library_builder_agent") as mock_agent,
+    ):
         main(
             [
                 "generate",

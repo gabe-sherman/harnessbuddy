@@ -20,20 +20,22 @@ _INLINE_INSTRUCTIONS: str = (
 _ACTION_REQUIRED = "ACTION_REQUIRED"
 
 _BUDGET_PATTERN = re.compile(
-    "|".join((
-        # Claude: 5-hour session limit
-        r"reached the 5 hour limit",
-        r"session time limit",
-        # Codex/OpenAI: quota and rate limit errors
-        r"usage limit (?:reached|exceeded)",
-        r"reached (?:your|the).{0,80}usage limit",
-        r"rate limit (?:reached|exceeded)",
-        r"quota (?:exceeded|reached)",
-        r"exceeded your current quota",
-        r"too many requests",
-        r"\b429\b",
-        r"try again (?:after|in) \d+",
-    )),
+    "|".join(
+        (
+            # Claude: 5-hour session limit
+            r"reached the 5 hour limit",
+            r"session time limit",
+            # Codex/OpenAI: quota and rate limit errors
+            r"usage limit (?:reached|exceeded)",
+            r"reached (?:your|the).{0,80}usage limit",
+            r"rate limit (?:reached|exceeded)",
+            r"quota (?:exceeded|reached)",
+            r"exceeded your current quota",
+            r"too many requests",
+            r"\b429\b",
+            r"try again (?:after|in) \d+",
+        )
+    ),
     re.IGNORECASE | re.DOTALL,
 )
 

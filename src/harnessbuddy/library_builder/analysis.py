@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
-import logging
-logger = logging.getLogger(__name__)  
 
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.models import (
@@ -14,6 +13,7 @@ from harnessbuddy.library_builder.models import (
     Language,
 )
 
+logger = logging.getLogger(__name__)
 _C_HEADER_EXTENSIONS: frozenset[str] = frozenset({".h", ".hpp", ".hxx", ".hh"})
 _VCS_DIRS: frozenset[str] = frozenset({".git", ".hg", ".svn"})
 
@@ -33,7 +33,7 @@ def analyze(source: RepoSource) -> AnalysisResult:
     """Run deterministic static analysis on a repository directory."""
     build_system, build_files = _detect_build_system(source.source_path)
     headers = _detect_headers(source.source_path)
-    language = _detect_language(source.source_path, headers)
+    language = _detect_language(source.source_path)
     warnings: list[str] = []
 
     if not build_files and not headers:
@@ -100,7 +100,7 @@ def _detect_headers(root: Path) -> list[Path]:
     )
 
 
-def _detect_language(root: Path, headers: list[Path]) -> Language:
+def _detect_language(root: Path) -> Language:
     """Determine the dominant C/C++ language by running cloc, falling back to headers."""
     result = subprocess.run(
         ["cloc", "--json", str(root)],

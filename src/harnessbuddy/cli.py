@@ -145,9 +145,7 @@ def load_project_state(state_file: Path) -> _ProjectState:
             state["unknown_libs"] = [str(p) for p in data["unknown_libs"]]
         if isinstance(data.get("sources"), dict):
             state["sources"] = {
-                k: [str(p) for p in v]
-                for k, v in data["sources"].items()
-                if isinstance(v, list)
+                k: [str(p) for p in v] for k, v in data["sources"].items() if isinstance(v, list)
             }
         return state
     except (json.JSONDecodeError, OSError):
@@ -192,6 +190,7 @@ def build_library(
     result = explore(analysis, workspace, timeout=timeout)
     if not result.succeeded and agent is not None:
         from harnessbuddy.library_builder.agents import invoke_library_builder_agent
+
         result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
     return result
 
@@ -238,8 +237,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     except UnsupportedRepositoryError:
         print("No C/C++ build signals found in this repository.", file=sys.stderr)
         return 1
-    
-    parent_path = Path(args.output) if args.output else Path.cwd() 
+
+    parent_path = Path(args.output) if args.output else Path.cwd()
     base_output = parent_path / analysis.project_name / "output"
     if base_output.exists():
         overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")

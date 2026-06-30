@@ -331,9 +331,7 @@ def test_dockerfile_autotools_autoreconf_has_apt_deps(tmp_path: Path) -> None:
         ("autotools_repo", "autoreconf"),
     ],
 )
-def test_provenance_autotools_setup(
-    fixture_name: str, expected_setup: str, tmp_path: Path
-) -> None:
+def test_provenance_autotools_setup(fixture_name: str, expected_setup: str, tmp_path: Path) -> None:
     result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
     provenance = json.loads((result.output_path / "provenance.json").read_text())
     assert provenance["autotools_setup"] == expected_setup

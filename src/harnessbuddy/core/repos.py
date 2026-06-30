@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 import subprocess
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
-import logging
-logger = logging.getLogger(__name__)  
+
+logger = logging.getLogger(__name__)
+
 
 class RepositoryNotFoundError(Exception):
     """Local path does not exist or is not a directory."""
@@ -45,7 +46,7 @@ def ingest_url(
     if not dest.parent.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", url, str(dest)], check=True)
-    return RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
+    return repo_source
 
 
 def ingest_local(

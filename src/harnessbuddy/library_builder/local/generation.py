@@ -54,7 +54,7 @@ def _write_setup_sh(
         "\n",
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n',
         "\n",
-        f"git clone {analysis.clone_url} \"$SCRIPT_DIR/src\"\n",
+        f'git clone {analysis.clone_url} "$SCRIPT_DIR/src"\n',
     ]
     if analysis.repo_ref is not None:
         lines.append(f'git -C "$SCRIPT_DIR/src" checkout {analysis.repo_ref}\n')
@@ -89,13 +89,9 @@ def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path
     return path
 
 
-def _write_build_harness_sh(
-    output_path: Path, harness: HarnessExplorationResult | None
-) -> Path:
+def _write_build_harness_sh(output_path: Path, harness: HarnessExplorationResult | None) -> Path:
     path = output_path / "build_harness.sh"
     content = build_harness_script(harness) if harness is not None else _BUILD_HARNESS_SH_STUB
     path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
-
-
