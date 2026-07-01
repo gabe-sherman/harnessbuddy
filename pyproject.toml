@@ -33,4 +33,7 @@ target-version = "py313"
 exclude = [".devcontainer"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "ARG", "SIM", "C4", "RUF"]
+select = ["E", "F", "I", "B", "UP", "ARG", "SIM", "C4", "RUF", "C90", "PLR0913"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8

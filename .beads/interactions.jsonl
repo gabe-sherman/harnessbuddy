@@ -1,0 +1,1 @@
+{"id":"int-96fe51b7","kind":"field_change","created_at":"2026-07-01T06:33:44.156623Z","actor":"Gabe Sherman","issue_id":"harnessbuddy-3rj.1","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Added C90/PLR0913 to ruff select and mccabe max-complexity=8; ruff check now fails with C901 naming _cmd_generate as expected"}}
