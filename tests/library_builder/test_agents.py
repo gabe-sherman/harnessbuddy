@@ -129,6 +129,26 @@ def test_harness_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
     assert preamble_line not in prompt
 
 
+def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> None:
+    action_required_text = "ACTION REQUIRED: install libfoo-dev"
+    with (
+        patch(
+            "harnessbuddy.library_builder.agents.run_command_streaming",
+            return_value=RunResult(
+                stdout=action_required_text, stderr="", exit_code=1, duration_seconds=1.0
+            ),
+        ),
+        pytest.raises(BuildFailureError) as exc_info,
+    ):
+        invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `foo'"),
+            tmp_path / "work" / "install",
+            tmp_path / "work",
+        )
+    assert action_required_text in exc_info.value.output
+
+
 def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown agent tool"):
         invoke_harness_builder_agent(
