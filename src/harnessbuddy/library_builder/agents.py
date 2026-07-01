@@ -79,6 +79,16 @@ class LLMBudgetError(Exception):
         self.output = output
 
 
+def _raise_for_agent_failure(exit_code: int, combined_output: str) -> None:
+    """Raise LLMBudgetError or BuildFailureError if agent output signals either condition."""
+    if exit_code == 0:
+        return
+    if _BUDGET_PATTERN.search(combined_output):
+        raise LLMBudgetError(combined_output)
+    if _ACTION_REQUIRED in combined_output:
+        raise BuildFailureError(combined_output)
+
+
 def build_library_prompt(
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
@@ -123,13 +133,7 @@ def invoke_library_builder_agent(
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     run_result = run_command_streaming(cmd, analysis.source_path, timeout)
-
-    if run_result.exit_code != 0:
-        combined = run_result.stdout + run_result.stderr
-        if _BUDGET_PATTERN.search(combined):
-            raise LLMBudgetError(combined)
-        if _ACTION_REQUIRED in combined:
-            raise BuildFailureError(combined)
+    _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
 
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
@@ -205,11 +209,7 @@ def invoke_harness_builder_agent(
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     run_result = run_command_streaming(cmd, workdir, timeout)
-
-    if run_result.exit_code != 0:
-        combined = run_result.stdout + run_result.stderr
-        if _BUDGET_PATTERN.search(combined):
-            raise LLMBudgetError(combined)
+    _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
 
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
