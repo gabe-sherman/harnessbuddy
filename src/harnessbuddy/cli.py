@@ -395,6 +395,7 @@ def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are dist
 
 def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
+    from harnessbuddy.library_builder.agents import BuildFailureError
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
 
     state_dir = default_state_dir()
@@ -418,16 +419,30 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     state = load_project_state(state_file)
     agent = None if args.no_agents else args.agent
 
-    result = _run_library_phase(analysis, workspace, agent, state, state_file)
+    try:
+        result = _run_library_phase(analysis, workspace, agent, state, state_file)
+    except BuildFailureError as exc:
+        print(
+            f"Agent requires user action before the build can proceed:\n{exc.output}",
+            file=sys.stderr,
+        )
+        return 1
     if not result.succeeded:
         print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
         return 1
     print("Successfully produced library build!")
 
     install_dir = workspace / "install"
-    harness_result, brew_packages = _run_harness_phase(
-        analysis, install_dir, workspace, agent, state, state_file
-    )
+    try:
+        harness_result, brew_packages = _run_harness_phase(
+            analysis, install_dir, workspace, agent, state, state_file
+        )
+    except BuildFailureError as exc:
+        print(
+            f"Agent requires user action before the harness build can proceed:\n{exc.output}",
+            file=sys.stderr,
+        )
+        return 1
 
     return _generate_outputs(
         analysis, local_output_path, oss_output_path, result, harness_result, brew_packages
