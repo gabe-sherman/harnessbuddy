@@ -1,0 +1,8 @@
+{"type": "thread.started", "thread_id": "thread_xyz789"}
+{"type": "turn.started"}
+{"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "bash build_library.sh", "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "bash build_library.sh", "exit_code": 1, "aggregated_output": "CMake Error: could not find package", "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "file_change", "path": "build_library.sh", "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_3", "type": "command_execution", "command": "bash build_library.sh", "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "command_execution", "command": "bash build_library.sh", "exit_code": 0, "aggregated_output": "[100%] Built target foo", "status": "completed"}}
+{"type": "turn.completed", "usage": {"input_tokens": 5230, "output_tokens": 941, "cached_input_tokens": 1024}}

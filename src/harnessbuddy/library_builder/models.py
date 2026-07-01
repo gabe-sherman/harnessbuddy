@@ -54,6 +54,10 @@ class BuildExplorationResult:
     # the script's paths are $SCRIPT_DIR-relative and it can be copied verbatim into
     # generated output directories (preserving any agent fixes).
     script_path: Path | None = None
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    transcript_path: Path | None = None
 
 
 @dataclass
@@ -72,6 +76,11 @@ class HarnessExplorationResult:
     # $SCRIPT_DIR-relative paths, so it can be copied verbatim into the local output
     # directory (preserving any agent fixes) without further validation.
     script_path: Path | None = None
+    duration_seconds: float = 0.0
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    transcript_path: Path | None = None
 
 
 @dataclass

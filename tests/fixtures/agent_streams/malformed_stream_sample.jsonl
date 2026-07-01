@@ -1,0 +1,2 @@
+this is not valid json at all {{{
+{"type": "some_unrecognized_event_type", "detail": "no known handler for this shape"}

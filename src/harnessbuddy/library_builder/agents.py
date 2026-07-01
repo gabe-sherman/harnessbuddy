@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from harnessbuddy.core.subprocesses import run_command_streaming
+from harnessbuddy.core.agent_stream import (
+    AgentRunSummary,
+    AgentStreamResult,
+    format_agent_summary,
+    run_agent_streaming,
+    write_agent_report,
+)
 from harnessbuddy.library_builder.exploration import (
     _validate_install_artifacts,
     is_standard_source_layout,
@@ -94,6 +100,29 @@ def _raise_for_agent_failure(exit_code: int, combined_output: str) -> None:
         raise BuildFailureError(combined_output)
 
 
+def _determine_outcome(exit_code: int, combined_text: str) -> str:
+    """Classify an agent invocation's outcome for the persisted/printed summary."""
+    if _BUDGET_PATTERN.search(combined_text):
+        return "budget_limited"
+    if exit_code == -1:
+        return "timed_out"
+    return "succeeded" if exit_code == 0 else "failed"
+
+
+def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -> None:
+    """Write the persisted transcript+summary report and print the summary to the terminal."""
+    summary = AgentRunSummary(
+        backend=tool,
+        outcome=_determine_outcome(result.exit_code, result.combined_text),
+        duration_seconds=result.duration_seconds,
+        cost_usd=result.cost_usd,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )
+    write_agent_report(report_path, result.combined_text, summary)
+    print(format_agent_summary(summary))
+
+
 def build_library_prompt(
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
@@ -138,11 +167,12 @@ def invoke_library_builder_agent(
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    run_result = run_command_streaming(cmd, workdir, timeout)
-    _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
+    result = run_agent_streaming(cmd, workdir, timeout, tool)
+    _report_agent_run(workdir / "agent_library_build.log", tool, result)
+    _raise_for_agent_failure(result.exit_code, result.combined_text)
 
-    succeeded = run_result.exit_code == 0
-    stderr = run_result.stderr
+    succeeded = result.exit_code == 0
+    stderr = ""
     if succeeded:
         validation_errors = _validate_install_artifacts(workdir / "install")
         if validation_errors:
@@ -153,14 +183,18 @@ def invoke_library_builder_agent(
         build_system=analysis.build_system,
         succeeded=succeeded,
         command=cmd,
-        stdout=run_result.stdout,
+        stdout=result.combined_text,
         stderr=stderr,
-        exit_code=run_result.exit_code,
-        duration_seconds=run_result.duration_seconds,
+        exit_code=result.exit_code,
+        duration_seconds=result.duration_seconds,
         llm_used=True,
         script_path=(
             workdir / "build_library.sh" if is_standard_source_layout(analysis, workdir) else None
         ),
+        cost_usd=result.cost_usd,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        transcript_path=workdir / "agent_library_build.log",
     )
 
 
@@ -216,11 +250,12 @@ def invoke_harness_builder_agent(
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    run_result = run_command_streaming(cmd, paths.workdir, timeout)
-    _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
+    result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
+    _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
+    _raise_for_agent_failure(result.exit_code, result.combined_text)
 
-    succeeded = run_result.exit_code == 0
-    stderr = run_result.stderr
+    succeeded = result.exit_code == 0
+    stderr = ""
     missing_system_libs = harness.missing_system_libs
     static_libs = harness.static_libs
     transitive_link_flags = harness.transitive_link_flags
@@ -245,10 +280,15 @@ def invoke_harness_builder_agent(
         static_libs=static_libs,
         include_dir=harness.include_dir,
         transitive_link_flags=transitive_link_flags,
-        stdout=run_result.stdout,
+        stdout=result.combined_text,
         stderr=stderr,
-        exit_code=run_result.exit_code,
+        exit_code=result.exit_code,
         missing_system_libs=missing_system_libs if not succeeded else [],
         llm_used=True,
         script_path=script_path if succeeded else None,
+        duration_seconds=result.duration_seconds,
+        cost_usd=result.cost_usd,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        transcript_path=paths.workdir / "agent_harness_build.log",
     )

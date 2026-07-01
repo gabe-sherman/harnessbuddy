@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.exploration import explore, is_standard_source_layout
-from harnessbuddy.library_builder.models import AnalysisResult, BuildSystem, Language
+from harnessbuddy.library_builder.models import (
+    AnalysisResult,
+    BuildExplorationResult,
+    BuildSystem,
+    Language,
+)
 
 _FAKE_URL = "https://github.com/example/testlib.git"
 
@@ -27,7 +32,7 @@ def _ok_result() -> RunResult:
     return RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1)
 
 
-def _run_explore(workdir: Path, source_path: Path) -> object:
+def _run_explore(workdir: Path, source_path: Path) -> tuple[BuildExplorationResult, MagicMock]:
     with (
         patch(
             "harnessbuddy.library_builder.exploration.run_command_streaming",

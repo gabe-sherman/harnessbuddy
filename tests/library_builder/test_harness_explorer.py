@@ -80,6 +80,7 @@ def test_script_path_set_on_success(tmp_path: Path) -> None:
 
     assert result.succeeded is True
     assert result.script_path == tmp_path / "build_harness.sh"
+    assert result.script_path is not None
     assert result.script_path.exists()
 
 

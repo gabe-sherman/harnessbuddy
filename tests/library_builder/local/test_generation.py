@@ -147,7 +147,7 @@ def test_existing_output_dir_raises(tmp_path: Path) -> None:
 # build_library.sh — reuse of the explored (possibly agent-fixed) script
 
 
-def _exploration_with_script(script_path: Path) -> BuildExplorationResult:
+def _exploration_with_script(script_path: Path | None) -> BuildExplorationResult:
     return BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=True,
@@ -171,7 +171,7 @@ def test_build_library_sh_copies_explored_script_verbatim(tmp_path: Path) -> Non
 
 
 def test_build_library_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
-    exploration = _exploration_with_script(None)  # type: ignore[arg-type]
+    exploration = _exploration_with_script(None)
     result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
     content = (result.output_path / "build_library.sh").read_text()
     assert "$SCRIPT_DIR/src" in content
