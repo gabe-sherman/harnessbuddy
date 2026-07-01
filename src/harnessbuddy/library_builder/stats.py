@@ -20,6 +20,8 @@ class AgentPhaseStats:
     invoked: bool
     duration_seconds: float | str
     cost_usd: float | str
+    input_tokens: int | str
+    output_tokens: int | str
     summary: str
 
     def to_dict(self) -> dict[str, object]:
@@ -27,21 +29,25 @@ class AgentPhaseStats:
             "invoked": self.invoked,
             "duration_seconds": self.duration_seconds,
             "cost_usd": self.cost_usd,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
             "summary": self.summary,
         }
 
 
 def not_invoked_agent_stats() -> AgentPhaseStats:
-    return AgentPhaseStats(invoked=False, duration_seconds="N/A", cost_usd="N/A", summary="N/A")
+    return AgentPhaseStats(invoked=False, duration_seconds="N/A", cost_usd="N/A",  input_tokens="N/A",  output_tokens="N/A", summary="N/A")
 
 
 def _invoked_agent_stats(
-    duration_seconds: float, cost_usd: float | None, summary: str | None
+    duration_seconds: float, cost_usd: float | None, input_tokens: int, output_tokens: int, summary: str | None
 ) -> AgentPhaseStats:
     return AgentPhaseStats(
         invoked=True,
         duration_seconds=duration_seconds,
         cost_usd=cost_usd if cost_usd is not None else "N/A",
+        input_tokens=input_tokens if input_tokens is not None else "N/A",
+        output_tokens=output_tokens if output_tokens is not None else "N/A",
         summary=summary or "unavailable",
     )
 
@@ -49,17 +55,17 @@ def _invoked_agent_stats(
 def agent_phase_stats_from_build(result: BuildExplorationResult) -> AgentPhaseStats:
     if not result.llm_used:
         return not_invoked_agent_stats()
-    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.agent_summary)
+    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.input_tokens, result.output_tokens, result.agent_summary)
 
 
 def agent_phase_stats_from_harness(result: HarnessExplorationResult) -> AgentPhaseStats:
     if not result.llm_used:
         return not_invoked_agent_stats()
-    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.agent_summary)
+    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.input_tokens, result.output_tokens, result.agent_summary)
 
 
 def agent_phase_stats_from_agent_error(summary: AgentRunSummary) -> AgentPhaseStats:
-    return _invoked_agent_stats(summary.duration_seconds, summary.cost_usd, summary.final_message)
+    return _invoked_agent_stats(summary.duration_seconds, summary.cost_usd, summary.input_tokens, summary.output_tokens, summary.final_message)
 
 
 @dataclass

@@ -209,12 +209,16 @@ def test_write_run_stats_clean_success(tmp_path: Path) -> None:
             "invoked": False,
             "duration_seconds": "N/A",
             "cost_usd": "N/A",
+            "input_tokens": "N/A",
+            "output_tokens": "N/A",
             "summary": "N/A",
         },
         "harness_build_agent": {
             "invoked": False,
             "duration_seconds": "N/A",
             "cost_usd": "N/A",
+            "input_tokens": "N/A",
+            "output_tokens": "N/A",
             "summary": "N/A",
         },
         "status": "success",
@@ -228,6 +232,8 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
             invoked=True,
             duration_seconds=71.8,
             cost_usd=0.0913,
+            input_tokens=1220,
+            output_tokens=3400,
             summary=(
                 "Added -DBUILD_SHARED_LIBS=OFF to the CMake invocation; "
                 "install/lib/libfoo.a is now produced."
@@ -244,6 +250,8 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
             "invoked": True,
             "duration_seconds": 71.8,
             "cost_usd": 0.0913,
+            "input_tokens": 1220,
+            "output_tokens": 3400,
             "summary": (
                 "Added -DBUILD_SHARED_LIBS=OFF to the CMake invocation; "
                 "install/lib/libfoo.a is now produced."
@@ -253,6 +261,8 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
             "invoked": False,
             "duration_seconds": "N/A",
             "cost_usd": "N/A",
+            "input_tokens": "N/A",
+            "output_tokens": "N/A",
             "summary": "N/A",
         },
         "status": "success",
@@ -264,7 +274,7 @@ def test_write_run_stats_harness_unrecoverable_with_codex(tmp_path: Path) -> Non
         total_duration_seconds=143.5,
         library_build_agent=not_invoked_agent_stats(),
         harness_build_agent=AgentPhaseStats(
-            invoked=True, duration_seconds=88.2, cost_usd="N/A", summary="unavailable"
+            invoked=True, duration_seconds=88.2, cost_usd="N/A", input_tokens="N/A", output_tokens="N/A", summary="unavailable"
         ),
         status=RunStatus.FAILED_HARNESS_BUILD,
     )
@@ -276,12 +286,16 @@ def test_write_run_stats_harness_unrecoverable_with_codex(tmp_path: Path) -> Non
             "invoked": False,
             "duration_seconds": "N/A",
             "cost_usd": "N/A",
+            "input_tokens": "N/A",
+            "output_tokens": "N/A",
             "summary": "N/A",
         },
         "harness_build_agent": {
             "invoked": True,
             "duration_seconds": 88.2,
             "cost_usd": "N/A",
+            "input_tokens": "N/A",
+            "output_tokens": "N/A",
             "summary": "unavailable",
         },
         "status": "failed_harness_build",
