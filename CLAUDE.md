@@ -65,6 +65,9 @@ uv run ty check                                        # type check
 - No relative imports (`..` paths) — absolute imports only.
 - See `plans/python_code_standards.md` for full standards.
 
+**Note:** `.beads/issues.jsonl` is a normal git-tracked file (the passive export
+mentioned below) — creating/updating beads issues does not commit or push it.
+Stage, commit, and push it like any other change as part of session close.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker
