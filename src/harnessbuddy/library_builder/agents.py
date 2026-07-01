@@ -35,7 +35,7 @@ _HARNESS_INLINE_INSTRUCTIONS: str = (
     "libraries succeeds and produces a binary in out/."
 )
 
-_ACTION_REQUIRED = "ACTION_REQUIRED"
+_ACTION_REQUIRED = "ACTION REQUIRED"
 
 _BUDGET_PATTERN = re.compile(
     "|".join(
@@ -128,6 +128,8 @@ def invoke_library_builder_agent(
         combined = run_result.stdout + run_result.stderr
         if _BUDGET_PATTERN.search(combined):
             raise LLMBudgetError(combined)
+        if _ACTION_REQUIRED in combined:
+            raise BuildFailureError(combined)
 
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
