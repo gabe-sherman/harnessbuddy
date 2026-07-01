@@ -198,6 +198,7 @@ def build_library(
             from harnessbuddy.library_builder.agents import invoke_library_builder_agent
 
             print("Deterministic library build failed, invoking library build agent")
+            print("="*25 + "Begin Agent Output" + "="*25)
             result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
         else:
             print("Library build failed and --agent argument was not provided ...")

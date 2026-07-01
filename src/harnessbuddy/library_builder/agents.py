@@ -161,9 +161,9 @@ def invoke_library_builder_agent(
     """
     prompt = build_library_prompt(analysis, exploration, workdir)
     if tool == "claude":
-        cmd = ["claude", "--print", "--permission-mode", "auto", prompt]
+        cmd = ["claude", "--print", "--permission-mode", "auto", "--output-format=stream-json", "--verbose", prompt]
     elif tool == "codex":
-        cmd = ["codex", "exec", "--sandbox", "workspace-write", prompt]
+        cmd = ["codex", "exec", "--sandbox", "workspace-write", "--json", prompt]
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 

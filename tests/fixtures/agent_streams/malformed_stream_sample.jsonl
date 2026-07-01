@@ -1,2 +1,3 @@
 this is not valid json at all {{{
 {"type": "some_unrecognized_event_type", "detail": "no known handler for this shape"}
+{"no_type_field": true, "detail": "valid JSON but does not look like a structured event"}

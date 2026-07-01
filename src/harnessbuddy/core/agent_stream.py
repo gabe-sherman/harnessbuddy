@@ -29,7 +29,6 @@ class AgentStreamResult:
     output_tokens: int | None = None
 
 
-_CLAUDE_RECOGNIZED_TYPES = {"assistant", "user", "system", "result"}
 _CLAUDE_READ_TOOLS = {"Read"}
 _CLAUDE_EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 _CLAUDE_COMMAND_TOOLS = {"Bash"}
@@ -49,28 +48,50 @@ def _claude_tool_event(name: str, tool_input: dict[str, Any]) -> AgentActivityEv
     return AgentActivityEvent("status", f"Using tool {name}")
 
 
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return json.dumps(content)
+
+
 def _claude_content_block_event(block: dict[str, Any]) -> AgentActivityEvent | None:
     block_type = block.get("type")
     if block_type == "text":
         return AgentActivityEvent("status", block.get("text", ""))
+    if block_type == "thinking":
+        thinking = block.get("thinking") or ""
+        return AgentActivityEvent("status", f"Thinking: {thinking}") if thinking else None
     if block_type == "tool_use":
         return _claude_tool_event(block.get("name", ""), block.get("input", {}))
     if block_type == "tool_result":
-        content = block.get("content")
-        text = content if isinstance(content, str) else json.dumps(content)
-        return AgentActivityEvent("tool_result", text)
+        return AgentActivityEvent("tool_result", _tool_result_text(block.get("content")))
     return None
 
 
 def _parse_claude_line(line: str) -> list[AgentActivityEvent]:
+    """Parse one line of `claude --output-format stream-json` output.
+
+    Anthropic adds new top-level event types over time (e.g. `rate_limit_event`) and
+    this function does not attempt to enumerate them all. A well-formed JSON object
+    with a `type` string is treated as a legitimate event we simply don't render
+    narration for (silent, not a fallback) — `raw_fallback` is reserved for input that
+    doesn't even look like a structured event, so a truly unexpected/garbled line is
+    still visible for diagnosis without every future event type flooding the terminal
+    with raw JSON.
+    """
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
         return _raw_fallback(line)
-    if not isinstance(data, dict) or data.get("type") not in _CLAUDE_RECOGNIZED_TYPES:
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
         return _raw_fallback(line)
-    event_type = data["type"]
-    if event_type not in ("assistant", "user"):
+    if data["type"] not in ("assistant", "user"):
         return []
     content = data.get("message", {}).get("content", [])
     if not isinstance(content, list):
@@ -85,32 +106,38 @@ def _parse_claude_line(line: str) -> list[AgentActivityEvent]:
     return events
 
 
-_CODEX_RECOGNIZED_TYPES = {
-    "thread.started",
-    "turn.started",
-    "turn.completed",
-    "turn.failed",
-    "item.started",
-    "item.updated",
-    "item.completed",
-}
-
-
 def _codex_item_event(item: dict[str, Any]) -> AgentActivityEvent | None:
     item_type = item.get("type")
     if item_type == "command_execution":
         return AgentActivityEvent("command_run", f"Running: {item.get('command', '?')}")
     if item_type == "file_change":
         return AgentActivityEvent("file_edit", f"Editing {item.get('path', '?')}")
+    if item_type == "agent_message":
+        # Codex's equivalent of a Claude plain-text assistant content block — the
+        # model's actual response text, not an internal reasoning trace.
+        return AgentActivityEvent("status", item.get("text", ""))
+    if item_type == "reasoning":
+        # Codex's equivalent of Claude's "thinking" content block.
+        text = item.get("text") or ""
+        return AgentActivityEvent("status", f"Thinking: {text}") if text else None
+    if item_type == "error":
+        return AgentActivityEvent("status", f"Warning: {item.get('message', '?')}")
     return None
 
 
 def _parse_codex_line(line: str) -> list[AgentActivityEvent]:
+    """Parse one line of `codex exec --json` output.
+
+    Same silent-skip-vs-raw_fallback distinction as `_parse_claude_line`: a
+    well-formed JSON object with a `type` string is a legitimate event we may not
+    render narration for; `raw_fallback` is reserved for lines that don't look like a
+    structured event at all.
+    """
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
         return _raw_fallback(line)
-    if not isinstance(data, dict) or data.get("type") not in _CODEX_RECOGNIZED_TYPES:
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
         return _raw_fallback(line)
     if data["type"] not in ("item.started", "item.updated", "item.completed"):
         return []
@@ -127,35 +154,37 @@ _LINE_PARSERS: dict[str, Callable[[str], list[AgentActivityEvent]]] = {
 }
 
 
-def _claude_result_cost(line: str) -> float | None:
+def _claude_result_cost(line: str) -> tuple[float | None, int | None, int | None]:
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        return None
+        return None, None, None
     if not isinstance(data, dict) or data.get("type") != "result":
-        return None
+        return None, None, None
     cost = data.get("total_cost_usd")
-    return cost if isinstance(cost, int | float) else None
+    input_tokens = data.get("usage").get("input_tokens")
+    output_tokens = data.get("usage").get("output_tokens")
+    return cost if isinstance(cost, float) else None, input_tokens if isinstance(input_tokens, int)else None, output_tokens if isinstance(output_tokens, int) else None
 
 
-def _codex_turn_completed_usage(line: str) -> tuple[int | None, int | None]:
+def _codex_result_cost(line: str) -> tuple[None, int | None, int | None]:
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        return None, None
+        return None, None, None
     if not isinstance(data, dict) or data.get("type") != "turn.completed":
-        return None, None
+        return None, None, None
     usage = data.get("usage")
     if not isinstance(usage, dict):
-        return None, None
-    return usage.get("input_tokens"), usage.get("output_tokens")
+        return None, None, None
+    # usd usage not available
+    return None, usage.get("input_tokens"), usage.get("output_tokens")
 
 
 def _extract_stats(tool: str, line: str) -> tuple[float | None, int | None, int | None]:
     if tool == "claude":
-        return _claude_result_cost(line), None, None
-    input_tokens, output_tokens = _codex_turn_completed_usage(line)
-    return None, input_tokens, output_tokens
+        return _claude_result_cost(line)
+    return _codex_result_cost(line)
 
 
 def run_agent_streaming(
@@ -194,7 +223,9 @@ def run_agent_streaming(
             if line_cost is not None:
                 cost_usd = line_cost
             if line_input is not None:
-                input_tokens, output_tokens = line_input, line_output
+                input_tokens = line_input
+            if line_output is not None:
+                output_tokens = line_output
         proc.wait(timeout=timeout)
         exit_code = proc.returncode
     except subprocess.TimeoutExpired:
@@ -224,10 +255,11 @@ class AgentRunSummary:
 
 def format_agent_summary(summary: AgentRunSummary) -> str:
     """Render the fixed-format '=== Agent Run Summary ===' trailer block."""
+    stats_line = ""
     if summary.cost_usd is not None:
-        stats_line = f"cost: ${summary.cost_usd:.4f}"
-    elif summary.input_tokens is not None and summary.output_tokens is not None:
-        stats_line = f"tokens: input={summary.input_tokens} output={summary.output_tokens}"
+        stats_line += f"cost: ${summary.cost_usd:.4f}\n"
+    if summary.input_tokens is not None and summary.output_tokens is not None:
+        stats_line += f"tokens: input={summary.input_tokens} output={summary.output_tokens}"
     else:
         stats_line = "cost: unavailable"
 

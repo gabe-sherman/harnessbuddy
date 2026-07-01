@@ -1,8 +1,9 @@
-{"type": "thread.started", "thread_id": "thread_xyz789"}
-{"type": "turn.started"}
-{"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "bash build_library.sh", "status": "in_progress"}}
-{"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "bash build_library.sh", "exit_code": 1, "aggregated_output": "CMake Error: could not find package", "status": "completed"}}
-{"type": "item.completed", "item": {"id": "item_2", "type": "file_change", "path": "build_library.sh", "status": "completed"}}
-{"type": "item.started", "item": {"id": "item_3", "type": "command_execution", "command": "bash build_library.sh", "status": "in_progress"}}
-{"type": "item.completed", "item": {"id": "item_3", "type": "command_execution", "command": "bash build_library.sh", "exit_code": 0, "aggregated_output": "[100%] Built target foo", "status": "completed"}}
-{"type": "turn.completed", "usage": {"input_tokens": 5230, "output_tokens": 941, "cached_input_tokens": 1024}}
+{"type":"thread.started","thread_id":"019f1f05-00a4-7a40-b58d-9ac125ad77f3"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"loading hooks from both /Users/gabrielsherman/.codex/hooks.json and /Users/gabrielsherman/.codex/config.toml; prefer a single representation for this layer"}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"**Creating a simple response**\n\nI need to provide a straightforward answer, just \"hello world.\" This doesn't require any tools, and I want to make sure my final response is clear and concise. I’m keeping it simple, focusing only on delivering the exact greeting without any extra fluff. It’s all about getting straight to the point here, which is actually quite refreshing! So, let’s just say the phrase clearly!"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"bash build_library.sh","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"bash build_library.sh","exit_code":0,"aggregated_output":"[100%] Built target foo","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"file_change","path":"build_library.sh","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"hello world"}}
+{"type":"turn.completed","usage":{"input_tokens":19750,"cached_input_tokens":4992,"output_tokens":28,"reasoning_output_tokens":20}}
