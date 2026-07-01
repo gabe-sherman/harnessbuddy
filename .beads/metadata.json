@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "harnessbuddy",
+  "project_id": "dc4368b5-1dd4-4b78-a7e2-fbf89caf5ff4"
+}
