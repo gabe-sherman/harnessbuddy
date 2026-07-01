@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.agents import (
+    BuildFailureError,
     build_harness_prompt,
     build_library_prompt,
     invoke_harness_builder_agent,
@@ -68,6 +71,25 @@ def test_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
     prompt = build_library_prompt(_analysis(tmp_path), exploration, tmp_path / "work")
     assert error_line in prompt
     assert preamble_line not in prompt
+
+
+def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
+    action_required_text = "ACTION REQUIRED: install libfoo-dev"
+    with (
+        patch(
+            "harnessbuddy.library_builder.agents.run_command_streaming",
+            return_value=RunResult(
+                stdout=action_required_text, stderr="", exit_code=1, duration_seconds=1.0
+            ),
+        ),
+        pytest.raises(BuildFailureError) as exc_info,
+    ):
+        invoke_library_builder_agent(
+            _analysis(tmp_path),
+            _failed_cmake_exploration(tmp_path),
+            tmp_path / "work",
+        )
+    assert action_required_text in exc_info.value.output
 
 
 def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
