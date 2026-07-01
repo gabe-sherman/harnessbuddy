@@ -72,32 +72,36 @@ _BUDGET_PATTERN = re.compile(
 class BuildFailureError(Exception):
     """Agent output contained ACTION_REQUIRED, signaling a user-resolvable roadblock."""
 
-    def __init__(self, output: str) -> None:
+    def __init__(self, output: str, summary: AgentRunSummary) -> None:
         super().__init__(
             f"Agent requires user action. Review the output below, resolve the issue, "
             f"then retry.\n\n{output}"
         )
         self.output = output
+        self.summary = summary
 
 
 class LLMBudgetError(Exception):
     """Agent exited because it hit a usage limit (Claude 5-hour limit or Codex quota)."""
 
-    def __init__(self, output: str) -> None:
+    def __init__(self, output: str, summary: AgentRunSummary) -> None:
         super().__init__(
             f"Agent hit a usage or rate limit. Review the output below and retry later.\n\n{output}"
         )
         self.output = output
+        self.summary = summary
 
 
-def _raise_for_agent_failure(exit_code: int, combined_output: str) -> None:
+def _raise_for_agent_failure(
+    exit_code: int, combined_output: str, summary: AgentRunSummary
+) -> None:
     """Raise LLMBudgetError or BuildFailureError if agent output signals either condition."""
     if exit_code == 0:
         return
     if _BUDGET_PATTERN.search(combined_output):
-        raise LLMBudgetError(combined_output)
+        raise LLMBudgetError(combined_output, summary)
     if _ACTION_REQUIRED in combined_output:
-        raise BuildFailureError(combined_output)
+        raise BuildFailureError(combined_output, summary)
 
 
 def _determine_outcome(exit_code: int, combined_text: str) -> str:
@@ -109,7 +113,7 @@ def _determine_outcome(exit_code: int, combined_text: str) -> str:
     return "succeeded" if exit_code == 0 else "failed"
 
 
-def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -> None:
+def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -> AgentRunSummary:
     """Write the persisted transcript+summary report and print the summary to the terminal."""
     summary = AgentRunSummary(
         backend=tool,
@@ -118,9 +122,11 @@ def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
+        final_message=result.final_message,
     )
     write_agent_report(report_path, result.combined_text, summary)
     print(format_agent_summary(summary))
+    return summary
 
 
 def build_library_prompt(
@@ -161,15 +167,23 @@ def invoke_library_builder_agent(
     """
     prompt = build_library_prompt(analysis, exploration, workdir)
     if tool == "claude":
-        cmd = ["claude", "--print", "--permission-mode", "auto", "--output-format=stream-json", "--verbose", prompt]
+        cmd = [
+            "claude",
+            "--print",
+            "--permission-mode",
+            "auto",
+            "--output-format=stream-json",
+            "--verbose",
+            prompt,
+        ]
     elif tool == "codex":
         cmd = ["codex", "exec", "--sandbox", "workspace-write", "--json", prompt]
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     result = run_agent_streaming(cmd, workdir, timeout, tool)
-    _report_agent_run(workdir / "agent_library_build.log", tool, result)
-    _raise_for_agent_failure(result.exit_code, result.combined_text)
+    summary = _report_agent_run(workdir / "agent_library_build.log", tool, result)
+    _raise_for_agent_failure(result.exit_code, result.combined_text, summary)
 
     succeeded = result.exit_code == 0
     stderr = ""
@@ -195,6 +209,7 @@ def invoke_library_builder_agent(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         transcript_path=workdir / "agent_library_build.log",
+        agent_summary=result.final_message,
     )
 
 
@@ -251,8 +266,8 @@ def invoke_harness_builder_agent(
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
-    _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
-    _raise_for_agent_failure(result.exit_code, result.combined_text)
+    summary = _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
+    _raise_for_agent_failure(result.exit_code, result.combined_text, summary)
 
     succeeded = result.exit_code == 0
     stderr = ""
@@ -291,4 +306,5 @@ def invoke_harness_builder_agent(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         transcript_path=paths.workdir / "agent_harness_build.log",
+        agent_summary=result.final_message,
     )

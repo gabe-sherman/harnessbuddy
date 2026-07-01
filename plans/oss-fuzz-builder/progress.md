@@ -172,6 +172,48 @@
   cost/token display) need an authenticated `claude`/`codex` CLI hitting a
   real failing build and incurring real API cost — not run this session
 
+### Phase 9 — Build statistics reporting
+
+- `specs/003-build-stats-reporting/` (tracked as beads epic `harnessbuddy-bm3`,
+  T001-T017): every `harnessbuddy generate` run now writes a single
+  `stats.json` at the parent output directory (alongside, not inside,
+  `local/`/`oss-fuzz/`), reporting total run duration, each phase's LLM
+  agent involvement (invoked or not; duration, cost, and a plain-language
+  work summary when invoked, `"N/A"` across all three when not), and a
+  final `status` of `success`/`failed_library_build`/`failed_harness_build`
+- New `AgentStreamResult.final_message`/`AgentRunSummary.final_message`:
+  `run_agent_streaming()` now tracks the *last* genuine assistant text seen
+  while parsing the stream (Claude `text` content blocks, Codex
+  `agent_message` items) — not `thinking`/`reasoning`, not tool-use
+  announcements — giving a short "what the agent did" summary distinct
+  from the full transcript already written to `agent_*.log`
+- `BuildFailureError`/`LLMBudgetError` now require an `AgentRunSummary`
+  (`.summary`) at construction, so an agent invocation's duration/cost/final
+  message survives even when the invocation raises instead of returning —
+  previously that data was lost once the exception propagated to `cli.py`
+- New `harnessbuddy/library_builder/stats.py`: `RunStatus` enum,
+  `AgentPhaseStats`/`RunStats` dataclasses, conversion helpers from a
+  `BuildExplorationResult`/`HarnessExplorationResult` (`llm_used=False` →
+  `"N/A"` everywhere) or from a caught exception's `.summary`
+  (`agent_phase_stats_from_agent_error`), and `write_run_stats()`
+- `_cmd_generate` now creates the shared output directory eagerly (right
+  after `_resolve_output_paths`, before either build phase runs) so a
+  `stats.json` has somewhere to go even when the library build fails
+  outright — previously that directory only came into existence as a side
+  effect of a fully successful `_generate_outputs` call
+- A harness failure that still emits stub output (the existing
+  best-effort-continue behavior) now correctly reports
+  `status: "failed_harness_build"` in `stats.json` rather than `"success"`,
+  even though `local/`/`oss-fuzz/` are still populated
+- Fixed a pre-existing regression in `format_agent_summary` (Phase 8's
+  cost line was being silently clobbered by the tokens/unavailable
+  else-branch) discovered while extending the same function's tests
+- Full gate suite passes with zero warnings; manually re-verified
+  quickstart.md scenarios 1, 4, 6, 7 end-to-end against a real
+  Makefile-based C library built with plain `gcc`/`ar`/`make` (no agent
+  credentials needed). Scenarios 2, 3, 5 need an authenticated
+  `claude`/`codex` CLI and real API cost — not run this session
+
 ---
 
 ## Not Yet Started
@@ -181,4 +223,5 @@
 - Seed corpus support
 - `--target-headers` option to constrain fuzzing scope
 - Self-refining build loop (track success rates, usage costs) — per-invocation
-  cost/time/token visibility now exists (Phase 8), but nothing yet acts on it
+  cost/time/token visibility now exists (Phase 8) and is now also surfaced
+  in a consistent per-run `stats.json` (Phase 9), but nothing yet acts on it

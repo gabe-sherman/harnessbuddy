@@ -58,6 +58,7 @@ class BuildExplorationResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     transcript_path: Path | None = None
+    agent_summary: str | None = None
 
 
 @dataclass
@@ -81,6 +82,7 @@ class HarnessExplorationResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     transcript_path: Path | None = None
+    agent_summary: str | None = None
 
 
 @dataclass

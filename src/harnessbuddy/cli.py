@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
         BuildExplorationResult,
         HarnessExplorationResult,
     )
+    from harnessbuddy.library_builder.stats import AgentPhaseStats, RunStatus
 
 
 class _ProjectState(TypedDict):
@@ -198,7 +200,7 @@ def build_library(
             from harnessbuddy.library_builder.agents import invoke_library_builder_agent
 
             print("Deterministic library build failed, invoking library build agent")
-            print("="*25 + "Begin Agent Output" + "="*25)
+            print("=" * 25 + "Begin Agent Output" + "=" * 25)
             result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
         else:
             print("Library build failed and --agent argument was not provided ...")
@@ -398,11 +400,40 @@ def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are dist
     return 0
 
 
+def _write_run_stats(
+    base_output: Path,
+    start_time: float,
+    library_build_agent: AgentPhaseStats,
+    harness_build_agent: AgentPhaseStats,
+    status: RunStatus,
+) -> None:
+    """Build and persist stats.json for this run."""
+    from harnessbuddy.library_builder.stats import RunStats, write_run_stats
+
+    write_run_stats(
+        base_output / "stats.json",
+        RunStats(
+            total_duration_seconds=time.monotonic() - start_time,
+            library_build_agent=library_build_agent,
+            harness_build_agent=harness_build_agent,
+            status=status,
+        ),
+    )
+
+
 def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
-    from harnessbuddy.library_builder.agents import BuildFailureError
+    from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.stats import (
+        RunStatus,
+        agent_phase_stats_from_agent_error,
+        agent_phase_stats_from_build,
+        agent_phase_stats_from_harness,
+        not_invoked_agent_stats,
+    )
 
+    start_time = time.monotonic()
     state_dir = default_state_dir()
 
     source = _ingest_source(args, state_dir)
@@ -416,6 +447,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return 1
 
     local_output_path, oss_output_path = _resolve_output_paths(args, analysis)
+    base_output = local_output_path.parent
+    base_output.mkdir(parents=True, exist_ok=True)
 
     workspace = project_dir(state_dir, analysis.project_name)
     load_system_deps(analysis)
@@ -426,14 +459,28 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
     try:
         result = _run_library_phase(analysis, workspace, agent, state, state_file)
-    except BuildFailureError as exc:
+    except (BuildFailureError, LLMBudgetError) as exc:
         print(
             f"Agent requires user action before the build can proceed:\n{exc.output}",
             file=sys.stderr,
         )
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_agent_error(exc.summary),
+            not_invoked_agent_stats(),
+            RunStatus.FAILED_LIBRARY_BUILD,
+        )
         return 1
     if not result.succeeded:
         print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_build(result),
+            not_invoked_agent_stats(),
+            RunStatus.FAILED_LIBRARY_BUILD,
+        )
         return 1
     print("Successfully produced library build!")
 
@@ -442,16 +489,31 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         harness_result, brew_packages = _run_harness_phase(
             analysis, install_dir, workspace, agent, state, state_file
         )
-    except BuildFailureError as exc:
+    except (BuildFailureError, LLMBudgetError) as exc:
         print(
             f"Agent requires user action before the harness build can proceed:\n{exc.output}",
             file=sys.stderr,
         )
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_build(result),
+            agent_phase_stats_from_agent_error(exc.summary),
+            RunStatus.FAILED_HARNESS_BUILD,
+        )
         return 1
 
-    return _generate_outputs(
+    rc = _generate_outputs(
         analysis, local_output_path, oss_output_path, result, harness_result, brew_packages
     )
+    _write_run_stats(
+        base_output,
+        start_time,
+        agent_phase_stats_from_build(result),
+        agent_phase_stats_from_harness(harness_result),
+        RunStatus.SUCCESS if harness_result.succeeded else RunStatus.FAILED_HARNESS_BUILD,
+    )
+    return rc
 
 
 def _is_url(value: str) -> bool:

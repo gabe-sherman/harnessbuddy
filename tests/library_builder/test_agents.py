@@ -8,6 +8,7 @@ import pytest
 from harnessbuddy.core.agent_stream import AgentStreamResult
 from harnessbuddy.library_builder.agents import (
     BuildFailureError,
+    LLMBudgetError,
     build_harness_prompt,
     build_library_prompt,
     invoke_harness_builder_agent,
@@ -81,7 +82,11 @@ def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
         patch(
             "harnessbuddy.library_builder.agents.run_agent_streaming",
             return_value=AgentStreamResult(
-                combined_text=action_required_text, exit_code=1, duration_seconds=1.0
+                combined_text=action_required_text,
+                exit_code=1,
+                duration_seconds=1.0,
+                cost_usd=0.02,
+                final_message="Could not find the missing package.",
             ),
         ),
         pytest.raises(BuildFailureError) as exc_info,
@@ -92,6 +97,55 @@ def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
             tmp_path / "work",
         )
     assert action_required_text in exc_info.value.output
+    assert exc_info.value.summary.duration_seconds == 1.0
+    assert exc_info.value.summary.cost_usd == 0.02
+    assert exc_info.value.summary.final_message == "Could not find the missing package."
+
+
+def test_budget_limited_raises_llm_budget_error(tmp_path: Path) -> None:
+    budget_text = "reached the 5 hour limit"
+    (tmp_path / "work").mkdir()
+    with (
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            return_value=AgentStreamResult(
+                combined_text=budget_text,
+                exit_code=1,
+                duration_seconds=2.5,
+                cost_usd=0.03,
+                final_message="Ran out of usage before finishing.",
+            ),
+        ),
+        pytest.raises(LLMBudgetError) as exc_info,
+    ):
+        invoke_library_builder_agent(
+            _analysis(tmp_path),
+            _failed_cmake_exploration(tmp_path),
+            tmp_path / "work",
+        )
+    assert exc_info.value.summary.duration_seconds == 2.5
+    assert exc_info.value.summary.cost_usd == 0.03
+    assert exc_info.value.summary.final_message == "Ran out of usage before finishing."
+
+
+def test_library_agent_populates_agent_summary_on_success(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    (workdir / "install" / "lib").mkdir(parents=True)
+    (workdir / "install" / "include").mkdir(parents=True)
+    (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
+    (workdir / "install" / "include" / "foo.h").write_text("stub")
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="done", exit_code=0, duration_seconds=1.0, final_message="Fixed it."
+        ),
+    ):
+        result = invoke_library_builder_agent(
+            _analysis(tmp_path),
+            _failed_cmake_exploration(tmp_path),
+            workdir,
+        )
+    assert result.agent_summary == "Fixed it."
 
 
 def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
@@ -138,7 +192,11 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
         patch(
             "harnessbuddy.library_builder.agents.run_agent_streaming",
             return_value=AgentStreamResult(
-                combined_text=action_required_text, exit_code=1, duration_seconds=1.0
+                combined_text=action_required_text,
+                exit_code=1,
+                duration_seconds=1.0,
+                cost_usd=0.04,
+                final_message="Could not resolve the undefined symbol.",
             ),
         ),
         pytest.raises(BuildFailureError) as exc_info,
@@ -149,6 +207,56 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
             HarnessPaths(install_dir=tmp_path / "work" / "install", workdir=tmp_path / "work"),
         )
     assert action_required_text in exc_info.value.output
+    assert exc_info.value.summary.duration_seconds == 1.0
+    assert exc_info.value.summary.cost_usd == 0.04
+    assert exc_info.value.summary.final_message == "Could not resolve the undefined symbol."
+
+
+def test_harness_budget_limited_raises_llm_budget_error(tmp_path: Path) -> None:
+    budget_text = "reached the 5 hour limit"
+    (tmp_path / "work").mkdir()
+    with (
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            return_value=AgentStreamResult(
+                combined_text=budget_text,
+                exit_code=1,
+                duration_seconds=3.5,
+                cost_usd=0.05,
+                final_message="Ran out of usage before finishing.",
+            ),
+        ),
+        pytest.raises(LLMBudgetError) as exc_info,
+    ):
+        invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `foo'"),
+            HarnessPaths(install_dir=tmp_path / "work" / "install", workdir=tmp_path / "work"),
+        )
+    assert exc_info.value.summary.duration_seconds == 3.5
+    assert exc_info.value.summary.cost_usd == 0.05
+    assert exc_info.value.summary.final_message == "Ran out of usage before finishing."
+
+
+def test_harness_agent_populates_agent_summary_on_success(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    (workdir / "out").mkdir(parents=True)
+    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "build_harness.sh").write_text(
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+    )
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="done", exit_code=0, duration_seconds=1.0, final_message="Fixed it."
+        ),
+    ):
+        result = invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `ares_getaddrinfo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+        )
+    assert result.agent_summary == "Fixed it."
 
 
 def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:

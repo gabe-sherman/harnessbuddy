@@ -27,6 +27,7 @@ class AgentStreamResult:
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    final_message: str | None = None
 
 
 _CLAUDE_READ_TOOLS = {"Read"}
@@ -164,7 +165,11 @@ def _claude_result_cost(line: str) -> tuple[float | None, int | None, int | None
     cost = data.get("total_cost_usd")
     input_tokens = data.get("usage").get("input_tokens")
     output_tokens = data.get("usage").get("output_tokens")
-    return cost if isinstance(cost, float) else None, input_tokens if isinstance(input_tokens, int)else None, output_tokens if isinstance(output_tokens, int) else None
+    return (
+        cost if isinstance(cost, float) else None,
+        input_tokens if isinstance(input_tokens, int) else None,
+        output_tokens if isinstance(output_tokens, int) else None,
+    )
 
 
 def _codex_result_cost(line: str) -> tuple[None, int | None, int | None]:
@@ -187,6 +192,63 @@ def _extract_stats(tool: str, line: str) -> tuple[float | None, int | None, int 
     return _codex_result_cost(line)
 
 
+def _claude_final_text(line: str) -> str | None:
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("type") != "assistant":
+        return None
+    content = data.get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            return block.get("text")
+    return None
+
+
+def _codex_final_text(line: str) -> str | None:
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("type") != "item.completed":
+        return None
+    item = data.get("item")
+    if not isinstance(item, dict) or item.get("type") != "agent_message":
+        return None
+    return item.get("text")
+
+
+def _extract_final_text(tool: str, line: str) -> str | None:
+    if tool == "claude":
+        return _claude_final_text(line)
+    return _codex_final_text(line)
+
+
+@dataclass
+class _StreamAccumulator:
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    final_message: str | None = None
+
+
+def _apply_line_stats(acc: _StreamAccumulator, tool: str, line: str) -> None:
+    """Update the running stats accumulator from one stdout line, last-value-wins."""
+    cost, input_tokens, output_tokens = _extract_stats(tool, line)
+    if cost is not None:
+        acc.cost_usd = cost
+    if input_tokens is not None:
+        acc.input_tokens = input_tokens
+    if output_tokens is not None:
+        acc.output_tokens = output_tokens
+    final_text = _extract_final_text(tool, line)
+    if final_text is not None:
+        acc.final_message = final_text
+
+
 def run_agent_streaming(
     command: list[str], cwd: Path, timeout: int, tool: str
 ) -> AgentStreamResult:
@@ -202,9 +264,7 @@ def run_agent_streaming(
 
     start = time.monotonic()
     texts: list[str] = []
-    cost_usd: float | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
+    acc = _StreamAccumulator()
     proc = subprocess.Popen(
         command,
         cwd=cwd,
@@ -219,13 +279,7 @@ def run_agent_streaming(
             for event in parse_line(line):
                 print(event.text, flush=True)
                 texts.append(event.text)
-            line_cost, line_input, line_output = _extract_stats(tool, line)
-            if line_cost is not None:
-                cost_usd = line_cost
-            if line_input is not None:
-                input_tokens = line_input
-            if line_output is not None:
-                output_tokens = line_output
+            _apply_line_stats(acc, tool, line)
         proc.wait(timeout=timeout)
         exit_code = proc.returncode
     except subprocess.TimeoutExpired:
@@ -237,9 +291,10 @@ def run_agent_streaming(
         combined_text="\n".join(texts),
         exit_code=exit_code,
         duration_seconds=time.monotonic() - start,
-        cost_usd=cost_usd,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        cost_usd=acc.cost_usd,
+        input_tokens=acc.input_tokens,
+        output_tokens=acc.output_tokens,
+        final_message=acc.final_message,
     )
 
 
@@ -251,15 +306,15 @@ class AgentRunSummary:
     cost_usd: float | None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    final_message: str | None = None
 
 
 def format_agent_summary(summary: AgentRunSummary) -> str:
     """Render the fixed-format '=== Agent Run Summary ===' trailer block."""
-    stats_line = ""
     if summary.cost_usd is not None:
-        stats_line += f"cost: ${summary.cost_usd:.4f}\n"
-    if summary.input_tokens is not None and summary.output_tokens is not None:
-        stats_line += f"tokens: input={summary.input_tokens} output={summary.output_tokens}"
+        stats_line = f"cost: ${summary.cost_usd:.4f}"
+    elif summary.input_tokens is not None and summary.output_tokens is not None:
+        stats_line = f"tokens: input={summary.input_tokens} output={summary.output_tokens}"
     else:
         stats_line = "cost: unavailable"
 

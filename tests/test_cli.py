@@ -16,7 +16,9 @@ from harnessbuddy.cli import (
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
+    BuildExplorationResult,
     BuildSystem,
+    HarnessExplorationResult,
     Language,
 )
 
@@ -289,6 +291,210 @@ def test_no_agents_skips_harness_agent_when_compilation_fails(
             ]
         )
     mock_agent.assert_not_called()
+
+
+# stats.json
+
+
+def _succeeded_harness_result() -> HarnessExplorationResult:
+    return HarnessExplorationResult(
+        succeeded=True,
+        command=[],
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=[],
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+
+def _stats_json_path(output_dir: Path, repo: Path) -> Path:
+    return output_dir / repo.name / "output" / "stats.json"
+
+
+def test_generate_writes_stats_json_clean_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    assert stats["status"] == "success"
+    na_phase = {"invoked": False, "duration_seconds": "N/A", "cost_usd": "N/A", "summary": "N/A"}
+    assert stats["library_build_agent"] == na_phase
+    assert stats["harness_build_agent"] == na_phase
+
+
+def test_generate_writes_stats_json_library_agent_repaired(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=12.5,
+        llm_used=True,
+        cost_usd=0.05,
+        agent_summary="Added a missing CMake flag.",
+    )
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    assert stats["library_build_agent"] == {
+        "invoked": True,
+        "duration_seconds": 12.5,
+        "cost_usd": 0.05,
+        "summary": "Added a missing CMake flag.",
+    }
+    assert stats["status"] == "success"
+
+
+def test_generate_writes_stats_json_failed_library_build(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="build failed",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+    stats_path = _stats_json_path(output_dir, local_repo_with_origin)
+    assert stats_path.exists()
+    stats = json.loads(stats_path.read_text())
+    assert stats["status"] == "failed_library_build"
+
+
+def test_generate_writes_stats_json_failed_harness_build_emits_stub_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    project_output = output_dir / local_repo_with_origin.name / "output"
+    assert (project_output / "local").is_dir()
+    assert (project_output / "oss-fuzz").is_dir()
+    stats = json.loads((project_output / "stats.json").read_text())
+    assert stats["status"] == "failed_harness_build"
+
+
+def _key_paths(obj: object, prefix: str = "") -> set[str]:
+    """Recursively collect dotted key paths from a JSON-decoded object."""
+    paths: set[str] = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            paths.add(path)
+            paths |= _key_paths(value, path)
+    return paths
+
+
+def test_stats_json_same_relative_path_and_shape_across_outcomes(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    success_output = tmp_path / "success_output"
+    success_output.mkdir()
+    failure_output = tmp_path / "failure_output"
+    failure_output.mkdir()
+
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc_success = main(
+            ["generate", str(local_repo_with_origin), "--output", str(success_output)]
+        )
+    assert rc_success == 0
+
+    failed_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="build failed",
+        stderr="",
+        exit_code=1,
+        duration_seconds=1.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=failed_build_result):
+        rc_failure = main(
+            ["generate", str(local_repo_with_origin), "--output", str(failure_output)]
+        )
+    assert rc_failure != 0
+
+    success_stats_path = _stats_json_path(success_output, local_repo_with_origin)
+    failure_stats_path = _stats_json_path(failure_output, local_repo_with_origin)
+    assert success_stats_path.exists()
+    assert failure_stats_path.exists()
+
+    success_keys = _key_paths(json.loads(success_stats_path.read_text()))
+    failure_keys = _key_paths(json.loads(failure_stats_path.read_text()))
+    assert success_keys == failure_keys
+
+
+def test_stats_json_overwritten_on_rerun(local_repo_with_origin: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    repaired_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=12.5,
+        llm_used=True,
+        cost_usd=0.05,
+        agent_summary="Added a missing CMake flag.",
+    )
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=repaired_build_result),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc1 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc1 == 0
+
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc2 == 0
+
+    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    assert stats["library_build_agent"]["invoked"] is False
+
+
+def test_no_stats_json_when_output_directory_never_created(tmp_path: Path) -> None:
+    repo = tmp_path / "norepo"
+    repo.mkdir()
+    (repo / "README.md").write_text("hello\n")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/norepo.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(repo), "--output", str(output_dir)])
+    assert rc != 0
+    assert list(output_dir.rglob("stats.json")) == []
 
 
 # load_system_deps

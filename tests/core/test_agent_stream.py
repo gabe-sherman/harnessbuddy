@@ -287,3 +287,28 @@ def test_write_agent_report_unavailable_trailer(tmp_path: Path) -> None:
     )
     content = path.read_text()
     assert content.rstrip("\n").endswith("cost: unavailable")
+
+
+# --- final_message (build-stats-reporting) ---
+
+
+def test_run_agent_streaming_final_message_from_last_claude_text_block(tmp_path: Path) -> None:
+    fake_proc = _FakeProcess([line + "\n" for line in _claude_lines()])
+    with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
+        result = run_agent_streaming(["claude", "--print"], tmp_path, 60, "claude")
+    assert result.final_message == "The build now succeeds after disabling shared libraries."
+
+
+def test_run_agent_streaming_final_message_from_codex_agent_message(tmp_path: Path) -> None:
+    fake_proc = _FakeProcess([line + "\n" for line in _codex_lines()])
+    with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
+        result = run_agent_streaming(["codex", "exec"], tmp_path, 60, "codex")
+    assert result.final_message == "hello world"
+
+
+def test_run_agent_streaming_final_message_none_without_text_block(tmp_path: Path) -> None:
+    for tool in ("claude", "codex"):
+        fake_proc = _FakeProcess([line + "\n" for line in _malformed_lines()])
+        with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
+            result = run_agent_streaming([tool], tmp_path, 60, tool)
+        assert result.final_message is None
