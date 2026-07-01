@@ -27,6 +27,14 @@ _LIB_PATTERNS: dict[str, re.Pattern[str]] = {
 # Matches operator new/delete, exception-handling (__cxa_), and personality routine.
 _CXX_ABI_RE = re.compile(r"operator (?:new|delete)\b|__cxa_|__gxx_personality")
 
+# Mirrors scripts.py's build_harness_script format, used to re-derive STATIC_LIBS /
+# EXTRA_LINK_FLAGS from a (possibly agent-edited) build_harness.sh after a fix, since
+# an agent may hand-edit these variables directly rather than us regenerating them.
+_STATIC_LIBS_BLOCK_RE = re.compile(r"STATIC_LIBS=\((.*?)\n\)", re.DOTALL)
+_STATIC_LIB_ENTRY_RE = re.compile(r'"\$INSTALL_DIR/lib/([^"]+)"')
+_EXTRA_LINK_FLAGS_RE = re.compile(r'^EXTRA_LINK_FLAGS=(?:"([^"]*)")?\s*$', re.MULTILINE)
+_BREW_LIB_PREFIX = "-L$(brew --prefix)/lib "
+
 
 def explore_harness_compilation(
     install_dir: Path,
@@ -98,6 +106,7 @@ def explore_harness_compilation(
                 stdout=last_stdout,
                 stderr=last_stderr,
                 exit_code=last_exit,
+                script_path=script_path,
             )
 
         upgraded_to_cxx = False
@@ -178,3 +187,27 @@ def _validate_harness_artifacts(workdir: Path) -> list[str]:
     if not out_dir.exists() or not any(out_dir.iterdir()):
         return [f"no compiled harness binary found in {out_dir}"]
     return []
+
+
+def reparse_link_config(
+    script_text: str, static_libs: list[Path], transitive_link_flags: list[str]
+) -> tuple[list[Path], list[str]]:
+    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from build_harness.sh's text.
+
+    An agent fixing a harness link failure edits these variables directly rather than
+    going through build_harness_script, so the structured HarnessExplorationResult it's
+    handed can go stale. Falls back to the given values wherever the expected format
+    isn't found (e.g. the agent restructured the script beyond these two variables).
+    """
+    block_match = _STATIC_LIBS_BLOCK_RE.search(script_text)
+    if block_match:
+        names = _STATIC_LIB_ENTRY_RE.findall(block_match.group(1))
+        if names:
+            static_libs = [Path(name) for name in names]
+
+    flags_match = _EXTRA_LINK_FLAGS_RE.search(script_text)
+    if flags_match:
+        raw = (flags_match.group(1) or "").removeprefix(_BREW_LIB_PREFIX).strip()
+        transitive_link_flags = raw.split() if raw else []
+
+    return static_libs, transitive_link_flags

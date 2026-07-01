@@ -8,6 +8,11 @@ import pytest
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.local.generation import generate_local
+from harnessbuddy.library_builder.models import (
+    BuildExplorationResult,
+    BuildSystem,
+    HarnessExplorationResult,
+)
 
 _FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "repos"
 _FAKE_URL = "https://github.com/example/mylib.git"
@@ -137,3 +142,80 @@ def test_existing_output_dir_raises(tmp_path: Path) -> None:
     output_path.mkdir(parents=True)
     with pytest.raises(FileExistsError):
         generate_local(_analysis("cmake_repo"), output_path)
+
+
+# build_library.sh — reuse of the explored (possibly agent-fixed) script
+
+
+def _exploration_with_script(script_path: Path) -> BuildExplorationResult:
+    return BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        script_path=script_path,
+    )
+
+
+def test_build_library_sh_copies_explored_script_verbatim(tmp_path: Path) -> None:
+    explored = tmp_path / "explored_build_library.sh"
+    explored.write_text("#!/bin/bash\n# agent fix: -DCARES_STATIC=ON\n")
+    result = generate_local(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_with_script(explored)
+    )
+    content = (result.output_path / "build_library.sh").read_text()
+    assert content == explored.read_text()
+
+
+def test_build_library_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
+    exploration = _exploration_with_script(None)  # type: ignore[arg-type]
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "$SCRIPT_DIR/src" in content
+
+
+def test_build_library_sh_falls_back_to_template_without_exploration(tmp_path: Path) -> None:
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out")
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "$SCRIPT_DIR/src" in content
+
+
+# build_harness.sh — reuse of the validated (possibly agent-fixed) script
+
+
+def _harness_with_script(script_path: Path | None) -> HarnessExplorationResult:
+    return HarnessExplorationResult(
+        succeeded=True,
+        command=["bash", "build_harness.sh"],
+        static_libs=[Path("libfoo.a")],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=["-lresolv"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        script_path=script_path,
+    )
+
+
+def test_build_harness_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
+    validated = tmp_path / "validated_build_harness.sh"
+    validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
+    result = generate_local(
+        _analysis("cmake_repo"),
+        tmp_path / "out",
+        harness_exploration=_harness_with_script(validated),
+    )
+    content = (result.output_path / "build_harness.sh").read_text()
+    assert content == validated.read_text()
+
+
+def test_build_harness_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
+    result = generate_local(
+        _analysis("cmake_repo"), tmp_path / "out", harness_exploration=_harness_with_script(None)
+    )
+    content = (result.output_path / "build_harness.sh").read_text()
+    assert "libfoo.a" in content
+    assert "-lresolv" in content

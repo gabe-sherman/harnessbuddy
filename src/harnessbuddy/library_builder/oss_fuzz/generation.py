@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import stat
 from pathlib import Path
 
@@ -70,7 +71,7 @@ def generate_oss_fuzz(
         _write_project_yaml(output_path, analysis),
         _write_dockerfile(output_path, analysis),
         _write_build_sh(output_path),
-        _write_build_library_sh(output_path, analysis),
+        _write_build_library_sh(output_path, analysis, exploration),
         _write_compile_harnesses_sh(output_path, harness_exploration),
         write_default_fuzzer(output_path / "harness_source", analysis),
         _write_provenance_json(output_path, analysis, exploration),
@@ -109,13 +110,13 @@ def _write_dockerfile(output_path: Path, analysis: AnalysisResult) -> Path:
         pkgs = " ".join(apt_packages)
         lines.append(f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n")
 
-    lines.append(f"RUN git clone {analysis.clone_url} $SRC/{analysis.project_name}\n")
+    lines.append(f"RUN git clone {analysis.clone_url} $SRC/src\n")
     if analysis.repo_ref is not None:
-        lines.append(f"RUN git -C $SRC/{analysis.project_name} checkout {analysis.repo_ref}\n")
+        lines.append(f"RUN git -C $SRC/src checkout {analysis.repo_ref}\n")
     lines += [
         "COPY harness_source $SRC/harness_source\n",
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n",
-        f"WORKDIR $SRC/{analysis.project_name}\n",
+        "WORKDIR $SRC/src\n",
     ]
     path.write_text("".join(lines))
     return path
@@ -128,20 +129,32 @@ def _write_build_sh(output_path: Path) -> Path:
     return path
 
 
-def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path:
+def _write_build_library_sh(
+    output_path: Path, analysis: AnalysisResult, exploration: BuildExplorationResult | None
+) -> Path:
+    """Write build_library.sh, reusing the explored (possibly agent-fixed) script when available.
+
+    The Dockerfile clones the repo to $SRC/src, matching the $SCRIPT_DIR/src the explored
+    script uses, so copying it verbatim preserves any fixes an agent made during exploration.
+    Falls back to the static template when no exploration was run or its script isn't safe
+    to copy (e.g. a non-standard source layout).
+    """
     path = output_path / "build_library.sh"
-    path.write_text(
-        build_library_script(
-            analysis.build_system,
-            BuildPaths(
-                source_dir=f"$SCRIPT_DIR/{analysis.project_name}",
-                build_dir="$SCRIPT_DIR/build",
-                install_dir="$SCRIPT_DIR/install",
-                env_file="$SCRIPT_DIR/build.env",
-            ),
-            autotools_setup=analysis.autotools_setup,
+    if exploration is not None and exploration.script_path is not None:
+        shutil.copy2(exploration.script_path, path)
+    else:
+        path.write_text(
+            build_library_script(
+                analysis.build_system,
+                BuildPaths(
+                    source_dir="$SCRIPT_DIR/src",
+                    build_dir="$SCRIPT_DIR/build",
+                    install_dir="$SCRIPT_DIR/install",
+                    env_file="$SCRIPT_DIR/build.env",
+                ),
+                autotools_setup=analysis.autotools_setup,
+            )
         )
-    )
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 

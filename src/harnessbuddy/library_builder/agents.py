@@ -4,10 +4,14 @@ import re
 from pathlib import Path
 
 from harnessbuddy.core.subprocesses import run_command_streaming
-from harnessbuddy.library_builder.exploration import _validate_install_artifacts
+from harnessbuddy.library_builder.exploration import (
+    _validate_install_artifacts,
+    is_standard_source_layout,
+)
 from harnessbuddy.library_builder.harness_explorer import (
     _extract_missing_system_libs,
     _validate_harness_artifacts,
+    reparse_link_config,
 )
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
@@ -22,7 +26,7 @@ _SKILL_PATH: Path = (
 
 _INLINE_INSTRUCTIONS: str = (
     "Fix the failed C/C++ static library build. "
-    "Modify build_library.sh in the source directory so that "
+    "Modify build_library.sh in the work directory so that "
     "install/lib/*.a and install/include/* are populated after running it."
 )
 
@@ -105,6 +109,7 @@ def build_library_prompt(
         f"- build_system: {analysis.build_system.value}\n"
         f"- command: {' '.join(exploration.command)}\n"
         f"- exit_code: {exploration.exit_code}\n"
+        f"- build_library.sh: {workdir / 'build_library.sh'}\n"
         f"- install_dir: {workdir / 'install'}\n"
         f"- build_dir: {workdir / 'build'}\n\n"
         f"### Build output (last 200 lines)\n\n"
@@ -122,8 +127,8 @@ def invoke_library_builder_agent(
 ) -> BuildExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed build.
 
-    Streams agent output to the terminal. CWD is set to analysis.source_path so
-    the agent can read and modify the repo's build files directly.
+    Streams agent output to the terminal. CWD is set to workdir, where build_library.sh
+    lives; the agent can still read and modify the repo's build files via source_dir.
     """
     prompt = build_library_prompt(analysis, exploration, workdir)
     if tool == "claude":
@@ -133,7 +138,7 @@ def invoke_library_builder_agent(
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    run_result = run_command_streaming(cmd, analysis.source_path, timeout)
+    run_result = run_command_streaming(cmd, workdir, timeout)
     _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
 
     succeeded = run_result.exit_code == 0
@@ -153,6 +158,9 @@ def invoke_library_builder_agent(
         exit_code=run_result.exit_code,
         duration_seconds=run_result.duration_seconds,
         llm_used=True,
+        script_path=(
+            workdir / "build_library.sh" if is_standard_source_layout(analysis, workdir) else None
+        ),
     )
 
 
@@ -214,23 +222,33 @@ def invoke_harness_builder_agent(
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
     missing_system_libs = harness.missing_system_libs
+    static_libs = harness.static_libs
+    transitive_link_flags = harness.transitive_link_flags
+    script_path = paths.workdir / "build_harness.sh"
     if succeeded:
         validation_errors = _validate_harness_artifacts(paths.workdir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
+        else:
+            # The agent edits STATIC_LIBS/EXTRA_LINK_FLAGS in the script directly rather
+            # than through us, so re-derive them instead of trusting the pre-fix values.
+            static_libs, transitive_link_flags = reparse_link_config(
+                script_path.read_text(), static_libs, transitive_link_flags
+            )
     if not succeeded:
         missing_system_libs = _extract_missing_system_libs(stderr)
 
     return HarnessExplorationResult(
         succeeded=succeeded,
         command=cmd,
-        static_libs=harness.static_libs,
+        static_libs=static_libs,
         include_dir=harness.include_dir,
-        transitive_link_flags=harness.transitive_link_flags,
+        transitive_link_flags=transitive_link_flags,
         stdout=run_result.stdout,
         stderr=stderr,
         exit_code=run_result.exit_code,
         missing_system_libs=missing_system_libs if not succeeded else [],
         llm_used=True,
+        script_path=script_path if succeeded else None,
     )

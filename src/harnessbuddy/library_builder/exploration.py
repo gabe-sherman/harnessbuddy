@@ -14,19 +14,32 @@ from harnessbuddy.library_builder.models import (
 from harnessbuddy.library_builder.scripts import build_library_script
 
 
+def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
+    """True when the source was cloned to workdir/src, the layout generated output
+    scaffolds expect.
+
+    When true, build_library.sh's paths can be expressed relative to $SCRIPT_DIR
+    (the directory the script lives in), so the same script works unmodified whether
+    run from workdir during exploration or copied into a generated output directory.
+    """
+    return analysis.source_path.resolve() == (workdir / "src").resolve()
+
+
 def explore(
     analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
 ) -> BuildExplorationResult:
-    """Write a host-native build_library.sh into the source tree and run it.
+    """Write a host-native build_library.sh into workdir and run it.
 
-    The script is written to analysis.source_path/build_library.sh with absolute
-    paths for build_dir and install_dir under workdir. Streams build output to
+    The script is written to workdir/build_library.sh. When the source uses the
+    standard workdir/src layout, its paths are $SCRIPT_DIR-relative so the script
+    can be copied verbatim into generated output directories, preserving any agent
+    fixes; BuildExplorationResult.script_path is set in that case. Otherwise paths
+    fall back to absolute and script_path is left unset. Streams build output to
     stdout in real time. build.env is written to workdir after a successful build.
     """
     workdir = workdir.resolve()
     build_dir = workdir / "build"
     install_dir = workdir / "install"
-    env_file = workdir / "build.env"
 
     if build_dir.exists():
         shutil.rmtree(build_dir)
@@ -36,18 +49,21 @@ def explore(
         shutil.rmtree(install_dir)
     install_dir.mkdir(parents=True)
 
+    standard_layout = is_standard_source_layout(analysis, workdir)
+    source_dir = "$SCRIPT_DIR/src" if standard_layout else str(analysis.source_path.resolve())
+
     script = build_library_script(
         analysis.build_system,
         BuildPaths(
-            source_dir=str(analysis.source_path.resolve()),
-            build_dir=str(build_dir),
-            install_dir=str(install_dir),
-            env_file=str(env_file),
+            source_dir=source_dir,
+            build_dir="$SCRIPT_DIR/build",
+            install_dir="$SCRIPT_DIR/install",
+            env_file="$SCRIPT_DIR/build.env",
         ),
         host_fallbacks=True,
         autotools_setup=analysis.autotools_setup,
     )
-    script_path = analysis.source_path / "build_library.sh"
+    script_path = workdir / "build_library.sh"
     script_path.write_text(script)
     script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -63,7 +79,7 @@ def explore(
         )
 
     command = ["bash", str(script_path.name)]
-    result = run_command_streaming(command, analysis.source_path, timeout)
+    result = run_command_streaming(command, workdir, timeout)
 
     succeeded = result.exit_code == 0
     stderr = result.stderr
@@ -81,6 +97,7 @@ def explore(
         stderr=stderr,
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
+        script_path=script_path if standard_layout else None,
     )
 
 

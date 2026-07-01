@@ -193,10 +193,13 @@ def build_library(
     from harnessbuddy.library_builder.exploration import explore
 
     result = explore(analysis, workspace, timeout=timeout)
-    if not result.succeeded and agent is not None:
-        from harnessbuddy.library_builder.agents import invoke_library_builder_agent
-
-        result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
+    if not result.succeeded:
+        if agent is not None:
+            from harnessbuddy.library_builder.agents import invoke_library_builder_agent
+            print("Deterministic library build failed, invoking library build agent")
+            result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
+        else:
+            print("Library build failed and --agent argument was not provided ...")
     return result
 
 

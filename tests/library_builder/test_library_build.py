@@ -171,7 +171,7 @@ class TestStaticBuilds:
         assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.source / "build_library.sh").exists()
+        assert (real_library_build.workdir / "build_library.sh").exists()
 
     def test_build_env_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build.env").exists()
@@ -222,7 +222,7 @@ class TestCurlBuild:
         assert (real_library_build.workdir / "build.env").exists()
 
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.source / "build_library.sh").exists()
+        assert (real_library_build.workdir / "build_library.sh").exists()
 
 
 @pytest.mark.parametrize(
@@ -245,7 +245,7 @@ class TestZlibBuild:
         assert (real_library_build.workdir / "build.env").exists()
 
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.source / "build_library.sh").exists()
+        assert (real_library_build.workdir / "build_library.sh").exists()
 
 
 # real build failure

@@ -157,3 +157,25 @@ def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
             HarnessPaths(install_dir=tmp_path / "work" / "install", workdir=tmp_path / "work"),
             tool="unknown",
         )
+
+
+def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    (workdir / "out").mkdir(parents=True)
+    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "build_harness.sh").write_text(
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+    )
+    with patch(
+        "harnessbuddy.library_builder.agents.run_command_streaming",
+        return_value=RunResult(stdout="done", stderr="", exit_code=0, duration_seconds=1.0),
+    ):
+        result = invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `ares_getaddrinfo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+        )
+    assert result.succeeded is True
+    assert result.transitive_link_flags == ["-lresolv"]
+    assert result.static_libs == [Path("libcares.a")]
+    assert result.script_path == workdir / "build_harness.sh"

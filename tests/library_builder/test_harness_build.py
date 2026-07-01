@@ -135,7 +135,7 @@ class TestStaticBuilds:
         assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
     def test_build_library_script_written(self, real_harness_build: LibBuild) -> None:
-        assert (real_harness_build.source / "build_library.sh").exists()
+        assert (real_harness_build.workdir / "build_library.sh").exists()
 
     def test_build_env_written(self, real_harness_build: LibBuild) -> None:
         assert (real_harness_build.workdir / "build.env").exists()
@@ -178,7 +178,7 @@ class TestDynamicBuilds:
         assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
     def test_build_library_script_written(self, real_harness_build: LibBuild) -> None:
-        assert (real_harness_build.source / "build_library.sh").exists()
+        assert (real_harness_build.workdir / "build_library.sh").exists()
 
     def test_build_env_written(self, real_harness_build: LibBuild) -> None:
         assert (real_harness_build.workdir / "build.env").exists()

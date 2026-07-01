@@ -50,6 +50,10 @@ class BuildExplorationResult:
     exit_code: int
     duration_seconds: float
     llm_used: bool = False
+    # Set only when the source was cloned to the standard workdir/src layout, meaning
+    # the script's paths are $SCRIPT_DIR-relative and it can be copied verbatim into
+    # generated output directories (preserving any agent fixes).
+    script_path: Path | None = None
 
 
 @dataclass
@@ -64,6 +68,10 @@ class HarnessExplorationResult:
     exit_code: int
     missing_system_libs: list[str] = field(default_factory=list)
     llm_used: bool = False
+    # Set only on a validated success. The script lives in workdir and uses only
+    # $SCRIPT_DIR-relative paths, so it can be copied verbatim into the local output
+    # directory (preserving any agent fixes) without further validation.
+    script_path: Path | None = None
 
 
 @dataclass

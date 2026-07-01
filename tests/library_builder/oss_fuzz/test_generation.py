@@ -114,10 +114,10 @@ def test_dockerfile_no_ref(tmp_path: Path) -> None:
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
         "FROM gcr.io/oss-fuzz-base/base-builder\n"
-        f"RUN git clone {_FAKE_URL} $SRC/mylib\n"
+        f"RUN git clone {_FAKE_URL} $SRC/src\n"
         "COPY harness_source $SRC/harness_source\n"
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-        "WORKDIR $SRC/mylib\n"
+        "WORKDIR $SRC/src\n"
     )
     assert content == expected
 
@@ -127,11 +127,11 @@ def test_dockerfile_with_ref(tmp_path: Path) -> None:
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
         "FROM gcr.io/oss-fuzz-base/base-builder\n"
-        f"RUN git clone {_FAKE_URL} $SRC/mylib\n"
-        "RUN git -C $SRC/mylib checkout v1.3.2\n"
+        f"RUN git clone {_FAKE_URL} $SRC/src\n"
+        "RUN git -C $SRC/src checkout v1.3.2\n"
         "COPY harness_source $SRC/harness_source\n"
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-        "WORKDIR $SRC/mylib\n"
+        "WORKDIR $SRC/src\n"
     )
     assert content == expected
 
@@ -144,10 +144,10 @@ def test_dockerfile_with_ref(tmp_path: Path) -> None:
     [
         ("cmake_repo", "cmake -B $SCRIPT_DIR/build"),
         ("meson_repo", "meson setup"),
-        ("autotools_repo", "$SCRIPT_DIR/mylib/configure"),
-        ("autotools_configure_repo", "$SCRIPT_DIR/mylib/configure"),
-        ("autotools_autogen_repo", "$SCRIPT_DIR/mylib/configure"),
-        ("makefile_repo", "make -C $SCRIPT_DIR/mylib"),
+        ("autotools_repo", "$SCRIPT_DIR/src/configure"),
+        ("autotools_configure_repo", "$SCRIPT_DIR/src/configure"),
+        ("autotools_autogen_repo", "$SCRIPT_DIR/src/configure"),
+        ("makefile_repo", "make -C $SCRIPT_DIR/src"),
     ],
 )
 def test_build_library_sh_build_command(
@@ -348,3 +348,22 @@ def test_existing_output_dir_raises(tmp_path: Path) -> None:
     output_path.mkdir(parents=True)
     with pytest.raises(FileExistsError):
         generate_oss_fuzz(_analysis("cmake_repo"), output_path)
+
+
+# build_library.sh — reuse of the explored (possibly agent-fixed) script
+
+
+def test_build_library_sh_copies_explored_script_verbatim(tmp_path: Path) -> None:
+    explored = tmp_path / "explored_build_library.sh"
+    explored.write_text("#!/bin/bash\n# agent fix: -DCARES_STATIC=ON\n")
+    exploration = _fake_exploration()
+    exploration.script_path = explored
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert content == explored.read_text()
+
+
+def test_build_library_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _fake_exploration())
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "$SCRIPT_DIR/src" in content
