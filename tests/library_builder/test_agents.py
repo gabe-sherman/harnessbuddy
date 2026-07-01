@@ -18,6 +18,7 @@ from harnessbuddy.library_builder.models import (
     BuildExplorationResult,
     BuildSystem,
     HarnessExplorationResult,
+    HarnessPaths,
     Language,
 )
 
@@ -143,8 +144,7 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
         invoke_harness_builder_agent(
             _analysis(tmp_path),
             _failed_harness("undefined reference to `foo'"),
-            tmp_path / "work" / "install",
-            tmp_path / "work",
+            HarnessPaths(install_dir=tmp_path / "work" / "install", workdir=tmp_path / "work"),
         )
     assert action_required_text in exc_info.value.output
 
@@ -154,7 +154,6 @@ def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
         invoke_harness_builder_agent(
             _analysis(tmp_path),
             _failed_harness("undefined reference to `foo'"),
-            tmp_path / "work" / "install",
-            tmp_path / "work",
+            HarnessPaths(install_dir=tmp_path / "work" / "install", workdir=tmp_path / "work"),
             tool="unknown",
         )

@@ -7,6 +7,7 @@ from pathlib import Path
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
+    BuildPaths,
     GenerationResult,
     HarnessExplorationResult,
 )
@@ -77,10 +78,12 @@ def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path
     path.write_text(
         build_library_script(
             analysis.build_system,
-            source_dir="$SCRIPT_DIR/src",
-            build_dir="$SCRIPT_DIR/build",
-            install_dir="$SCRIPT_DIR/install",
-            env_file="$SCRIPT_DIR/build.env",
+            BuildPaths(
+                source_dir="$SCRIPT_DIR/src",
+                build_dir="$SCRIPT_DIR/build",
+                install_dir="$SCRIPT_DIR/install",
+                env_file="$SCRIPT_DIR/build.env",
+            ),
             host_fallbacks=True,
             autotools_setup=analysis.autotools_setup,
         )

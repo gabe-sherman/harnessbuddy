@@ -8,6 +8,7 @@ from harnessbuddy.library_builder.models import (
     AnalysisResult,
     AutotoolsSetup,
     BuildExplorationResult,
+    BuildPaths,
     GenerationResult,
     HarnessExplorationResult,
     Language,
@@ -132,10 +133,12 @@ def _write_build_library_sh(output_path: Path, analysis: AnalysisResult) -> Path
     path.write_text(
         build_library_script(
             analysis.build_system,
-            source_dir=f"$SCRIPT_DIR/{analysis.project_name}",
-            build_dir="$SCRIPT_DIR/build",
-            install_dir="$SCRIPT_DIR/install",
-            env_file="$SCRIPT_DIR/build.env",
+            BuildPaths(
+                source_dir=f"$SCRIPT_DIR/{analysis.project_name}",
+                build_dir="$SCRIPT_DIR/build",
+                install_dir="$SCRIPT_DIR/install",
+                env_file="$SCRIPT_DIR/build.env",
+            ),
             autotools_setup=analysis.autotools_setup,
         )
     )

@@ -67,6 +67,20 @@ class HarnessExplorationResult:
 
 
 @dataclass
+class BuildPaths:
+    source_dir: str
+    build_dir: str
+    install_dir: str
+    env_file: str
+
+
+@dataclass
+class HarnessPaths:
+    install_dir: Path
+    workdir: Path
+
+
+@dataclass
 class GenerationResult:
     project_name: str
     output_path: Path

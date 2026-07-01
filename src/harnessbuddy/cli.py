@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    from harnessbuddy.core.repos import RepoSource
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
@@ -216,37 +217,36 @@ def build_harness(
     result = explore_harness_compilation(install_dir, workspace, analysis.language)
     if not result.succeeded and agent is not None:
         from harnessbuddy.library_builder.agents import invoke_harness_builder_agent
+        from harnessbuddy.library_builder.models import HarnessPaths
 
-        result = invoke_harness_builder_agent(analysis, result, install_dir, workspace, tool=agent)
+        result = invoke_harness_builder_agent(
+            analysis, result, HarnessPaths(install_dir=install_dir, workdir=workspace), tool=agent
+        )
     return result
 
 
-def _cmd_generate(args: argparse.Namespace) -> int:
-    from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
+def _ingest_source(args: argparse.Namespace, state_dir: Path) -> RepoSource | int:
+    """Clone or resolve the repository, returning its source path or an exit code on failure."""
     from harnessbuddy.core.repos import (
         NoCloneableOriginError,
         RepositoryNotFoundError,
         ingest_local,
         ingest_url,
     )
-    from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
-
-    state_dir = default_state_dir()
 
     try:
         if _is_url(args.repo_url):
-            source = ingest_url(
+            return ingest_url(
                 args.repo_url,
                 project_name=args.project_name,
                 repo_ref=args.repo_ref,
                 state_dir=state_dir,
             )
-        else:
-            source = ingest_local(
-                Path(args.repo_url),
-                project_name=args.project_name,
-                repo_ref=args.repo_ref,
-            )
+        return ingest_local(
+            Path(args.repo_url),
+            project_name=args.project_name,
+            repo_ref=args.repo_ref,
+        )
     except RepositoryNotFoundError as exc:
         print(f"Repository not found: {exc}", file=sys.stderr)
         return 1
@@ -258,12 +258,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
         return 1
 
-    try:
-        analysis = analyze(source)
-    except UnsupportedRepositoryError:
-        print("No C/C++ build signals found in this repository.", file=sys.stderr)
-        return 1
 
+def _resolve_output_paths(args: argparse.Namespace, analysis: AnalysisResult) -> tuple[Path, Path]:
+    """Determine local/oss-fuzz output paths, prompting to overwrite an existing directory."""
     parent_path = Path(args.output) if args.output else Path.cwd()
     base_output = parent_path / analysis.project_name / "output"
     if base_output.exists():
@@ -275,14 +272,17 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         else:
             print(f"Output directory {base_output} already exists, overwriting ...")
         shutil.rmtree(base_output)
-    local_output_path = base_output / "local"
-    oss_output_path = base_output / "oss-fuzz"
+    return base_output / "local", base_output / "oss-fuzz"
 
-    workspace = project_dir(state_dir, analysis.project_name)
-    load_system_deps(analysis)
 
-    state_file = project_state_file(state_dir, analysis.project_name)
-    state = load_project_state(state_file)
+def _run_library_phase(
+    analysis: AnalysisResult,
+    workspace: Path,
+    agent: str | None,
+    state: _ProjectState,
+    state_file: Path,
+) -> BuildExplorationResult:
+    """Merge agent-detected system deps into state, then build the library."""
     if analysis.system_packages:
         merge_packages_into_state(
             state,
@@ -293,7 +293,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
         save_project_state(state_file, state)
 
-    agent = None if args.no_agents else args.agent
     print(f"Running host build in {workspace} ...")
     if agent:
         print(f"Agent fallback enabled ({agent}).")
@@ -303,17 +302,20 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     if result.llm_used:
         print("Agent finished.")
 
-    if not result.succeeded:
-        print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
-        return 1
+    return result
 
-    print("Successfully produced library build!")
-    from harnessbuddy.library_builder.local.generation import generate_local
-    from harnessbuddy.library_builder.models import OutputDirectoryExistsError
-    from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
+
+def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
+    analysis: AnalysisResult,
+    install_dir: Path,
+    workspace: Path,
+    agent: str | None,
+    state: _ProjectState,
+    state_file: Path,
+) -> tuple[HarnessExplorationResult, list[str]]:
+    """Probe harness compilation, persist any newly-discovered packages, and report status."""
     from harnessbuddy.library_builder.package_names import translate as translate_packages
 
-    install_dir = workspace / "install"
     print("Probing harness compilation ...")
     harness_result = build_harness(analysis, install_dir, workspace, agent=agent)
 
@@ -360,6 +362,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     else:
         print("Successfully produced harness compilation!")
 
+    return harness_result, brew_packages
+
+
+def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
+    analysis: AnalysisResult,
+    local_output_path: Path,
+    oss_output_path: Path,
+    result: BuildExplorationResult,
+    harness_result: HarnessExplorationResult,
+    brew_packages: list[str],
+) -> int:
+    """Write the local dev scaffold and OSS-Fuzz project, reporting their output paths."""
+    from harnessbuddy.library_builder.local.generation import generate_local
+    from harnessbuddy.library_builder.models import OutputDirectoryExistsError
+    from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
+
     try:
         local_result = generate_local(
             analysis, local_output_path, result, harness_result, brew_packages=brew_packages
@@ -373,6 +391,47 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(f"OSS-Fuzz:     {oss_fuzz_result.output_path}")
 
     return 0
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
+    from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+
+    state_dir = default_state_dir()
+
+    source = _ingest_source(args, state_dir)
+    if isinstance(source, int):
+        return source
+
+    try:
+        analysis = analyze(source)
+    except UnsupportedRepositoryError:
+        print("No C/C++ build signals found in this repository.", file=sys.stderr)
+        return 1
+
+    local_output_path, oss_output_path = _resolve_output_paths(args, analysis)
+
+    workspace = project_dir(state_dir, analysis.project_name)
+    load_system_deps(analysis)
+
+    state_file = project_state_file(state_dir, analysis.project_name)
+    state = load_project_state(state_file)
+    agent = None if args.no_agents else args.agent
+
+    result = _run_library_phase(analysis, workspace, agent, state, state_file)
+    if not result.succeeded:
+        print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
+        return 1
+    print("Successfully produced library build!")
+
+    install_dir = workspace / "install"
+    harness_result, brew_packages = _run_harness_phase(
+        analysis, install_dir, workspace, agent, state, state_file
+    )
+
+    return _generate_outputs(
+        analysis, local_output_path, oss_output_path, result, harness_result, brew_packages
+    )
 
 
 def _is_url(value: str) -> bool:

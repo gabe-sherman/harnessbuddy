@@ -13,6 +13,7 @@ from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
     HarnessExplorationResult,
+    HarnessPaths,
 )
 
 _SKILL_PATH: Path = (
@@ -189,18 +190,17 @@ def build_harness_prompt(
 def invoke_harness_builder_agent(
     analysis: AnalysisResult,
     harness: HarnessExplorationResult,
-    install_dir: Path,
-    workdir: Path,
+    paths: HarnessPaths,
     *,
     tool: str = "claude",
     timeout: int = 600,
 ) -> HarnessExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
-    Streams agent output to the terminal. CWD is set to workdir so the agent can read
+    Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
     and modify build_harness.sh and harness_src/ directly.
     """
-    prompt = build_harness_prompt(analysis, harness, install_dir, workdir)
+    prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir)
     if tool == "claude":
         cmd = ["claude", "--print", "--permission-mode", "auto", prompt]
     elif tool == "codex":
@@ -208,14 +208,14 @@ def invoke_harness_builder_agent(
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    run_result = run_command_streaming(cmd, workdir, timeout)
+    run_result = run_command_streaming(cmd, paths.workdir, timeout)
     _raise_for_agent_failure(run_result.exit_code, run_result.stdout + run_result.stderr)
 
     succeeded = run_result.exit_code == 0
     stderr = run_result.stderr
     missing_system_libs = harness.missing_system_libs
     if succeeded:
-        validation_errors = _validate_harness_artifacts(workdir)
+        validation_errors = _validate_harness_artifacts(paths.workdir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)

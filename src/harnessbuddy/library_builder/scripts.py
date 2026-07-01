@@ -6,6 +6,7 @@ from pathlib import Path
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     AutotoolsSetup,
+    BuildPaths,
     BuildSystem,
     HarnessExplorationResult,
     Language,
@@ -18,10 +19,7 @@ _HOST_ENV_FALLBACKS = (
 
 def build_library_script(
     build_system: BuildSystem,
-    source_dir: str,
-    build_dir: str,
-    install_dir: str,
-    env_file: str,
+    paths: BuildPaths,
     *,
     host_fallbacks: bool = False,
     autotools_setup: AutotoolsSetup | None = None,
@@ -30,10 +28,7 @@ def build_library_script(
 
     Args:
         build_system: detected build system.
-        source_dir: path string for the source directory.
-        build_dir: path string for the build directory (relative or absolute).
-        install_dir: path string for the install prefix.
-        env_file: path string where build.env will be written.
+        paths: source/build/install/env-file path strings for the generated script.
         host_fallbacks: when True, add CC/CXX/CFLAGS/CXXFLAGS defaults for host builds.
         autotools_setup: autotools bootstrap variant (only used when build_system is AUTOTOOLS).
     """
@@ -44,11 +39,13 @@ def build_library_script(
     )
     if host_fallbacks:
         header += _HOST_ENV_FALLBACKS
-    body = _build_body(build_system, source_dir, build_dir, install_dir, autotools_setup)
+    body = _build_body(
+        build_system, paths.source_dir, paths.build_dir, paths.install_dir, autotools_setup
+    )
     footer = (
-        f"\ncat > {env_file} <<'EOF'\n"
-        f'HB_INCLUDE_FLAGS="-I{install_dir}/include"\n'
-        f'HB_LIBRARY_FLAGS="-L{install_dir}/lib"\n'
+        f"\ncat > {paths.env_file} <<'EOF'\n"
+        f'HB_INCLUDE_FLAGS="-I{paths.install_dir}/include"\n'
+        f'HB_LIBRARY_FLAGS="-L{paths.install_dir}/lib"\n'
         "EOF\n"
     )
     return header + body + footer

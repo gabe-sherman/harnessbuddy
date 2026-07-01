@@ -91,7 +91,11 @@ def _timeout() -> RunResult:
 
 
 def _require_cmake() -> None:
-    if subprocess.run(["cmake", "--version"], capture_output=True).returncode != 0:
+    try:
+        available = subprocess.run(["cmake", "--version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        available = False
+    if not available:
         pytest.skip("cmake not available")
 
 

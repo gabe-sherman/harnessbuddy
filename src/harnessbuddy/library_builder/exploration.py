@@ -5,7 +5,12 @@ import stat
 from pathlib import Path
 
 from harnessbuddy.core.subprocesses import run_command_streaming
-from harnessbuddy.library_builder.models import AnalysisResult, BuildExplorationResult, BuildSystem
+from harnessbuddy.library_builder.models import (
+    AnalysisResult,
+    BuildExplorationResult,
+    BuildPaths,
+    BuildSystem,
+)
 from harnessbuddy.library_builder.scripts import build_library_script
 
 
@@ -33,10 +38,12 @@ def explore(
 
     script = build_library_script(
         analysis.build_system,
-        source_dir=str(analysis.source_path.resolve()),
-        build_dir=str(build_dir),
-        install_dir=str(install_dir),
-        env_file=str(env_file),
+        BuildPaths(
+            source_dir=str(analysis.source_path.resolve()),
+            build_dir=str(build_dir),
+            install_dir=str(install_dir),
+            env_file=str(env_file),
+        ),
         host_fallbacks=True,
         autotools_setup=analysis.autotools_setup,
     )
