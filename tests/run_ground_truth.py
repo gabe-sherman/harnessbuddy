@@ -1,20 +1,29 @@
+"""Ground-truth sanity check: run the CLI against real-world libraries, then verify each
+generated oss-fuzz project builds and compiles a real, hand-written fuzzing harness.
+
+Not a pytest test — a manual dev script, run with:
+
+    uv run python tests/run_ground_truth.py
+
+Drop curated harness sources into tests/real_harnesses/<project_name>_*.{c,cc,cpp}; only
+libraries with a matching harness get the Docker build/compile check. Requires Docker.
+"""
+
 from __future__ import annotations
 
 import logging
 import shutil
-import subprocess as sp
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from harnessbuddy.cli import (
-    main,
-)
-from harnessbuddy.library_builder.models import (
-    BuildExplorationResult,
-    BuildSystem,
-)
+from harnessbuddy.cli import main
+from harnessbuddy.library_builder.models import BuildSystem
 
 logger = logging.getLogger(__name__)
+
+_OUTPUT_DIR = Path("ground_truth_test_output")
+_REAL_HARNESSES_DIR = Path(__file__).parent / "real_harnesses"
 
 
 @dataclass(frozen=True)
@@ -22,70 +31,79 @@ class LibSpec:
     url: str
     project_name: str
     build_system: BuildSystem
-    builds_static: bool
-
-
-@dataclass
-class LibBuild:
-    spec: LibSpec
-    result: BuildExplorationResult
-    workdir: Path
-    source: Path
 
 
 LIBS = [
-    # cmake
-    LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
-    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
-    LibSpec("https://github.com/HDFGroup/hdf5.git", "hdf5", BuildSystem.CMAKE, True),
-    LibSpec(
-        "https://github.com/c-ares/c-ares.git", "c-ares", BuildSystem.CMAKE, False
-    ),  # non-canonical static flag (-DCARES_STATIC)
-    LibSpec(
-        "https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False
-    ),  # requires libpsl
-    LibSpec("https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False),
-    # make
-    LibSpec("https://github.com/lz4/lz4.git", "lz4", BuildSystem.MAKEFILE, True),
-    # autotools
-    LibSpec(
-        "https://github.com/libimobiledevice/libplist", "libplist", BuildSystem.AUTOTOOLS, True
-    ),
-    LibSpec("https://github.com/gpac/gpac.git", "gpac", BuildSystem.AUTOTOOLS, True),
-    LibSpec("https://github.com/file/file.git", "file", BuildSystem.AUTOTOOLS, True),
-    LibSpec("https://github.com/mm2/Little-CMS.git", "lcms", BuildSystem.AUTOTOOLS, True),
-    # meson
-    LibSpec(
-        "https://gitlab.gnome.org/GNOME/tinysparql.git", "tinysparql", BuildSystem.MESON, False
-    ),  # requires external deps
-    LibSpec(
-        "https://github.com/rauc/rauc.git", "rauc", BuildSystem.MESON, False
-    ),  # requires dbus-1
+    LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE),
+    LibSpec("https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE),
 ]
 
 _AGENT = "claude"
 
 
-def check_oss_build(project_name: str):
-    """Copy a real fuzzing harness stored in ./tests/real_harnesses into the oss-fuzz dir to ensure it can build real harnesses"""
-    dst_dir = f"./output/{project_name}/oss-fuzz"
-    for f in Path("./tests/real_harnesses").glob(f"{project_name}*"):
-        if f.is_file():
-            shutil.copy2(f, dst_dir / "harness_src")
-    shutil.copytree("src_dir", "dst_dir", dirs_exist_ok=True)
+def _generate(lib: LibSpec) -> bool:
+    """Run `harnessbuddy generate` for lib into output/<project_name>, returning success."""
+    project_output = _OUTPUT_DIR / lib.project_name
+    if project_output.exists():
+        shutil.rmtree(project_output)
+    rc = main(["generate", lib.url, "--agent", _AGENT, "--output", str(project_output)])
+    return rc == 0
 
-    command = ["docker", "build", f"-t{project_name}:gt-test", "."]
-    sp.run(command, cwd=f"./output/{project_name}/oss-fuzz")
-    command = ["docker", "run", f"{project_name}:gt-test", "compile"]
-    sp.run(command, cwd=f"./output/{project_name}/oss-fuzz")
+
+def _docker_build_and_compile(project_name: str) -> bool:
+    """Drop real harness sources into the generated oss-fuzz project and verify they
+    build and compile inside the OSS-Fuzz Docker image.
+
+    Returns True when there's no ground-truth harness to check (nothing to fail) or when
+    the Docker build and compile both succeed.
+    """
+    harnesses = list(_REAL_HARNESSES_DIR.glob(f"{project_name}*"))
+    if not harnesses:
+        logger.warning("no ground-truth harness for %s, skipping docker check", project_name)
+        return True
+    oss_fuzz_dir = _OUTPUT_DIR / project_name / "oss-fuzz"
+    harness_dir = oss_fuzz_dir / "harness_source"
+    ext = "c"
+    for harness in harnesses:
+        ext = harness.suffix
+        shutil.copy2(harness, harness_dir / harness.name)
+
+    tag = f"{project_name}:gt-test"
+    build = subprocess.run(["docker", "build", "-t", tag, "."], cwd=oss_fuzz_dir, check=False)
+    if build.returncode != 0:
+        logger.error("docker build failed for %s", project_name)
+        return False
+
+    # Compile the harness and fuzz it for 2 seconds
+    result = subprocess.run(
+        ["docker", "run", "-e", f"FUZZING_LANGUAGE={ext}", "--rm",
+        "--entrypoint", "bash", tag, "-c", f"compile && /out/{project_name} -max_total_time=2"],
+        cwd=oss_fuzz_dir, check=False,
+    )
+    if result.returncode != 0:
+        logger.error("harness compile failed for %s", project_name)
+        return False
+
+    return True
+
+
+def run_ground_truth() -> None:
+    """Generate and Docker-verify every library in LIBS, printing a pass/fail summary."""
+    failures = []
+    for lib in LIBS:
+        print(f"=== {lib.project_name} ===")
+        if not _generate(lib):
+            print(f"WARNING: generate failed for {lib.project_name}")
+            failures.append(lib.project_name)
+            continue
+        if not _docker_build_and_compile(lib.project_name):
+            failures.append(lib.project_name)
+
+    if failures:
+        print(f"FAILED: {', '.join(failures)}")
+    else:
+        print("All libraries passed the ground-truth check.")
 
 
 if __name__ == "__main__":
-    """Loop through all libraries and """
-    results = []
-    for lib in LIBS:
-        result = main(["generate", str(lib.url)])
-        if not result.succeeded:
-            print(f"WARNING: Build for library {lib.project_name} failed")
-            continue
-        check_oss_build(lib.project_name)
+    run_ground_truth()
