@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -982,6 +983,156 @@ def test_generate_harness_missing_package_reaches_state_then_next_run_output(
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     assert "libfoo-dev" in dockerfile
     assert "libfoo-dev" in setup_sh
+
+
+def test_generate_harness_linked_flags_only_reaches_output_on_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_harness_result = HarnessExplorationResult(
+        succeeded=True,
+        command=[],
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=["-lzstd", "-lz"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    with patch("harnessbuddy.cli.build_harness", return_value=fake_harness_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    assert "libzstd-dev" in dockerfile
+    assert "zlib1g-dev" in dockerfile
+
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    if sys.platform == "darwin":
+        assert "zstd" in setup_sh
+        assert "zlib" in setup_sh
+    else:
+        assert "libzstd-dev" in setup_sh
+        assert "zlib1g-dev" in setup_sh
+
+
+def test_generate_agent_repaired_harness_linked_flags_reaches_output_on_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "out").mkdir(parents=True, exist_ok=True)
+        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "compile_harnesses.sh").write_text(
+            'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-llzma"\n'
+        )
+        (workdir / "agent_report.json").write_text(json.dumps({"summary": "done"}))
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    assert "liblzma-dev" in dockerfile
+
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    if sys.platform == "darwin":
+        assert "xz" in setup_sh
+    else:
+        assert "liblzma-dev" in setup_sh
+
+
+def test_generate_harness_unknown_linked_lib_warns_on_success(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_harness_result = HarnessExplorationResult(
+        succeeded=True,
+        command=[],
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=["-lnonexistentlib"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    with patch("harnessbuddy.cli.build_harness", return_value=fake_harness_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    assert "nonexistentlib" in capsys.readouterr().err
+
+
+def test_generate_library_and_harness_phase_share_package_without_duplication(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        llm_used=True,
+        missing_system_packages=["libzstd-dev"],
+    )
+    fake_harness_result = HarnessExplorationResult(
+        succeeded=True,
+        command=[],
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=["-lzstd"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+    )
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch("harnessbuddy.cli.build_harness", return_value=fake_harness_result),
+    ):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    assert dockerfile.count("libzstd-dev") == 1
 
 
 # load_project_state / save_project_state / merge_packages_into_state

@@ -6,10 +6,22 @@ from unittest.mock import patch
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.harness_explorer import (
     explore_harness_compilation,
+    lib_names_from_link_flags,
     reparse_lib_paths,
     reparse_link_config,
 )
 from harnessbuddy.library_builder.models import Language
+
+# lib_names_from_link_flags
+
+
+def test_lib_names_from_link_flags_strips_prefix() -> None:
+    assert lib_names_from_link_flags(["-lzstd", "-lz", "-llzma"]) == ["zstd", "z", "lzma"]
+
+
+def test_lib_names_from_link_flags_empty_list() -> None:
+    assert lib_names_from_link_flags([]) == []
+
 
 # reparse_link_config
 

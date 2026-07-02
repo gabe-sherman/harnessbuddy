@@ -192,6 +192,16 @@ def _extract_missing_system_libs(stderr: str) -> list[str]:
     return list(dict.fromkeys(libs))  # deduplicate, preserve order
 
 
+def lib_names_from_link_flags(flags: list[str]) -> list[str]:
+    """Strip the "-l" prefix from transitive_link_flags entries.
+
+    Every entry in transitive_link_flags is "-l<name>" (every key in
+    symbol_patterns.json is "-l<name>"), matching the bare-name input
+    package_names.translate() expects.
+    """
+    return [flag.removeprefix("-l") for flag in flags]
+
+
 def _symbol_to_flag(symbol: str) -> str | None:
     for flag, pattern in _LIB_PATTERNS.items():
         if pattern.search(symbol):

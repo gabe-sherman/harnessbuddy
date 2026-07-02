@@ -214,6 +214,66 @@
   credentials needed). Scenarios 2, 3, 5 need an authenticated
   `claude`/`codex` CLI and real API cost — not run this session
 
+### Phase 10 — Structured agent report
+
+- `specs/004-structured-agent-report/` (tracked as beads epic `harnessbuddy-jou`,
+  T001-T030): both the library-builder and harness-builder agents now write a
+  single structured `agent_report.json` (`summary`, `missing_system_packages`,
+  `extra_include_paths`, `extra_library_paths`) to their ephemeral workdir
+  before exiting, replacing the old apt-only `system_deps.json` and the
+  scraped-last-assistant-message summary entirely — both are fully retired
+- New `AgentReport` dataclass (`library_builder/models.py`); `BuildExplorationResult`
+  and `HarnessExplorationResult` gained the same three list/summary fields
+- Missing packages now flow into `state.json`/Dockerfile/`setup.sh` on every
+  agent outcome, including the `BuildFailureError`/`LLMBudgetError`
+  exception paths (previously packages were lost whenever the agent raised
+  instead of returning)
+- Extra include/library paths from either agent are wired end-to-end into
+  harness compilation: the harness probe, and the generated
+  `build_harness.sh`/`compile_harnesses.sh`
+- `agents/library_builder/SKILL.md` and `agents/harness_builder/SKILL.md`
+  rewritten to require the new `agent_report.json` contract instead of
+  `system_deps.json`
+- Full gate suite passes with zero warnings; manually re-verified
+  quickstart.md scenarios 4, 5, and 6 (no agent credentials needed) —
+  no-report/malformed-report defaults to unavailable, empty extra-paths
+  produce no noise, and missing packages survive into a second, agent-less
+  run via `state.json`
+
+### Phase 11 — Harness linker dependencies become install commands
+
+- `specs/005-harness-system-packages/` (tracked as beads epic `harnessbuddy-jw9`,
+  T001-T011): every `-lxxx` flag a harness link step resolves
+  (`transitive_link_flags`) now reaches the generated Dockerfile/`setup.sh`
+  as an apt/brew install command, not only flags the linker reported
+  missing on the exploration host (`missing_system_libs`) — closes a gap
+  confirmed against a real libtiff ground-truth run, where
+  `compile_harnesses.sh` embedded `-lzstd -lz -llzma` but neither generated
+  file installed anything, because the harness link succeeded locally only
+  since the exploration machine already had those libraries
+- New `lib_names_from_link_flags()` in `harness_explorer.py` strips the
+  `-l` prefix so `transitive_link_flags` entries match the bare-name input
+  `package_names.translate()` expects
+- `_run_harness_phase` in `cli.py` now unions `missing_system_libs` with
+  `lib_names_from_link_flags(transitive_link_flags)` (deduplicated,
+  order-preserving) before translating/merging into `state.json` — covers
+  both `explore_harness_compilation`'s and an agent-repaired
+  `invoke_harness_builder_agent`'s success paths
+- Any linked dependency with no `package_names.json` mapping is now
+  printed to stderr (`Warning: no known apt/brew package mapping for: ...`)
+  instead of being silently written into `state.json`'s `unknown_libs`
+  with no console output
+- `merge_packages_into_state`'s existing cross-source dedup means a
+  package contributed by both the library-build phase and the harness-link
+  phase still appears exactly once per generated file — validated by test,
+  no new code required
+- Full gate suite passes with zero warnings; manually re-verified
+  quickstart.md scenarios 1-3, 6, and 7 end-to-end against the real
+  `gitlab.com/libtiff/libtiff` repository (no agent credentials needed).
+  Scenario 4 (Docker build) and scenario 5 (scratch `package_names.json`
+  edit) not run this session — no Docker available in the sandbox, and
+  scenario 5's behavior is already covered by automated test coverage
+
 ---
 
 ## Not Yet Started

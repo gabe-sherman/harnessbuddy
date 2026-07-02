@@ -311,6 +311,7 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     state_file: Path,
 ) -> tuple[HarnessExplorationResult, list[str]]:
     """Probe harness compilation, persist any newly-discovered packages, and report status."""
+    from harnessbuddy.library_builder.harness_explorer import lib_names_from_link_flags
     from harnessbuddy.library_builder.package_names import translate as translate_packages
 
     print("Probing harness compilation ...")
@@ -319,11 +320,19 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     if harness_result.llm_used:
         print("Harness agent finished.")
 
-    # Translate any linker-reported missing libs to packages and persist immediately,
-    # regardless of whether exploration succeeded or failed.
+    # Translate every linked dependency to packages and persist immediately, regardless
+    # of whether exploration succeeded or failed. This covers both libs the linker
+    # reported missing (missing_system_libs) and libs it resolved silently because the
+    # exploration host already had them (transitive_link_flags).
+    linked_libs = list(
+        dict.fromkeys(
+            harness_result.missing_system_libs
+            + lib_names_from_link_flags(harness_result.transitive_link_flags)
+        )
+    )
     translation = None
-    if harness_result.missing_system_libs:
-        translation = translate_packages(harness_result.missing_system_libs)
+    if linked_libs:
+        translation = translate_packages(linked_libs)
         merge_packages_into_state(
             state,
             apt_packages=translation.apt_packages,
@@ -332,6 +341,14 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
             source_tag="linker",
         )
         save_project_state(state_file, state)
+
+    if translation is not None and translation.unknown_libs:
+        unknown = ", ".join(translation.unknown_libs)
+        print(
+            f"Warning: no known apt/brew package mapping for: {unknown}. "
+            "Install these manually before building elsewhere.",
+            file=sys.stderr,
+        )
 
     # The harness-build agent's own self-reported packages are already resolved names,
     # unlike missing_system_libs above (bare library names requiring translation).
