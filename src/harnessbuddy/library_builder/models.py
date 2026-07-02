@@ -45,7 +45,9 @@ class AgentReport:
     """Parsed contents of an agent invocation's agent_report.json, or "nothing reported"."""
 
     summary: str | None = None
-    missing_system_packages: list[str] = field(default_factory=list)
+    missing_libs: list[str] = field(default_factory=list)
+    missing_apt_packages: list[str] = field(default_factory=list)
+    missing_brew_packages: list[str] = field(default_factory=list)
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
 
@@ -69,7 +71,8 @@ class BuildExplorationResult:
     output_tokens: int | None = None
     transcript_path: Path | None = None
     agent_summary: str | None = None
-    missing_system_packages: list[str] = field(default_factory=list)
+    missing_apt_packages: list[str] = field(default_factory=list)
+    missing_brew_packages: list[str] = field(default_factory=list)
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
 
@@ -93,7 +96,8 @@ class HarnessExplorationResult:
     output_tokens: int | None = None
     transcript_path: Path | None = None
     agent_summary: str | None = None
-    missing_system_packages: list[str] = field(default_factory=list)
+    missing_apt_packages: list[str] = field(default_factory=list)
+    missing_brew_packages: list[str] = field(default_factory=list)
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
 

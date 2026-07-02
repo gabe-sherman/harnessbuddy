@@ -125,7 +125,9 @@ def read_agent_report(workdir: Path) -> AgentReport | None:
         summary = data.get("summary")
         return AgentReport(
             summary=summary if isinstance(summary, str) else None,
-            missing_system_packages=_string_list(data.get("missing_system_packages")),
+            missing_libs=_string_list(data.get("missing_libs")),
+            missing_apt_packages=_string_list(data.get("missing_apt_packages")),
+            missing_brew_packages=_string_list(data.get("missing_brew_packages")),
             extra_include_paths=_string_list(data.get("extra_include_paths")),
             extra_library_paths=_string_list(data.get("extra_library_paths")),
         )

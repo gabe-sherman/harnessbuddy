@@ -156,6 +156,24 @@ def build_library_prompt(
     )
 
 
+def construct_claude_command(prompt: str) -> list[str]:
+    cmd = [
+        "claude",
+        "--print",
+        "--permission-mode",
+        "auto",
+        "--output-format=stream-json",
+        "--verbose",
+        prompt,
+    ]
+    return cmd
+
+
+def construct_codex_command(prompt: str) -> list[str]:
+    cmd = ["codex", "exec", "--sandbox", "workspace-write", "--json", prompt]
+    return cmd
+
+
 def invoke_library_builder_agent(
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
@@ -171,17 +189,9 @@ def invoke_library_builder_agent(
     """
     prompt = build_library_prompt(analysis, exploration, workdir)
     if tool == "claude":
-        cmd = [
-            "claude",
-            "--print",
-            "--permission-mode",
-            "auto",
-            "--output-format=stream-json",
-            "--verbose",
-            prompt,
-        ]
+        cmd = construct_claude_command(prompt)
     elif tool == "codex":
-        cmd = ["codex", "exec", "--sandbox", "workspace-write", "--json", prompt]
+        cmd = construct_codex_command(prompt)
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
@@ -215,7 +225,8 @@ def invoke_library_builder_agent(
         output_tokens=result.output_tokens,
         transcript_path=workdir / "agent_library_build.log",
         agent_summary=report.summary if report else None,
-        missing_system_packages=report.missing_system_packages if report else [],
+        missing_apt_packages=report.missing_apt_packages if report else [],
+        missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=report.extra_library_paths if report else [],
     )
@@ -267,9 +278,9 @@ def invoke_harness_builder_agent(
     """
     prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir)
     if tool == "claude":
-        cmd = ["claude", "--print", "--permission-mode", "auto", prompt]
+        cmd = construct_claude_command(prompt)
     elif tool == "codex":
-        cmd = ["codex", "exec", "--sandbox", "workspace-write", prompt]
+        cmd = construct_codex_command(prompt)
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
@@ -300,7 +311,20 @@ def invoke_harness_builder_agent(
             )
             extra_library_paths = reparse_lib_paths(script_text, extra_library_paths)
     if not succeeded:
-        missing_system_libs = _extract_missing_system_libs(stderr)
+        # A validation-only failure (agent claimed done but out/ is empty) carries no new
+        # linker stderr to re-parse, so preserve the pre-agent list rather than discarding it.
+        missing_system_libs = list(
+            dict.fromkeys(missing_system_libs + _extract_missing_system_libs(stderr))
+        )
+
+    # The agent reports the bare library name it couldn't resolve (e.g. "ldap") alongside
+    # the actual apt/brew package names below. Add the matching -l flag ourselves so the
+    # generated script attempts the link once the package is installed.
+    report_missing_libs = report.missing_libs if report else []
+    if report_missing_libs:
+        missing_system_libs = list(dict.fromkeys(missing_system_libs + report_missing_libs))
+        new_flags = [f"-l{lib}" for lib in report_missing_libs]
+        transitive_link_flags = list(dict.fromkeys(transitive_link_flags + new_flags))
 
     report_library_paths = report.extra_library_paths if report else []
     extra_library_paths = list(dict.fromkeys(extra_library_paths + report_library_paths))
@@ -323,7 +347,8 @@ def invoke_harness_builder_agent(
         output_tokens=result.output_tokens,
         transcript_path=paths.workdir / "agent_harness_build.log",
         agent_summary=report.summary if report else None,
-        missing_system_packages=report.missing_system_packages if report else [],
+        missing_apt_packages=report.missing_apt_packages if report else [],
+        missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=extra_library_paths,
     )

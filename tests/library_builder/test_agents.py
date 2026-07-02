@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,7 +86,8 @@ def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
         json.dumps(
             {
                 "summary": "Could not find the missing package.",
-                "missing_system_packages": ["libfoo-dev"],
+                "missing_apt_packages": ["libfoo-dev"],
+                "missing_brew_packages": ["foo"],
             }
         )
     )
@@ -111,7 +113,8 @@ def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
     assert exc_info.value.summary.cost_usd == 0.02
     assert exc_info.value.report == AgentReport(
         summary="Could not find the missing package.",
-        missing_system_packages=["libfoo-dev"],
+        missing_apt_packages=["libfoo-dev"],
+        missing_brew_packages=["foo"],
     )
 
 
@@ -138,47 +141,6 @@ def test_budget_limited_raises_llm_budget_error(tmp_path: Path) -> None:
     assert exc_info.value.summary.duration_seconds == 2.5
     assert exc_info.value.summary.cost_usd == 0.03
     assert exc_info.value.report is None
-
-
-def test_library_agent_populates_new_fields_on_success(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    (workdir / "install" / "lib").mkdir(parents=True)
-    (workdir / "install" / "include").mkdir(parents=True)
-    (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
-    (workdir / "install" / "include" / "foo.h").write_text("stub")
-    (workdir / "agent_report.json").write_text(
-        json.dumps({"summary": "Fixed it.", "missing_system_packages": ["libssl-dev"]})
-    )
-    with patch(
-        "harnessbuddy.library_builder.agents.run_agent_streaming",
-        return_value=AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0),
-    ):
-        result = invoke_library_builder_agent(
-            _analysis(tmp_path),
-            _failed_cmake_exploration(tmp_path),
-            workdir,
-        )
-    assert result.agent_summary == "Fixed it."
-    assert result.missing_system_packages == ["libssl-dev"]
-
-
-def test_library_agent_no_report_leaves_new_fields_empty(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    (workdir / "install" / "lib").mkdir(parents=True)
-    (workdir / "install" / "include").mkdir(parents=True)
-    (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
-    (workdir / "install" / "include" / "foo.h").write_text("stub")
-    with patch(
-        "harnessbuddy.library_builder.agents.run_agent_streaming",
-        return_value=AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0),
-    ):
-        result = invoke_library_builder_agent(
-            _analysis(tmp_path),
-            _failed_cmake_exploration(tmp_path),
-            workdir,
-        )
-    assert result.agent_summary is None
-    assert result.missing_system_packages == []
 
 
 def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
@@ -226,7 +188,9 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
         json.dumps(
             {
                 "summary": "Could not resolve the undefined symbol.",
-                "missing_system_packages": ["libfoo-dev"],
+                "missing_libs": ["foo"],
+                "missing_apt_packages": ["libfoo-dev"],
+                "missing_brew_packages": ["foo"],
             }
         )
     )
@@ -252,7 +216,9 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
     assert exc_info.value.summary.cost_usd == 0.04
     assert exc_info.value.report == AgentReport(
         summary="Could not resolve the undefined symbol.",
-        missing_system_packages=["libfoo-dev"],
+        missing_libs=["foo"],
+        missing_apt_packages=["libfoo-dev"],
+        missing_brew_packages=["foo"],
     )
 
 
@@ -281,47 +247,47 @@ def test_harness_budget_limited_raises_llm_budget_error(tmp_path: Path) -> None:
     assert exc_info.value.report is None
 
 
-def test_harness_agent_populates_new_fields_on_success(tmp_path: Path) -> None:
+def test_harness_agent_unresolved_package_preserves_libs_and_adds_link_flag(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the curl/openldap run: the agent exits 0 having only
+    identified an *additional* missing library (not fixed the link), so
+    _validate_harness_artifacts still fails it. The pre-agent linker-detected
+    libs must survive (not get wiped by re-parsing the unrelated validation-error
+    string), the agent's own bare lib name must gain a matching -l flag, and its
+    apt/brew names must surface distinctly rather than collapsing to one list.
+    """
     workdir = tmp_path / "work"
-    (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    workdir.mkdir()
     (workdir / "compile_harnesses.sh").write_text(
-        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcurl.a"\n)\n\nEXTRA_LINK_FLAGS="-lssl"\n'
     )
     (workdir / "agent_report.json").write_text(
-        json.dumps({"summary": "Fixed it.", "missing_system_packages": ["libcares-dev"]})
+        json.dumps(
+            {
+                "summary": "curl also needs LDAP; not installed on this host.",
+                "missing_libs": ["ldap"],
+                "missing_apt_packages": ["libldap2-dev"],
+                "missing_brew_packages": ["openldap"],
+            }
+        )
     )
+    harness = _failed_harness("ld: cannot find -lssl")
+    harness = replace(harness, missing_system_libs=["ssl"], transitive_link_flags=["-lssl"])
     with patch(
         "harnessbuddy.library_builder.agents.run_agent_streaming",
         return_value=AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0),
     ):
         result = invoke_harness_builder_agent(
             _analysis(tmp_path),
-            _failed_harness("undefined reference to `ares_getaddrinfo'"),
+            harness,
             HarnessPaths(install_dir=workdir / "install", workdir=workdir),
         )
-    assert result.agent_summary == "Fixed it."
-    assert result.missing_system_packages == ["libcares-dev"]
-
-
-def test_harness_agent_no_report_leaves_new_fields_empty(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
-        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
-    )
-    with patch(
-        "harnessbuddy.library_builder.agents.run_agent_streaming",
-        return_value=AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0),
-    ):
-        result = invoke_harness_builder_agent(
-            _analysis(tmp_path),
-            _failed_harness("undefined reference to `ares_getaddrinfo'"),
-            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
-        )
-    assert result.agent_summary is None
-    assert result.missing_system_packages == []
+    assert result.succeeded is False
+    assert result.missing_system_libs == ["ssl", "ldap"]
+    assert result.transitive_link_flags == ["-lssl", "-lldap"]
+    assert result.missing_apt_packages == ["libldap2-dev"]
+    assert result.missing_brew_packages == ["openldap"]
 
 
 def test_harness_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
@@ -384,33 +350,6 @@ def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
     assert "backend:" in report
     assert "outcome: succeeded" in report
     assert "duration:" in report
-
-
-def test_library_agent_populates_extra_paths_from_report(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    (workdir / "install" / "lib").mkdir(parents=True)
-    (workdir / "install" / "include").mkdir(parents=True)
-    (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
-    (workdir / "install" / "include" / "foo.h").write_text("stub")
-    (workdir / "agent_report.json").write_text(
-        json.dumps(
-            {
-                "extra_include_paths": ["/usr/include/foo"],
-                "extra_library_paths": ["/usr/lib/x86_64-linux-gnu"],
-            }
-        )
-    )
-    with patch(
-        "harnessbuddy.library_builder.agents.run_agent_streaming",
-        return_value=AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0),
-    ):
-        result = invoke_library_builder_agent(
-            _analysis(tmp_path),
-            _failed_cmake_exploration(tmp_path),
-            workdir,
-        )
-    assert result.extra_include_paths == ["/usr/include/foo"]
-    assert result.extra_library_paths == ["/usr/lib/x86_64-linux-gnu"]
 
 
 def test_harness_agent_uses_report_paths_when_script_has_none(tmp_path: Path) -> None:

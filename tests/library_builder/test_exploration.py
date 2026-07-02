@@ -155,7 +155,9 @@ def test_read_agent_report_list_fields_not_list_of_strings_become_empty(tmp_path
     (tmp_path / "agent_report.json").write_text(
         json.dumps(
             {
-                "missing_system_packages": "libssl-dev",
+                "missing_libs": "ldap",
+                "missing_apt_packages": "libssl-dev",
+                "missing_brew_packages": None,
                 "extra_include_paths": [1, 2],
                 "extra_library_paths": None,
             }
@@ -163,7 +165,9 @@ def test_read_agent_report_list_fields_not_list_of_strings_become_empty(tmp_path
     )
     report = read_agent_report(tmp_path)
     assert report is not None
-    assert report.missing_system_packages == []
+    assert report.missing_libs == []
+    assert report.missing_apt_packages == []
+    assert report.missing_brew_packages == []
     assert report.extra_include_paths == []
     assert report.extra_library_paths == []
 
@@ -173,7 +177,9 @@ def test_read_agent_report_well_formed_file_returns_all_fields(tmp_path: Path) -
         json.dumps(
             {
                 "summary": "Disabled optional SSL support.",
-                "missing_system_packages": ["libssl-dev"],
+                "missing_libs": ["ldap"],
+                "missing_apt_packages": ["libssl-dev"],
+                "missing_brew_packages": ["openssl"],
                 "extra_include_paths": ["/usr/include/foo"],
                 "extra_library_paths": ["/usr/lib/x86_64-linux-gnu"],
             }
@@ -182,7 +188,9 @@ def test_read_agent_report_well_formed_file_returns_all_fields(tmp_path: Path) -
     report = read_agent_report(tmp_path)
     assert report is not None
     assert report.summary == "Disabled optional SSL support."
-    assert report.missing_system_packages == ["libssl-dev"]
+    assert report.missing_libs == ["ldap"]
+    assert report.missing_apt_packages == ["libssl-dev"]
+    assert report.missing_brew_packages == ["openssl"]
     assert report.extra_include_paths == ["/usr/include/foo"]
     assert report.extra_library_paths == ["/usr/lib/x86_64-linux-gnu"]
 
