@@ -8,6 +8,8 @@ dist/
 .harnessbuddy/
 .ruff_cache/
 .mypy_cache/
+output/
+zlib_feature_test/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

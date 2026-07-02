@@ -569,7 +569,7 @@ def test_generate_agent_report_summary_reaches_stats_on_library_action_required(
             json.dumps(
                 {
                     "summary": "The build requires libssl-dev, which is not installed.",
-                    "missing_system_packages": ["libssl-dev"],
+                    "missing_apt_packages": ["libssl-dev"],
                 }
             )
         )
@@ -683,7 +683,7 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_action_required(
             json.dumps(
                 {
                     "summary": "Needs libfoo-dev to resolve the undefined symbol.",
-                    "missing_system_packages": ["libfoo-dev"],
+                    "missing_apt_packages": ["libfoo-dev"],
                 }
             )
         )
@@ -1111,7 +1111,7 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
         exit_code=0,
         duration_seconds=1.0,
         llm_used=True,
-        missing_system_packages=["libzstd-dev"],
+        missing_apt_packages=["libzstd-dev"],
     )
     fake_harness_result = HarnessExplorationResult(
         succeeded=True,
@@ -1193,3 +1193,43 @@ def test_load_project_state_ignores_malformed_json(tmp_path: Path) -> None:
     (tmp_path / "state.json").write_text("not json{{{")
     state = load_project_state(tmp_path / "state.json")
     assert state["apt_packages"] == []
+
+
+# extract-features
+
+
+def test_extract_features_missing_compile_commands_exits_with_actionable_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["extract-features", str(tmp_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "compile_commands.json" in err
+    assert "CMAKE_EXPORT_COMPILE_COMMANDS" in err
+
+
+# generate-benchmark
+
+
+def test_generate_benchmark_missing_features_json_exits_with_actionable_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = main(["generate-benchmark", str(tmp_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "features.json" in err
+    assert "extract-features" in err
+
+
+def test_generate_never_creates_feature_extractor_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    assert not list(output_dir.rglob("features.json"))
+    # project.yaml is generate's own existing oss-fuzz output; no other .yaml (a
+    # generate-benchmark artifact) should appear alongside it.
+    yaml_names = {p.name for p in output_dir.rglob("*.yaml")}
+    assert yaml_names == {"project.yaml"}

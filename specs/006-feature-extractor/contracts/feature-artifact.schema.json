@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnessbuddy.local/schemas/feature-artifact.schema.json",
+  "title": "FeatureArtifactSet",
+  "description": "JSON output of the native feature_extractor tool (FR-010). Sole contract between the native tool and the Python harnessbuddy.feature_extractor package.",
+  "type": "object",
+  "required": ["schema_version", "project_name", "language", "functions", "typedefs", "macros", "enums", "records", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "project_name": { "type": "string", "minLength": 1 },
+    "language": { "type": "string", "enum": ["c", "cpp"] },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "functions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "return_type", "params", "signature", "is_public_api", "header_path"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "return_type": { "type": "string" },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string" }
+              }
+            }
+          },
+          "signature": { "type": "string", "minLength": 1 },
+          "is_public_api": { "type": "boolean" },
+          "header_path": { "type": "string" }
+        }
+      }
+    },
+    "typedefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "underlying_type", "header_path"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "underlying_type": { "type": "string" },
+          "header_path": { "type": "string" }
+        }
+      }
+    },
+    "macros": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "is_function_like", "params", "value", "header_path"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "is_function_like": { "type": "boolean" },
+          "params": { "type": "array", "items": { "type": "string" } },
+          "value": { "type": "string" },
+          "header_path": { "type": "string" }
+        }
+      }
+    },
+    "enums": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "enumerators", "header_path"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": ["string", "null"] },
+          "enumerators": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "value"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "value": { "type": "integer" }
+              }
+            }
+          },
+          "header_path": { "type": "string" }
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "fields", "header_path"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": ["string", "null"] },
+          "kind": { "type": "string", "enum": ["struct", "union"] },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string" }
+              }
+            }
+          },
+          "header_path": { "type": "string" }
+        }
+      }
+    }
+  }
+}

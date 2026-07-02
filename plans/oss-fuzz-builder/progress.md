@@ -274,6 +274,57 @@
   edit) not run this session — no Docker available in the sandbox, and
   scenario 5's behavior is already covered by automated test coverage
 
+### Phase 12 — Agent-reported library dependencies
+
+- Motivated by a real `curl` run: the harness-repair agent identified a missing
+  OpenLDAP dependency and reported it as `missing_system_packages: ["openldap"]`
+  (its own free-form "resolved package name"). `_run_harness_phase` in `cli.py`
+  unconditionally merged that into `state["apt_packages"]` — but `openldap` is
+  the *brew* formula name, not the apt package (`libldap2-dev`), so the
+  generated Dockerfile would have tried `apt-get install openldap` and failed.
+  Separately, the printed "missing system libraries:" line was blank, because
+  `invoke_harness_builder_agent` (`agents.py`) reset `missing_system_libs` to
+  `[]` whenever the agent exited 0 but `_validate_harness_artifacts` then found
+  no compiled binary — it re-derived the list from `_extract_missing_system_libs`
+  on a generic validation-error string instead of preserving the pre-agent,
+  linker-detected value.
+- Fixed both bugs and replaced the single ambiguous `missing_system_packages`
+  field with three on `AgentReport`, `BuildExplorationResult`, and
+  `HarnessExplorationResult`:
+  - `missing_libs` (harness-only): bare library name(s) — the part after `-l`,
+    e.g. `"ldap"` — that the agent identified but couldn't resolve itself.
+  - `missing_apt_packages` / `missing_brew_packages`: the actual per-platform
+    installable package names, supplied directly by the agent from its own
+    knowledge (e.g. `libldap2-dev` / `openldap`) rather than looked up in
+    `package_names.json`. This is a deliberate second, independent path to a
+    package name — `package_names.json` stays scoped to libraries the
+    deterministic symbol-pattern prober (`symbol_patterns.json`) already
+    knows about; it isn't expected to enumerate every possible C library, so
+    the agent bypasses it entirely and reports both platforms' names itself.
+  - Both `agents/library_builder/SKILL.md` and `agents/harness_builder/SKILL.md`
+    now instruct the agent to work out apt and brew names independently
+    (they frequently differ from each other and from the library name) and
+    dropped the old "write `install_packages.sh` to the source dir" step,
+    superseded by this structured reporting feeding the existing
+    Dockerfile/`setup.sh` generation.
+  - The library-build agent deliberately has no `missing_libs`/`-l` flag
+    concept — that phase doesn't construct a linker invocation harnessbuddy
+    controls, and installing a package to *build* the library doesn't
+    guarantee any residual `-l` requirement (the feature may end up disabled,
+    or the dependency may be build-time-only). Whatever the resulting `.a`
+    actually needs at link time is independently rediscovered by the
+    harness-compile probe's own undefined-symbol matching regardless.
+- **`-l` flag propagation**: `invoke_harness_builder_agent` synthesizes
+  `-l<lib>` for every bare name in `report.missing_libs` and folds it into
+  `transitive_link_flags` on the returned `HarnessExplorationResult`. Both
+  `local/generation.py` and `oss_fuzz/generation.py` build
+  `compile_harnesses.sh` from that same post-agent object via
+  `build_harness_script()` (a failed harness build always has
+  `script_path=None`, so neither generator takes the copy-existing-script
+  shortcut) — so `EXTRA_LINK_FLAGS` in both generated scripts picks up the
+  agent-reported library the moment its package is installed, without a
+  second agent invocation.
+
 ---
 
 ## Not Yet Started

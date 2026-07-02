@@ -82,6 +82,32 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _configure_extract_features_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "output_dir",
+        metavar="OUTPUT_DIR",
+        help="Directory containing compile_commands.json to extract features from.",
+    )
+
+
+def _configure_generate_benchmark_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "output_dir",
+        metavar="OUTPUT_DIR",
+        help="Directory containing features.json from a prior extract-features run.",
+    )
+    p.add_argument(
+        "--target-name",
+        metavar="NAME",
+        help="Override the default 'default_fuzzer' benchmark target name.",
+    )
+    p.add_argument(
+        "--target-path",
+        metavar="PATH",
+        help="Override the default /src/harness_source/<target-name>.{c,cc} target path.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harnessbuddy",
@@ -101,6 +127,20 @@ def build_parser() -> argparse.ArgumentParser:
         description="Generate an oss-fuzz project directory for a C/C++ library repository.",
     )
     _configure_generate_parser(generate)
+    extract_features = subparsers.add_parser(
+        "extract-features",
+        help="Extract a library's API surface into a JSON feature artifact.",
+        description="Extract functions, typedefs, macros, enums, and records from a "
+        "compile_commands.json into features.json.",
+    )
+    _configure_extract_features_parser(extract_features)
+    generate_benchmark = subparsers.add_parser(
+        "generate-benchmark",
+        help="Convert an extracted feature artifact into an oss-fuzz-gen benchmark YAML.",
+        description="Convert features.json into a curated, oss-fuzz-gen-compatible "
+        "benchmark YAML file.",
+    )
+    _configure_generate_benchmark_parser(generate_benchmark)
     return parser
 
 
@@ -114,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "generate":
         return _cmd_generate(args)
+    if args.command == "extract-features":
+        return _cmd_extract_features(args)
+    if args.command == "generate-benchmark":
+        return _cmd_generate_benchmark(args)
     return 0
 
 
@@ -288,11 +332,11 @@ def _run_library_phase(
     if result.llm_used:
         print("Agent finished.")
 
-    if result.missing_system_packages:
+    if result.missing_apt_packages or result.missing_brew_packages:
         merge_packages_into_state(
             state,
-            apt_packages=result.missing_system_packages,
-            brew_packages=[],
+            apt_packages=result.missing_apt_packages,
+            brew_packages=result.missing_brew_packages,
             unknown_libs=[],
             source_tag="library_agent",
         )
@@ -350,13 +394,13 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
             file=sys.stderr,
         )
 
-    # The harness-build agent's own self-reported packages are already resolved names,
-    # unlike missing_system_libs above (bare library names requiring translation).
-    if harness_result.missing_system_packages:
+    # The harness-build agent reports its own apt/brew package names directly (drawn from
+    # its general knowledge of the library's packaging), bypassing the translation table above.
+    if harness_result.missing_apt_packages or harness_result.missing_brew_packages:
         merge_packages_into_state(
             state,
-            apt_packages=harness_result.missing_system_packages,
-            brew_packages=[],
+            apt_packages=harness_result.missing_apt_packages,
+            brew_packages=harness_result.missing_brew_packages,
             unknown_libs=[],
             source_tag="harness_agent",
         )
@@ -367,10 +411,22 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     brew_packages: list[str] = state["brew_packages"]
 
     if not harness_result.succeeded:
-        if translation is not None:
+        apt_hint_list = list(
+            dict.fromkeys(
+                (translation.apt_packages if translation else [])
+                + harness_result.missing_apt_packages
+            )
+        )
+        brew_hint_list = list(
+            dict.fromkeys(
+                (translation.brew_packages if translation else [])
+                + harness_result.missing_brew_packages
+            )
+        )
+        if apt_hint_list or brew_hint_list:
             libs = ", ".join(harness_result.missing_system_libs)
-            apt_hint = " ".join(translation.apt_packages) or "(none mapped)"
-            brew_hint = " ".join(translation.brew_packages) or "(none mapped)"
+            apt_hint = " ".join(apt_hint_list) or "(none mapped)"
+            brew_hint = " ".join(brew_hint_list) or "(none mapped)"
             print(
                 f"Harness compilation incomplete — missing system libraries: {libs}\n"
                 f"  apt:  {apt_hint}\n"
@@ -478,11 +534,11 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     try:
         result = _run_library_phase(analysis, workspace, agent, state, state_file)
     except (BuildFailureError, LLMBudgetError) as exc:
-        if exc.report and exc.report.missing_system_packages:
+        if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
             merge_packages_into_state(
                 state,
-                apt_packages=exc.report.missing_system_packages,
-                brew_packages=[],
+                apt_packages=exc.report.missing_apt_packages,
+                brew_packages=exc.report.missing_brew_packages,
                 unknown_libs=[],
                 source_tag="library_agent",
             )
@@ -517,11 +573,11 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             analysis, install_dir, workspace, result, agent, state, state_file
         )
     except (BuildFailureError, LLMBudgetError) as exc:
-        if exc.report and exc.report.missing_system_packages:
+        if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
             merge_packages_into_state(
                 state,
-                apt_packages=exc.report.missing_system_packages,
-                brew_packages=[],
+                apt_packages=exc.report.missing_apt_packages,
+                brew_packages=exc.report.missing_brew_packages,
                 unknown_libs=[],
                 source_tag="harness_agent",
             )
@@ -550,6 +606,52 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         RunStatus.SUCCESS if harness_result.succeeded else RunStatus.FAILED_HARNESS_BUILD,
     )
     return rc
+
+
+def _cmd_extract_features(args: argparse.Namespace) -> int:
+    from harnessbuddy.feature_extractor.extraction import (
+        FeatureArtifactError,
+        MissingCompileCommandsError,
+        extract_features,
+    )
+    from harnessbuddy.feature_extractor.native_build import NativeBuildError
+
+    output_dir = Path(args.output_dir)
+    try:
+        result = extract_features(output_dir)
+    except (MissingCompileCommandsError, NativeBuildError, FeatureArtifactError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(
+        f"Extracted {len(result.functions)} functions, {len(result.typedefs)} typedefs, "
+        f"{len(result.macros)} macros, {len(result.enums)} enums, "
+        f"{len(result.records)} records -> {output_dir / 'features.json'}"
+    )
+    return 0
+
+
+def _cmd_generate_benchmark(args: argparse.Namespace) -> int:
+    from harnessbuddy.feature_extractor.benchmark_yaml import generate_benchmark
+    from harnessbuddy.feature_extractor.extraction import (
+        FeatureArtifactError,
+        MissingFeatureArtifactError,
+    )
+
+    output_dir = Path(args.output_dir)
+    try:
+        benchmark = generate_benchmark(
+            output_dir, target_name=args.target_name, target_path=args.target_path
+        )
+    except (MissingFeatureArtifactError, FeatureArtifactError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(
+        f"Generated benchmark for {len(benchmark.functions)} public functions -> "
+        f"{output_dir / f'{benchmark.project}.yaml'}"
+    )
+    return 0
 
 
 def _is_url(value: str) -> bool:
