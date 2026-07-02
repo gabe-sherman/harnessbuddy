@@ -50,7 +50,7 @@ LIBS = [
     LibSpec(
         "https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False
     ),  # requires libpsl
-    LibSpec("https://github.com/fukuchi/libqrencode.git", BuildSystem.CMAKE, False),
+    LibSpec("https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False),
     # make
     LibSpec("https://github.com/lz4/lz4.git", "lz4", BuildSystem.MAKEFILE, True),
     # autotools
@@ -174,19 +174,6 @@ class TestStaticBuilds:
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()
 
-    def test_build_env_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.workdir / "build.env").exists()
-
-    def test_build_env_has_include_flags(self, real_library_build: LibBuild) -> None:
-        workdir = real_library_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-I{workdir.resolve()}/install/include" in env
-
-    def test_build_env_has_library_flags(self, real_library_build: LibBuild) -> None:
-        workdir = real_library_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-L{workdir.resolve()}/install/lib" in env
-
     def test_result_succeeded(self, real_library_build: LibBuild) -> None:
         assert real_library_build.result.succeeded is True
 
@@ -219,9 +206,6 @@ class TestCurlBuild:
         include_dir = real_library_build.workdir / "install" / "include"
         assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
-    def test_build_env_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.workdir / "build.env").exists()
-
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()
 
@@ -241,9 +225,6 @@ class TestZlibBuild:
     def test_headers_installed(self, real_library_build: LibBuild) -> None:
         include_dir = real_library_build.workdir / "install" / "include"
         assert any(include_dir.iterdir()), f"no headers in {include_dir}"
-
-    def test_build_env_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.workdir / "build.env").exists()
 
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()

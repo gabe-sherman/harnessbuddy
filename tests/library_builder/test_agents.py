@@ -285,7 +285,7 @@ def test_harness_agent_populates_new_fields_on_success(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     (workdir / "agent_report.json").write_text(
@@ -308,7 +308,7 @@ def test_harness_agent_no_report_leaves_new_fields_empty(tmp_path: Path) -> None
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -364,13 +364,13 @@ def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
         "harnessbuddy.library_builder.agents.run_agent_streaming",
         return_value=AgentStreamResult(
-            combined_text="Editing build_harness.sh", exit_code=0, duration_seconds=3.0
+            combined_text="Editing compile_harnesses.sh", exit_code=0, duration_seconds=3.0
         ),
     ):
         invoke_harness_builder_agent(
@@ -379,7 +379,7 @@ def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
             HarnessPaths(install_dir=workdir / "install", workdir=workdir),
         )
     report = (workdir / "agent_harness_build.log").read_text()
-    assert report.startswith("Editing build_harness.sh")
+    assert report.startswith("Editing compile_harnesses.sh")
     assert "=== Agent Run Summary ===" in report
     assert "backend:" in report
     assert "outcome: succeeded" in report
@@ -417,7 +417,7 @@ def test_harness_agent_uses_report_paths_when_script_has_none(tmp_path: Path) ->
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     (workdir / "agent_report.json").write_text(
@@ -445,7 +445,7 @@ def test_harness_agent_uses_script_paths_when_report_has_none(tmp_path: Path) ->
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
     )
@@ -465,7 +465,7 @@ def test_harness_agent_unions_report_and_script_paths(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
     )
@@ -488,7 +488,7 @@ def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "probe_harness").write_text("stub binary")
-    (workdir / "build_harness.sh").write_text(
+    (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -503,4 +503,4 @@ def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     assert result.succeeded is True
     assert result.transitive_link_flags == ["-lresolv"]
     assert result.static_libs == [Path("libcares.a")]
-    assert result.script_path == workdir / "build_harness.sh"
+    assert result.script_path == workdir / "compile_harnesses.sh"

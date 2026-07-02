@@ -103,7 +103,6 @@ class BuildPaths:
     source_dir: str
     build_dir: str
     install_dir: str
-    env_file: str
 
 
 @dataclass

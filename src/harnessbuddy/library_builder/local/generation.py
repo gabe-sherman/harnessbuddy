@@ -80,8 +80,8 @@ def _write_build_library_sh(
     """Write build_library.sh, reusing the explored (possibly agent-fixed) script when available.
 
     The explored script already uses $SCRIPT_DIR-relative paths matching this output
-    layout (src/, build/, install/, build.env), so copying it verbatim preserves any
-    fixes an agent made during exploration. Falls back to the static template when no
+    layout (src/, build/, install/), so copying it verbatim preserves any fixes an
+    agent made during exploration. Falls back to the static template when no
     exploration was run or its script isn't safe to copy (e.g. a non-standard source layout).
     """
     path = output_path / "build_library.sh"
@@ -95,7 +95,6 @@ def _write_build_library_sh(
                     source_dir="$SCRIPT_DIR/src",
                     build_dir="$SCRIPT_DIR/build",
                     install_dir="$SCRIPT_DIR/install",
-                    env_file="$SCRIPT_DIR/build.env",
                 ),
                 host_fallbacks=True,
                 autotools_setup=analysis.autotools_setup,
@@ -105,8 +104,11 @@ def _write_build_library_sh(
     return path
 
 
-def _write_compile_harnesses_sh(output_path: Path, harness: HarnessExplorationResult | None) -> Path:
-    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed) script when available.
+def _write_compile_harnesses_sh(
+    output_path: Path, harness: HarnessExplorationResult | None
+) -> Path:
+    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed)
+    script when available.
 
     The validated script already uses $SCRIPT_DIR-relative paths matching this output
     layout (install/, harness_src/, out/), so copying it verbatim preserves any fixes
@@ -117,7 +119,9 @@ def _write_compile_harnesses_sh(output_path: Path, harness: HarnessExplorationRe
     if harness is not None and harness.script_path is not None:
         shutil.copy2(harness.script_path, path)
     else:
-        content = build_harness_script(harness) if harness is not None else _COMPILE_HARNESSES_SH_STUB
+        content = (
+            build_harness_script(harness) if harness is not None else _COMPILE_HARNESSES_SH_STUB
+        )
         path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path

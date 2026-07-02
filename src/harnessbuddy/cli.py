@@ -256,7 +256,9 @@ def _ingest_source(args: argparse.Namespace, state_dir: Path) -> RepoSource | in
 
 def _resolve_output_paths(args: argparse.Namespace, analysis: AnalysisResult) -> tuple[Path, Path]:
     """Determine local/oss-fuzz output paths, prompting to overwrite an existing directory."""
-    base_output = Path(args.output) if args.output else Path.cwd() / "output" / analysis.project_name
+    base_output = (
+        Path(args.output) if args.output else Path.cwd() / "output" / analysis.project_name
+    )
     if base_output.exists():
         if sys.stdin.isatty():
             overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")

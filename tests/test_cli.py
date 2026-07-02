@@ -87,8 +87,7 @@ def test_generate_success_project_name_override(
         ]
     )
     assert rc == 0
-    provenance = json.loads((output_dir / "oss-fuzz" / "provenance.json").read_text())
-    assert provenance["project_name"] == "custom"
+    assert (Path(".harnessbuddy") / "custom").is_dir()
 
 
 def test_generate_success_default_output_uses_cwd(
@@ -629,7 +628,7 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "probe_harness").write_text("stub binary")
-        (workdir / "build_harness.sh").write_text(
+        (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
         (workdir / "agent_report.json").write_text(
@@ -760,7 +759,7 @@ def test_generate_agent_report_extra_library_path_reaches_both_harness_scripts(
             ]
         )
     assert rc == 0
-    local_script = (output_dir / "local" / "build_harness.sh").read_text()
+    local_script = (output_dir / "local" / "compile_harnesses.sh").read_text()
     oss_fuzz_script = (output_dir / "oss-fuzz" / "compile_harnesses.sh").read_text()
     assert f"-L{extra_lib_path}" in local_script
     assert f"-L{extra_lib_path}" in oss_fuzz_script
@@ -893,7 +892,7 @@ def test_generate_harness_missing_package_reaches_output_on_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "probe_harness").write_text("stub binary")
-        (workdir / "build_harness.sh").write_text(
+        (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
         (workdir / "agent_report.json").write_text(

@@ -137,19 +137,6 @@ class TestStaticBuilds:
     def test_build_library_script_written(self, real_harness_build: LibBuild) -> None:
         assert (real_harness_build.workdir / "build_library.sh").exists()
 
-    def test_build_env_written(self, real_harness_build: LibBuild) -> None:
-        assert (real_harness_build.workdir / "build.env").exists()
-
-    def test_build_env_has_include_flags(self, real_harness_build: LibBuild) -> None:
-        workdir = real_harness_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-I{workdir.resolve()}/install/include" in env
-
-    def test_build_env_has_library_flags(self, real_harness_build: LibBuild) -> None:
-        workdir = real_harness_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-L{workdir.resolve()}/install/lib" in env
-
     def test_result_succeeded(self, real_harness_build: LibBuild) -> None:
         assert real_harness_build.result.succeeded is True
 
@@ -180,19 +167,6 @@ class TestDynamicBuilds:
     def test_build_library_script_written(self, real_harness_build: LibBuild) -> None:
         assert (real_harness_build.workdir / "build_library.sh").exists()
 
-    def test_build_env_written(self, real_harness_build: LibBuild) -> None:
-        assert (real_harness_build.workdir / "build.env").exists()
-
-    def test_build_env_has_include_flags(self, real_harness_build: LibBuild) -> None:
-        workdir = real_harness_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-I{workdir.resolve()}/install/include" in env
-
-    def test_build_env_has_library_flags(self, real_harness_build: LibBuild) -> None:
-        workdir = real_harness_build.workdir
-        env = (workdir / "build.env").read_text()
-        assert f"-L{workdir.resolve()}/install/lib" in env
-
     def test_result_succeeded(self, real_harness_build: LibBuild) -> None:
         assert real_harness_build.result.succeeded is True
 
@@ -218,9 +192,9 @@ class TestZlibBuild:
         )
 
     def test_library_path_exists(self, real_harness_build: LibBuild) -> None:
-        build_harness_source = real_harness_build.workdir / "build_harness.sh"
-        assert build_harness_source.exists()
-        with open(build_harness_source) as f:
+        compile_harnesses_source = real_harness_build.workdir / "compile_harnesses.sh"
+        assert compile_harnesses_source.exists()
+        with open(compile_harnesses_source) as f:
             contents = f.read()
             assert "libz.a" in contents
 
@@ -238,8 +212,8 @@ class TestLibtiffBuild:
         )
 
     def test_system_package_inclusion(self, real_harness_build: LibBuild) -> None:
-        build_harness_source = real_harness_build.workdir / "build_harness.sh"
-        assert build_harness_source.exists()
-        with open(build_harness_source) as f:
+        compile_harnesses_source = real_harness_build.workdir / "compile_harnesses.sh"
+        assert compile_harnesses_source.exists()
+        with open(compile_harnesses_source) as f:
             contents = f.read()
             assert "-llzma" in contents

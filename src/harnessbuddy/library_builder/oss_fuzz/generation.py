@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import stat
 from pathlib import Path
@@ -149,7 +148,6 @@ def _write_build_library_sh(
                     source_dir="$SCRIPT_DIR/src",
                     build_dir="$SCRIPT_DIR/build",
                     install_dir="$SCRIPT_DIR/install",
-                    env_file="$SCRIPT_DIR/build.env",
                 ),
                 autotools_setup=analysis.autotools_setup,
             )

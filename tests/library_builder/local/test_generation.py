@@ -45,7 +45,7 @@ def test_all_files_generated(fixture_name: str, tmp_path: Path) -> None:
     result = generate_local(_analysis(fixture_name), tmp_path / "out")
     assert (result.output_path / "setup.sh").exists()
     assert (result.output_path / "build_library.sh").exists()
-    assert (result.output_path / "build_harness.sh").exists()
+    assert (result.output_path / "compile_harnesses.sh").exists()
     assert any((result.output_path / "harness_src").glob("default_fuzzer.*"))
 
 
@@ -183,13 +183,13 @@ def test_build_library_sh_falls_back_to_template_without_exploration(tmp_path: P
     assert "$SCRIPT_DIR/src" in content
 
 
-# build_harness.sh — reuse of the validated (possibly agent-fixed) script
+# compile_harnesses.sh — reuse of the validated (possibly agent-fixed) script
 
 
 def _harness_with_script(script_path: Path | None) -> HarnessExplorationResult:
     return HarnessExplorationResult(
         succeeded=True,
-        command=["bash", "build_harness.sh"],
+        command=["bash", "compile_harnesses.sh"],
         static_libs=[Path("libfoo.a")],
         include_dir=Path("/tmp/install/include"),
         transitive_link_flags=["-lresolv"],
@@ -200,22 +200,22 @@ def _harness_with_script(script_path: Path | None) -> HarnessExplorationResult:
     )
 
 
-def test_build_harness_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
-    validated = tmp_path / "validated_build_harness.sh"
+def test_compile_harnesses_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
+    validated = tmp_path / "validated_compile_harnesses.sh"
     validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
     result = generate_local(
         _analysis("cmake_repo"),
         tmp_path / "out",
         harness_exploration=_harness_with_script(validated),
     )
-    content = (result.output_path / "build_harness.sh").read_text()
+    content = (result.output_path / "compile_harnesses.sh").read_text()
     assert content == validated.read_text()
 
 
-def test_build_harness_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
+def test_compile_harnesses_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
     result = generate_local(
         _analysis("cmake_repo"), tmp_path / "out", harness_exploration=_harness_with_script(None)
     )
-    content = (result.output_path / "build_harness.sh").read_text()
+    content = (result.output_path / "compile_harnesses.sh").read_text()
     assert "libfoo.a" in content
     assert "-lresolv" in content

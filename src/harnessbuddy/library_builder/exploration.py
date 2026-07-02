@@ -37,7 +37,7 @@ def explore(
     can be copied verbatim into generated output directories, preserving any agent
     fixes; BuildExplorationResult.script_path is set in that case. Otherwise paths
     fall back to absolute and script_path is left unset. Streams build output to
-    stdout in real time. build.env is written to workdir after a successful build.
+    stdout in real time.
     """
     workdir = workdir.resolve()
     build_dir = workdir / "build"
@@ -60,7 +60,6 @@ def explore(
             source_dir=source_dir,
             build_dir="$SCRIPT_DIR/build",
             install_dir="$SCRIPT_DIR/install",
-            env_file="$SCRIPT_DIR/build.env",
         ),
         host_fallbacks=True,
         autotools_setup=analysis.autotools_setup,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -33,7 +32,6 @@ _EXPECTED_TOP_LEVEL_FILES = frozenset(
         "build.sh",
         "build_library.sh",
         "compile_harnesses.sh",
-        "provenance.json",
     }
 )
 
@@ -175,41 +173,6 @@ def test_compile_harnesses_sh_deterministic(tmp_path: Path) -> None:
     ).read_text()
 
 
-# provenance.json
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "expected_bs"),
-    [
-        ("cmake_repo", "cmake"),
-        ("meson_repo", "meson"),
-        ("autotools_repo", "autotools"),
-        ("autotools_configure_repo", "autotools"),
-        ("autotools_autogen_repo", "autotools"),
-        ("makefile_repo", "makefile"),
-    ],
-)
-def test_provenance_build_system(fixture_name: str, expected_bs: str, tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert provenance["build_system"] == expected_bs
-
-
-def test_provenance_cmake_build_files(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert "CMakeLists.txt" in provenance["build_files"]
-
-
-def test_provenance_headers_relative_paths(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert all("/" in h or h.endswith(".h") for h in provenance["headers"])
-
-
-# provenance.json — host_build_exploration
-
-
 def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
     return BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
@@ -220,34 +183,6 @@ def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
         exit_code=0 if succeeded else 1,
         duration_seconds=1.2,
     )
-
-
-def test_provenance_no_exploration_omits_field(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert "host_build_exploration" not in provenance
-
-
-def test_provenance_with_exploration_includes_field(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _fake_exploration())
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert "host_build_exploration" in provenance
-
-
-def test_provenance_exploration_succeeded(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(
-        _analysis("cmake_repo"), tmp_path / "out", _fake_exploration(succeeded=True)
-    )
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert provenance["host_build_exploration"]["succeeded"] is True
-
-
-def test_provenance_exploration_failed(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(
-        _analysis("cmake_repo"), tmp_path / "out", _fake_exploration(succeeded=False)
-    )
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert provenance["host_build_exploration"]["succeeded"] is False
 
 
 # autotools setup detection
@@ -318,29 +253,6 @@ def test_dockerfile_autotools_autoreconf_has_apt_deps(tmp_path: Path) -> None:
     content = (result.output_path / "Dockerfile").read_text()
     assert "apt-get install" in content
     assert "autoconf" in content
-
-
-# autotools provenance
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "expected_setup"),
-    [
-        ("autotools_configure_repo", "configure"),
-        ("autotools_autogen_repo", "autogen"),
-        ("autotools_repo", "autoreconf"),
-    ],
-)
-def test_provenance_autotools_setup(fixture_name: str, expected_setup: str, tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert provenance["autotools_setup"] == expected_setup
-
-
-def test_provenance_non_autotools_no_autotools_setup_key(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    provenance = json.loads((result.output_path / "provenance.json").read_text())
-    assert "autotools_setup" not in provenance
 
 
 def test_existing_output_dir_raises(tmp_path: Path) -> None:

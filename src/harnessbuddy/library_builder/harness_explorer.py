@@ -28,7 +28,7 @@ _LIB_PATTERNS: dict[str, re.Pattern[str]] = {
 _CXX_ABI_RE = re.compile(r"operator (?:new|delete)\b|__cxa_|__gxx_personality")
 
 # Mirrors scripts.py's build_harness_script format, used to re-derive STATIC_LIBS /
-# EXTRA_LINK_FLAGS from a (possibly agent-edited) build_harness.sh after a fix, since
+# EXTRA_LINK_FLAGS from a (possibly agent-edited) compile_harnesses.sh after a fix, since
 # an agent may hand-edit these variables directly rather than us regenerating them.
 _STATIC_LIBS_BLOCK_RE = re.compile(r"STATIC_LIBS=\((.*?)\n\)", re.DOTALL)
 _STATIC_LIB_ENTRY_RE = re.compile(r'"\$INSTALL_DIR/lib/([^"]+)"')
