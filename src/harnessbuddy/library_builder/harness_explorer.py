@@ -33,6 +33,7 @@ _CXX_ABI_RE = re.compile(r"operator (?:new|delete)\b|__cxa_|__gxx_personality")
 _STATIC_LIBS_BLOCK_RE = re.compile(r"STATIC_LIBS=\((.*?)\n\)", re.DOTALL)
 _STATIC_LIB_ENTRY_RE = re.compile(r'"\$INSTALL_DIR/lib/([^"]+)"')
 _EXTRA_LINK_FLAGS_RE = re.compile(r'^EXTRA_LINK_FLAGS=(?:"([^"]*)")?\s*$', re.MULTILINE)
+_EXTRA_LIB_PATHS_RE = re.compile(r'^EXTRA_LIB_PATHS=(?:"([^"]*)")?\s*$', re.MULTILINE)
 _BREW_LIB_PREFIX = "-L$(brew --prefix)/lib "
 
 
@@ -40,6 +41,9 @@ def explore_harness_compilation(
     install_dir: Path,
     workdir: Path,
     language: Language,
+    *,
+    extra_include_paths: list[str] | None = None,
+    extra_library_paths: list[str] | None = None,
 ) -> HarnessExplorationResult:
     """Test harness compilation against install artifacts to discover transitive deps.
 
@@ -47,7 +51,12 @@ def explore_harness_compilation(
     surfaces every undefined transitive dependency. Retries up to _MAX_ATTEMPTS times,
     accumulating resolved -l flags from linker errors. Returns the result regardless of
     success; callers use HarnessExplorationResult.succeeded to decide behaviour.
+
+    extra_include_paths/extra_library_paths are fixed inputs (e.g. from a prior agent's
+    AgentReport) threaded unchanged into every returned HarnessExplorationResult.
     """
+    extra_include_paths = extra_include_paths or []
+    extra_library_paths = extra_library_paths or []
     lib_dir = install_dir / "lib"
     include_dir = install_dir / "include"
 
@@ -62,6 +71,8 @@ def explore_harness_compilation(
             stdout="",
             stderr="no *.a files found in install/lib",
             exit_code=-1,
+            extra_include_paths=extra_include_paths,
+            extra_library_paths=extra_library_paths,
         )
 
     use_cpp = language == Language.CPP
@@ -70,7 +81,7 @@ def explore_harness_compilation(
     probe_src = harness_src_dir / ("probe_harness.cc" if use_cpp else "probe_harness.c")
     probe_src.write_text(_PROBE_CC if use_cpp else _PROBE_C)
 
-    script_path = workdir / "build_harness.sh"
+    script_path = workdir / "compile_harnesses.sh"
     extra_flags: list[str] = []
     seen_flags: set[str] = set()
     last_stdout = ""
@@ -87,6 +98,8 @@ def explore_harness_compilation(
             stdout="",
             stderr="",
             exit_code=-1,
+            extra_include_paths=extra_include_paths,
+            extra_library_paths=extra_library_paths,
         )
         script_path.write_text(build_harness_script(intermediate, whole_archive=True))
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -107,6 +120,8 @@ def explore_harness_compilation(
                 stderr=last_stderr,
                 exit_code=last_exit,
                 script_path=script_path,
+                extra_include_paths=extra_include_paths,
+                extra_library_paths=extra_library_paths,
             )
 
         upgraded_to_cxx = False
@@ -133,6 +148,8 @@ def explore_harness_compilation(
         stderr=last_stderr,
         exit_code=last_exit,
         missing_system_libs=_extract_missing_system_libs(last_stderr),
+        extra_include_paths=extra_include_paths,
+        extra_library_paths=extra_library_paths,
     )
 
 
@@ -192,7 +209,7 @@ def _validate_harness_artifacts(workdir: Path) -> list[str]:
 def reparse_link_config(
     script_text: str, static_libs: list[Path], transitive_link_flags: list[str]
 ) -> tuple[list[Path], list[str]]:
-    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from build_harness.sh's text.
+    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from compile_harnesses.sh's text.
 
     An agent fixing a harness link failure edits these variables directly rather than
     going through build_harness_script, so the structured HarnessExplorationResult it's
@@ -211,3 +228,19 @@ def reparse_link_config(
         transitive_link_flags = raw.split() if raw else []
 
     return static_libs, transitive_link_flags
+
+
+def reparse_lib_paths(script_text: str, extra_library_paths: list[str]) -> list[str]:
+    """Re-derive extra library paths from an EXTRA_LIB_PATHS="-Lpath ..." line.
+
+    Mirrors reparse_link_config's EXTRA_LINK_FLAGS handling: falls back to the given
+    paths wherever the expected format isn't found in the (possibly agent-edited)
+    compile_harnesses.sh text.
+    """
+    match = _EXTRA_LIB_PATHS_RE.search(script_text)
+    if not match:
+        return extra_library_paths
+    raw = (match.group(1) or "").strip()
+    if not raw:
+        return []
+    return [flag.removeprefix("-L") for flag in raw.split()]

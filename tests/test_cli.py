@@ -8,18 +8,16 @@ import pytest
 
 from harnessbuddy.cli import (
     load_project_state,
-    load_system_deps,
     main,
     merge_packages_into_state,
     save_project_state,
 )
+from harnessbuddy.core.agent_stream import AgentStreamResult
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.models import (
-    AnalysisResult,
     BuildExplorationResult,
     BuildSystem,
     HarnessExplorationResult,
-    Language,
 )
 
 _REPO = "https://github.com/example/repo.git"
@@ -49,13 +47,14 @@ def test_generate_success_local_repo(local_repo_with_origin: Path, tmp_path: Pat
     output_dir.mkdir()
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
-    project_dir = output_dir / local_repo_with_origin.name
+    project_dir = output_dir
     assert project_dir.is_dir()
-    oss_fuzz_dir = project_dir / "output" / "oss-fuzz"
+
+    oss_fuzz_dir = project_dir / "oss-fuzz"
     assert (oss_fuzz_dir / "Dockerfile").exists()
     assert (oss_fuzz_dir / "build.sh").exists()
     assert (oss_fuzz_dir / "project.yaml").exists()
-    local_dir = project_dir / "output" / "local"
+    local_dir = project_dir / "local"
     assert (local_dir / "setup.sh").exists()
     assert (local_dir / "build_library.sh").exists()
 
@@ -88,7 +87,8 @@ def test_generate_success_project_name_override(
         ]
     )
     assert rc == 0
-    assert (output_dir / "custom").is_dir()
+    provenance = json.loads((output_dir / "oss-fuzz" / "provenance.json").read_text())
+    assert provenance["project_name"] == "custom"
 
 
 def test_generate_success_default_output_uses_cwd(
@@ -112,7 +112,7 @@ def test_generate_success_default_output_uses_cwd(
     monkeypatch.chdir(output_dir)
     rc = main(["generate", str(repo)])
     assert rc == 0
-    assert (output_dir / "srcrepo").is_dir()
+    assert (output_dir / "output" / "srcrepo").is_dir()
 
 
 # generate — error paths
@@ -197,7 +197,7 @@ def test_generate_output_dir_exists_exits_nonzero(
     output_dir = tmp_path / "output"
 
     output_dir.mkdir()
-    local_out = output_dir / local_repo_with_origin.name / "output" / "local"
+    local_out = output_dir / "local"
     local_out.mkdir(parents=True)
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
@@ -208,7 +208,7 @@ def test_generate_output_dir_exists_prints_warning(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    local_out = output_dir / local_repo_with_origin.name / "output" / "local"
+    local_out = output_dir / "local"
     local_out.mkdir(parents=True)
     main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     out = capsys.readouterr().out
@@ -309,8 +309,8 @@ def _succeeded_harness_result() -> HarnessExplorationResult:
     )
 
 
-def _stats_json_path(output_dir: Path, repo: Path) -> Path:
-    return output_dir / repo.name / "output" / "stats.json"
+def _stats_json_path(output_dir: Path) -> Path:
+    return output_dir / "stats.json"
 
 
 def test_generate_writes_stats_json_clean_success(
@@ -321,9 +321,16 @@ def test_generate_writes_stats_json_clean_success(
     with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
         rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
-    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    stats = json.loads(_stats_json_path(output_dir).read_text())
     assert stats["status"] == "success"
-    na_phase = {"invoked": False, "duration_seconds": "N/A", "cost_usd": "N/A", "summary": "N/A"}
+    na_phase = {
+        "invoked": False,
+        "duration_seconds": "N/A",
+        "cost_usd": "N/A",
+        "input_tokens": "N/A",
+        "output_tokens": "N/A",
+        "summary": "N/A",
+    }
     assert stats["library_build_agent"] == na_phase
     assert stats["harness_build_agent"] == na_phase
 
@@ -351,11 +358,13 @@ def test_generate_writes_stats_json_library_agent_repaired(
     ):
         rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
-    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    stats = json.loads(_stats_json_path(output_dir).read_text())
     assert stats["library_build_agent"] == {
         "invoked": True,
         "duration_seconds": 12.5,
         "cost_usd": 0.05,
+        "input_tokens": "N/A",
+        "output_tokens": "N/A",
         "summary": "Added a missing CMake flag.",
     }
     assert stats["status"] == "success"
@@ -378,7 +387,7 @@ def test_generate_writes_stats_json_failed_library_build(
     with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
         rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc != 0
-    stats_path = _stats_json_path(output_dir, local_repo_with_origin)
+    stats_path = _stats_json_path(output_dir)
     assert stats_path.exists()
     stats = json.loads(stats_path.read_text())
     assert stats["status"] == "failed_library_build"
@@ -391,10 +400,9 @@ def test_generate_writes_stats_json_failed_harness_build_emits_stub_output(
     output_dir.mkdir()
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
-    project_output = output_dir / local_repo_with_origin.name / "output"
-    assert (project_output / "local").is_dir()
-    assert (project_output / "oss-fuzz").is_dir()
-    stats = json.loads((project_output / "stats.json").read_text())
+    assert (output_dir / "local").is_dir()
+    assert (output_dir / "oss-fuzz").is_dir()
+    stats = json.loads((output_dir / "stats.json").read_text())
     assert stats["status"] == "failed_harness_build"
 
 
@@ -438,8 +446,8 @@ def test_stats_json_same_relative_path_and_shape_across_outcomes(
         )
     assert rc_failure != 0
 
-    success_stats_path = _stats_json_path(success_output, local_repo_with_origin)
-    failure_stats_path = _stats_json_path(failure_output, local_repo_with_origin)
+    success_stats_path = _stats_json_path(success_output)
+    failure_stats_path = _stats_json_path(failure_output)
     assert success_stats_path.exists()
     assert failure_stats_path.exists()
 
@@ -475,7 +483,7 @@ def test_stats_json_overwritten_on_rerun(local_repo_with_origin: Path, tmp_path:
         rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc2 == 0
 
-    stats = json.loads(_stats_json_path(output_dir, local_repo_with_origin).read_text())
+    stats = json.loads(_stats_json_path(output_dir).read_text())
     assert stats["library_build_agent"]["invoked"] is False
 
 
@@ -497,56 +505,484 @@ def test_no_stats_json_when_output_directory_never_created(tmp_path: Path) -> No
     assert list(output_dir.rglob("stats.json")) == []
 
 
-# load_system_deps
+# agent_report.json summary flow (Structured Agent Report feature, US1)
 
 
-def _bare_analysis(source_path: Path) -> AnalysisResult:
-    return AnalysisResult(
-        project_name="testlib",
-        source_path=source_path,
+def test_generate_agent_report_summary_reaches_stats_on_library_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        (workdir / "install" / "lib").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
+        (workdir / "install" / "include" / "foo.h").write_text("stub")
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "Disabled optional SSL support."})
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    stats = json.loads(_stats_json_path(output_dir).read_text())
+    assert stats["library_build_agent"]["summary"] == "Disabled optional SSL support."
+
+
+def test_generate_agent_report_summary_reaches_stats_on_library_action_required(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        (workdir / "agent_report.json").write_text(
+            json.dumps(
+                {
+                    "summary": "The build requires libssl-dev, which is not installed.",
+                    "missing_system_packages": ["libssl-dev"],
+                }
+            )
+        )
+        return AgentStreamResult(
+            combined_text="ACTION REQUIRED: install libssl-dev",
+            exit_code=1,
+            duration_seconds=1.0,
+        )
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc != 0
+    stats = json.loads(_stats_json_path(output_dir).read_text())
+    assert (
+        stats["library_build_agent"]["summary"]
+        == "The build requires libssl-dev, which is not installed."
+    )
+
+
+def test_generate_agent_report_summary_reaches_stats_on_harness_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
-        build_files=[source_path / "CMakeLists.txt"],
-        headers=[source_path / "include" / "foo.h"],
-        language=Language.C,
-        clone_url="https://github.com/example/testlib.git",
-        repo_ref=None,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "out").mkdir(parents=True, exist_ok=True)
+        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "build_harness.sh").write_text(
+            'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
+        )
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "Linked against the system zlib directly."})
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    stats = json.loads(_stats_json_path(output_dir).read_text())
+    assert stats["harness_build_agent"]["summary"] == "Linked against the system zlib directly."
+
+
+def test_generate_agent_report_summary_reaches_stats_on_harness_action_required(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "agent_report.json").write_text(
+            json.dumps(
+                {
+                    "summary": "Needs libfoo-dev to resolve the undefined symbol.",
+                    "missing_system_packages": ["libfoo-dev"],
+                }
+            )
+        )
+        return AgentStreamResult(
+            combined_text="ACTION REQUIRED: install libfoo-dev",
+            exit_code=1,
+            duration_seconds=1.0,
+        )
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc != 0
+    stats = json.loads(_stats_json_path(output_dir).read_text())
+    assert (
+        stats["harness_build_agent"]["summary"]
+        == "Needs libfoo-dev to resolve the undefined symbol."
     )
 
 
-def test_load_system_deps_absent_leaves_packages_empty(tmp_path: Path) -> None:
-    analysis = _bare_analysis(tmp_path)
-    load_system_deps(analysis)
-    assert analysis.system_packages == []
+def test_generate_agent_report_extra_library_path_reaches_both_harness_scripts(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
+    extra_lib_path = "/usr/lib/x86_64-linux-gnu"
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        (workdir / "install" / "lib").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
+        (workdir / "install" / "include" / "foo.h").write_text("stub")
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "done", "extra_library_paths": [extra_lib_path]})
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    local_script = (output_dir / "local" / "build_harness.sh").read_text()
+    oss_fuzz_script = (output_dir / "oss-fuzz" / "compile_harnesses.sh").read_text()
+    assert f"-L{extra_lib_path}" in local_script
+    assert f"-L{extra_lib_path}" in oss_fuzz_script
 
 
-def test_load_system_deps_loads_packages(tmp_path: Path) -> None:
-    (tmp_path / "system_deps.json").write_text(
-        json.dumps({"apt_packages": ["libssl-dev", "libz-dev"]})
+# agent_report.json missing-package flow (Structured Agent Report feature, US3)
+
+
+def test_generate_library_missing_package_reaches_output_on_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        (workdir / "install" / "lib").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
+        (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
+        (workdir / "install" / "include" / "foo.h").write_text("stub")
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "done", "missing_system_packages": ["libssl-dev"]})
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    assert "libssl-dev" in dockerfile
+    assert "libssl-dev" in setup_sh
+
+
+def test_generate_library_missing_package_reaches_state_then_next_run_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    failed_result = RunResult(stdout="build failed", stderr="", exit_code=1, duration_seconds=0.1)
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "Needs libssl-dev.", "missing_system_packages": ["libssl-dev"]})
+        )
+        return AgentStreamResult(
+            combined_text="ACTION REQUIRED: install libssl-dev",
+            exit_code=1,
+            duration_seconds=1.0,
+        )
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc != 0
+
+    state_file = Path(".harnessbuddy") / "mylib" / "state.json"
+    state = json.loads(state_file.read_text())
+    assert "libssl-dev" in state["apt_packages"]
+
+    rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc2 == 0
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    assert "libssl-dev" in dockerfile
+    assert "libssl-dev" in setup_sh
+
+
+def test_generate_harness_missing_package_reaches_output_on_success(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
     )
-    analysis = _bare_analysis(tmp_path)
-    load_system_deps(analysis)
-    assert analysis.system_packages == ["libssl-dev", "libz-dev"]
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "out").mkdir(parents=True, exist_ok=True)
+        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "build_harness.sh").write_text(
+            'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
+        )
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "done", "missing_system_packages": ["libfoo-dev"]})
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    assert "libfoo-dev" in dockerfile
+    assert "libfoo-dev" in setup_sh
 
 
-def test_load_system_deps_ignores_malformed_json(tmp_path: Path) -> None:
-    (tmp_path / "system_deps.json").write_text("not json{{{")
-    analysis = _bare_analysis(tmp_path)
-    load_system_deps(analysis)
-    assert analysis.system_packages == []
+def test_generate_harness_missing_package_reaches_state_then_next_run_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
 
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "agent_report.json").write_text(
+            json.dumps({"summary": "Needs libfoo-dev.", "missing_system_packages": ["libfoo-dev"]})
+        )
+        return AgentStreamResult(
+            combined_text="ACTION REQUIRED: install libfoo-dev",
+            exit_code=1,
+            duration_seconds=1.0,
+        )
 
-def test_load_system_deps_ignores_missing_apt_packages_key(tmp_path: Path) -> None:
-    (tmp_path / "system_deps.json").write_text(json.dumps({"other_key": ["foo"]}))
-    analysis = _bare_analysis(tmp_path)
-    load_system_deps(analysis)
-    assert analysis.system_packages == []
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc != 0
 
+    state_file = Path(".harnessbuddy") / "mylib" / "state.json"
+    state = json.loads(state_file.read_text())
+    assert "libfoo-dev" in state["apt_packages"]
 
-def test_load_system_deps_handles_non_list_value(tmp_path: Path) -> None:
-    (tmp_path / "system_deps.json").write_text(json.dumps({"apt_packages": "libssl-dev"}))
-    analysis = _bare_analysis(tmp_path)
-    load_system_deps(analysis)
-    assert analysis.system_packages == []
+    rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc2 == 0
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    assert "libfoo-dev" in dockerfile
+    assert "libfoo-dev" in setup_sh
 
 
 # load_project_state / save_project_state / merge_packages_into_state
@@ -607,19 +1043,3 @@ def test_load_project_state_ignores_malformed_json(tmp_path: Path) -> None:
     (tmp_path / "state.json").write_text("not json{{{")
     state = load_project_state(tmp_path / "state.json")
     assert state["apt_packages"] == []
-
-
-def test_generate_system_deps_loaded_from_source_path(
-    local_repo_with_origin: Path, tmp_path: Path
-) -> None:
-    (local_repo_with_origin / "system_deps.json").write_text(
-        json.dumps({"apt_packages": ["libssl-dev"]})
-    )
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    assert rc == 0
-    dockerfile = (output_dir / "mylib" / "output" / "oss-fuzz" / "Dockerfile").read_text()
-    assert "libssl-dev" in dockerfile
-    setup_sh = (output_dir / "mylib" / "output" / "local" / "setup.sh").read_text()
-    assert "libssl-dev" in setup_sh

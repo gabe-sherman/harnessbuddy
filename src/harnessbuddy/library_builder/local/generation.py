@@ -18,7 +18,7 @@ from harnessbuddy.library_builder.scripts import (
     write_default_fuzzer,
 )
 
-_BUILD_HARNESS_SH_STUB = "#!/bin/bash\nset -euo pipefail\n\n# TODO: compile harnesses\n"
+_COMPILE_HARNESSES_SH_STUB = "#!/bin/bash\nset -euo pipefail\n\n# TODO: compile harnesses\n"
 
 
 def generate_local(
@@ -35,7 +35,7 @@ def generate_local(
     files: list[Path] = [
         _write_setup_sh(output_path, analysis, brew_packages=brew_packages or []),
         _write_build_library_sh(output_path, analysis, exploration),
-        _write_build_harness_sh(output_path, harness_exploration),
+        _write_compile_harnesses_sh(output_path, harness_exploration),
         write_default_fuzzer(output_path / "harness_src", analysis),
     ]
 
@@ -105,19 +105,19 @@ def _write_build_library_sh(
     return path
 
 
-def _write_build_harness_sh(output_path: Path, harness: HarnessExplorationResult | None) -> Path:
-    """Write build_harness.sh, reusing the validated (possibly agent-fixed) script when available.
+def _write_compile_harnesses_sh(output_path: Path, harness: HarnessExplorationResult | None) -> Path:
+    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed) script when available.
 
     The validated script already uses $SCRIPT_DIR-relative paths matching this output
     layout (install/, harness_src/, out/), so copying it verbatim preserves any fixes
     made while resolving transitive link flags. Falls back to the static template
     (regenerated from static_libs/transitive_link_flags) when no exploration was run.
     """
-    path = output_path / "build_harness.sh"
+    path = output_path / "compile_harnesses.sh"
     if harness is not None and harness.script_path is not None:
         shutil.copy2(harness.script_path, path)
     else:
-        content = build_harness_script(harness) if harness is not None else _BUILD_HARNESS_SH_STUB
+        content = build_harness_script(harness) if harness is not None else _COMPILE_HARNESSES_SH_STUB
         path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path

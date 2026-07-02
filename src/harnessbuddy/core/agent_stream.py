@@ -27,7 +27,6 @@ class AgentStreamResult:
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
-    final_message: str | None = None
 
 
 _CLAUDE_READ_TOOLS = {"Read"}
@@ -192,47 +191,11 @@ def _extract_stats(tool: str, line: str) -> tuple[float | None, int | None, int 
     return _codex_result_cost(line)
 
 
-def _claude_final_text(line: str) -> str | None:
-    try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or data.get("type") != "assistant":
-        return None
-    content = data.get("message", {}).get("content", [])
-    if not isinstance(content, list):
-        return None
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            return block.get("text")
-    return None
-
-
-def _codex_final_text(line: str) -> str | None:
-    try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or data.get("type") != "item.completed":
-        return None
-    item = data.get("item")
-    if not isinstance(item, dict) or item.get("type") != "agent_message":
-        return None
-    return item.get("text")
-
-
-def _extract_final_text(tool: str, line: str) -> str | None:
-    if tool == "claude":
-        return _claude_final_text(line)
-    return _codex_final_text(line)
-
-
 @dataclass
 class _StreamAccumulator:
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
-    final_message: str | None = None
 
 
 def _apply_line_stats(acc: _StreamAccumulator, tool: str, line: str) -> None:
@@ -244,9 +207,6 @@ def _apply_line_stats(acc: _StreamAccumulator, tool: str, line: str) -> None:
         acc.input_tokens = input_tokens
     if output_tokens is not None:
         acc.output_tokens = output_tokens
-    final_text = _extract_final_text(tool, line)
-    if final_text is not None:
-        acc.final_message = final_text
 
 
 def run_agent_streaming(
@@ -294,7 +254,6 @@ def run_agent_streaming(
         cost_usd=acc.cost_usd,
         input_tokens=acc.input_tokens,
         output_tokens=acc.output_tokens,
-        final_message=acc.final_message,
     )
 
 
@@ -306,7 +265,6 @@ class AgentRunSummary:
     cost_usd: float | None
     input_tokens: int | None = None
     output_tokens: int | None = None
-    final_message: str | None = None
 
 
 def format_agent_summary(summary: AgentRunSummary) -> str:

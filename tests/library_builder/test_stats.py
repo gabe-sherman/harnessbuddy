@@ -5,6 +5,7 @@ from pathlib import Path
 
 from harnessbuddy.core.agent_stream import AgentRunSummary
 from harnessbuddy.library_builder.models import (
+    AgentReport,
     BuildExplorationResult,
     BuildSystem,
     HarnessExplorationResult,
@@ -158,9 +159,9 @@ def test_agent_phase_stats_from_agent_error_real_values() -> None:
         outcome="failed",
         duration_seconds=42.0,
         cost_usd=0.02,
-        final_message="Could not resolve the missing package.",
     )
-    stats = agent_phase_stats_from_agent_error(summary)
+    report = AgentReport(summary="Could not resolve the missing package.")
+    stats = agent_phase_stats_from_agent_error(summary, report)
     assert stats.invoked is True
     assert stats.duration_seconds == 42.0
     assert stats.cost_usd == 0.02
@@ -173,21 +174,32 @@ def test_agent_phase_stats_from_agent_error_no_cost_is_na() -> None:
         outcome="failed",
         duration_seconds=42.0,
         cost_usd=None,
-        final_message="hello world",
     )
-    stats = agent_phase_stats_from_agent_error(summary)
+    report = AgentReport(summary="hello world")
+    stats = agent_phase_stats_from_agent_error(summary, report)
     assert stats.cost_usd == "N/A"
 
 
-def test_agent_phase_stats_from_agent_error_no_final_message_is_unavailable() -> None:
+def test_agent_phase_stats_from_agent_error_no_report_is_unavailable() -> None:
     summary = AgentRunSummary(
         backend="claude",
         outcome="timed_out",
         duration_seconds=42.0,
         cost_usd=None,
-        final_message=None,
     )
-    stats = agent_phase_stats_from_agent_error(summary)
+    stats = agent_phase_stats_from_agent_error(summary, None)
+    assert stats.summary == "unavailable"
+
+
+def test_agent_phase_stats_from_agent_error_report_without_summary_is_unavailable() -> None:
+    summary = AgentRunSummary(
+        backend="claude",
+        outcome="timed_out",
+        duration_seconds=42.0,
+        cost_usd=None,
+    )
+    report = AgentReport(summary=None)
+    stats = agent_phase_stats_from_agent_error(summary, report)
     assert stats.summary == "unavailable"
 
 
@@ -274,7 +286,12 @@ def test_write_run_stats_harness_unrecoverable_with_codex(tmp_path: Path) -> Non
         total_duration_seconds=143.5,
         library_build_agent=not_invoked_agent_stats(),
         harness_build_agent=AgentPhaseStats(
-            invoked=True, duration_seconds=88.2, cost_usd="N/A", input_tokens="N/A", output_tokens="N/A", summary="unavailable"
+            invoked=True,
+            duration_seconds=88.2,
+            cost_usd="N/A",
+            input_tokens="N/A",
+            output_tokens="N/A",
+            summary="unavailable",
         ),
         status=RunStatus.FAILED_HARNESS_BUILD,
     )

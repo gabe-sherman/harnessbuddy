@@ -50,6 +50,7 @@ LIBS = [
     LibSpec(
         "https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False
     ),  # requires libpsl
+    LibSpec("https://github.com/fukuchi/libqrencode.git", BuildSystem.CMAKE, False),
     # make
     LibSpec("https://github.com/lz4/lz4.git", "lz4", BuildSystem.MAKEFILE, True),
     # autotools

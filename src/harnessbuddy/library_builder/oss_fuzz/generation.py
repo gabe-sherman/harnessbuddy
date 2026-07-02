@@ -74,7 +74,6 @@ def generate_oss_fuzz(
         _write_build_library_sh(output_path, analysis, exploration),
         _write_compile_harnesses_sh(output_path, harness_exploration),
         write_default_fuzzer(output_path / "harness_source", analysis),
-        _write_provenance_json(output_path, analysis, exploration),
     ]
 
     return GenerationResult(
@@ -170,41 +169,4 @@ def _write_compile_harnesses_sh(
     )
     path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return path
-
-
-def _write_provenance_json(
-    output_path: Path,
-    analysis: AnalysisResult,
-    exploration: BuildExplorationResult | None = None,
-) -> Path:
-    path = output_path / "provenance.json"
-    provenance: dict[str, object] = {
-        "project_name": analysis.project_name,
-        "build_system": analysis.build_system.value,
-        "build_files": sorted(
-            str(p.relative_to(analysis.source_path)) for p in analysis.build_files
-        ),
-        "headers": sorted(str(p.relative_to(analysis.source_path)) for p in analysis.headers),
-        "language": analysis.language.value,
-        "clone_url": analysis.clone_url,
-        "repo_ref": analysis.repo_ref,
-        "output_path": str(output_path),
-        "warnings": analysis.warnings,
-    }
-    if analysis.autotools_setup is not None:
-        provenance["autotools_setup"] = analysis.autotools_setup.value
-    if analysis.system_packages:
-        provenance["system_packages"] = analysis.system_packages
-    if exploration is not None:
-        provenance["host_build_exploration"] = {
-            "build_system": exploration.build_system.value,
-            "succeeded": exploration.succeeded,
-            "command": exploration.command,
-            "stdout": exploration.stdout,
-            "stderr": exploration.stderr,
-            "exit_code": exploration.exit_code,
-            "duration_seconds": exploration.duration_seconds,
-        }
-    path.write_text(json.dumps(provenance, indent=2) + "\n")
     return path

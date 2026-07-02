@@ -13,13 +13,16 @@ from harnessbuddy.core.agent_stream import (
 from harnessbuddy.library_builder.exploration import (
     _validate_install_artifacts,
     is_standard_source_layout,
+    read_agent_report,
 )
 from harnessbuddy.library_builder.harness_explorer import (
     _extract_missing_system_libs,
     _validate_harness_artifacts,
+    reparse_lib_paths,
     reparse_link_config,
 )
 from harnessbuddy.library_builder.models import (
+    AgentReport,
     AnalysisResult,
     BuildExplorationResult,
     HarnessExplorationResult,
@@ -41,7 +44,7 @@ _HARNESS_SKILL_PATH: Path = (
 )
 
 _HARNESS_INLINE_INSTRUCTIONS: str = (
-    "Fix the failed harness link probe. Modify build_harness.sh in the work directory "
+    "Fix the failed harness link probe. Modify compile_harnesses.sh in the work directory "
     "so that compiling and linking the probe harness against the installed static "
     "libraries succeeds and produces a binary in out/."
 )
@@ -72,36 +75,38 @@ _BUDGET_PATTERN = re.compile(
 class BuildFailureError(Exception):
     """Agent output contained ACTION_REQUIRED, signaling a user-resolvable roadblock."""
 
-    def __init__(self, output: str, summary: AgentRunSummary) -> None:
+    def __init__(self, output: str, summary: AgentRunSummary, report: AgentReport | None) -> None:
         super().__init__(
             f"Agent requires user action. Review the output below, resolve the issue, "
             f"then retry.\n\n{output}"
         )
         self.output = output
         self.summary = summary
+        self.report = report
 
 
 class LLMBudgetError(Exception):
     """Agent exited because it hit a usage limit (Claude 5-hour limit or Codex quota)."""
 
-    def __init__(self, output: str, summary: AgentRunSummary) -> None:
+    def __init__(self, output: str, summary: AgentRunSummary, report: AgentReport | None) -> None:
         super().__init__(
             f"Agent hit a usage or rate limit. Review the output below and retry later.\n\n{output}"
         )
         self.output = output
         self.summary = summary
+        self.report = report
 
 
 def _raise_for_agent_failure(
-    exit_code: int, combined_output: str, summary: AgentRunSummary
+    exit_code: int, combined_output: str, summary: AgentRunSummary, report: AgentReport | None
 ) -> None:
     """Raise LLMBudgetError or BuildFailureError if agent output signals either condition."""
     if exit_code == 0:
         return
     if _BUDGET_PATTERN.search(combined_output):
-        raise LLMBudgetError(combined_output, summary)
+        raise LLMBudgetError(combined_output, summary, report)
     if _ACTION_REQUIRED in combined_output:
-        raise BuildFailureError(combined_output, summary)
+        raise BuildFailureError(combined_output, summary, report)
 
 
 def _determine_outcome(exit_code: int, combined_text: str) -> str:
@@ -122,7 +127,6 @@ def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
-        final_message=result.final_message,
     )
     write_agent_report(report_path, result.combined_text, summary)
     print(format_agent_summary(summary))
@@ -183,7 +187,8 @@ def invoke_library_builder_agent(
 
     result = run_agent_streaming(cmd, workdir, timeout, tool)
     summary = _report_agent_run(workdir / "agent_library_build.log", tool, result)
-    _raise_for_agent_failure(result.exit_code, result.combined_text, summary)
+    report = read_agent_report(workdir)
+    _raise_for_agent_failure(result.exit_code, result.combined_text, summary, report)
 
     succeeded = result.exit_code == 0
     stderr = ""
@@ -209,7 +214,10 @@ def invoke_library_builder_agent(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         transcript_path=workdir / "agent_library_build.log",
-        agent_summary=result.final_message,
+        agent_summary=report.summary if report else None,
+        missing_system_packages=report.missing_system_packages if report else [],
+        extra_include_paths=report.extra_include_paths if report else [],
+        extra_library_paths=report.extra_library_paths if report else [],
     )
 
 
@@ -232,7 +240,7 @@ def build_harness_prompt(
         f"- source_dir: {analysis.source_path}\n"
         f"- install_dir: {install_dir}\n"
         f"- workdir: {workdir}\n"
-        f"- build_harness.sh: {workdir / 'build_harness.sh'}\n"
+        f"- compile_harnesses.sh: {workdir / 'compile_harnesses.sh'}\n"
         f"- harness_src: {workdir / 'harness_src'}\n"
         f"- static_libs: {', '.join(p.name for p in harness.static_libs) or '(none)'}\n"
         f"- auto_resolved_link_flags: {' '.join(harness.transitive_link_flags) or '(none)'}\n"
@@ -255,7 +263,7 @@ def invoke_harness_builder_agent(
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
-    and modify build_harness.sh and harness_src/ directly.
+    and modify compile_harnesses.sh and harness_src/ directly.
     """
     prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir)
     if tool == "claude":
@@ -267,27 +275,35 @@ def invoke_harness_builder_agent(
 
     result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
     summary = _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
-    _raise_for_agent_failure(result.exit_code, result.combined_text, summary)
+    report = read_agent_report(paths.workdir)
+    _raise_for_agent_failure(result.exit_code, result.combined_text, summary, report)
 
     succeeded = result.exit_code == 0
     stderr = ""
     missing_system_libs = harness.missing_system_libs
     static_libs = harness.static_libs
     transitive_link_flags = harness.transitive_link_flags
-    script_path = paths.workdir / "build_harness.sh"
+    extra_library_paths = harness.extra_library_paths
+    script_path = paths.workdir / "compile_harnesses.sh"
     if succeeded:
         validation_errors = _validate_harness_artifacts(paths.workdir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
         else:
-            # The agent edits STATIC_LIBS/EXTRA_LINK_FLAGS in the script directly rather
-            # than through us, so re-derive them instead of trusting the pre-fix values.
+            # The agent edits STATIC_LIBS/EXTRA_LINK_FLAGS/EXTRA_LIB_PATHS in the script
+            # directly rather than through us, so re-derive them instead of trusting the
+            # pre-fix values.
+            script_text = script_path.read_text()
             static_libs, transitive_link_flags = reparse_link_config(
-                script_path.read_text(), static_libs, transitive_link_flags
+                script_text, static_libs, transitive_link_flags
             )
+            extra_library_paths = reparse_lib_paths(script_text, extra_library_paths)
     if not succeeded:
         missing_system_libs = _extract_missing_system_libs(stderr)
+
+    report_library_paths = report.extra_library_paths if report else []
+    extra_library_paths = list(dict.fromkeys(extra_library_paths + report_library_paths))
 
     return HarnessExplorationResult(
         succeeded=succeeded,
@@ -306,5 +322,8 @@ def invoke_harness_builder_agent(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         transcript_path=paths.workdir / "agent_harness_build.log",
-        agent_summary=result.final_message,
+        agent_summary=report.summary if report else None,
+        missing_system_packages=report.missing_system_packages if report else [],
+        extra_include_paths=report.extra_include_paths if report else [],
+        extra_library_paths=extra_library_paths,
     )

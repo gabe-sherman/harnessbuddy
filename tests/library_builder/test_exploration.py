@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harnessbuddy.core.subprocesses import RunResult
-from harnessbuddy.library_builder.exploration import explore, is_standard_source_layout
+from harnessbuddy.library_builder.exploration import (
+    explore,
+    is_standard_source_layout,
+    read_agent_report,
+)
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
@@ -120,3 +125,75 @@ def test_non_standard_layout_still_writes_script_to_workdir(tmp_path: Path) -> N
     source.mkdir(parents=True)
     _run_explore(workdir, source)
     assert (workdir / "build_library.sh").exists()
+
+
+# read_agent_report
+
+
+def test_read_agent_report_absent_file_returns_none(tmp_path: Path) -> None:
+    assert read_agent_report(tmp_path) is None
+
+
+def test_read_agent_report_invalid_json_returns_none(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text("not json{{{")
+    assert read_agent_report(tmp_path) is None
+
+
+def test_read_agent_report_top_level_not_object_returns_none(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text(json.dumps(["a", "b"]))
+    assert read_agent_report(tmp_path) is None
+
+
+def test_read_agent_report_summary_not_string_is_treated_as_absent(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text(json.dumps({"summary": 123}))
+    report = read_agent_report(tmp_path)
+    assert report is not None
+    assert report.summary is None
+
+
+def test_read_agent_report_list_fields_not_list_of_strings_become_empty(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text(
+        json.dumps(
+            {
+                "missing_system_packages": "libssl-dev",
+                "extra_include_paths": [1, 2],
+                "extra_library_paths": None,
+            }
+        )
+    )
+    report = read_agent_report(tmp_path)
+    assert report is not None
+    assert report.missing_system_packages == []
+    assert report.extra_include_paths == []
+    assert report.extra_library_paths == []
+
+
+def test_read_agent_report_well_formed_file_returns_all_fields(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text(
+        json.dumps(
+            {
+                "summary": "Disabled optional SSL support.",
+                "missing_system_packages": ["libssl-dev"],
+                "extra_include_paths": ["/usr/include/foo"],
+                "extra_library_paths": ["/usr/lib/x86_64-linux-gnu"],
+            }
+        )
+    )
+    report = read_agent_report(tmp_path)
+    assert report is not None
+    assert report.summary == "Disabled optional SSL support."
+    assert report.missing_system_packages == ["libssl-dev"]
+    assert report.extra_include_paths == ["/usr/include/foo"]
+    assert report.extra_library_paths == ["/usr/lib/x86_64-linux-gnu"]
+
+
+def test_read_agent_report_deletes_file_after_read_when_well_formed(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text(json.dumps({"summary": "done"}))
+    read_agent_report(tmp_path)
+    assert not (tmp_path / "agent_report.json").exists()
+
+
+def test_read_agent_report_deletes_file_after_read_when_malformed(tmp_path: Path) -> None:
+    (tmp_path / "agent_report.json").write_text("not json{{{")
+    read_agent_report(tmp_path)
+    assert not (tmp_path / "agent_report.json").exists()

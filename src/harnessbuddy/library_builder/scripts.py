@@ -42,13 +42,7 @@ def build_library_script(
     body = _build_body(
         build_system, paths.source_dir, paths.build_dir, paths.install_dir, autotools_setup
     )
-    footer = (
-        f"\ncat > {paths.env_file} <<'EOF'\n"
-        f'HB_INCLUDE_FLAGS="-I{paths.install_dir}/include"\n'
-        f'HB_LIBRARY_FLAGS="-L{paths.install_dir}/lib"\n'
-        "EOF\n"
-    )
-    return header + body + footer
+    return header + body
 
 
 def _build_body(
@@ -176,6 +170,12 @@ def build_harness_script(
         else:
             extra_line = "EXTRA_LINK_FLAGS=\n"
 
+    extra_lib_paths = " ".join(f"-L{p}" for p in harness.extra_library_paths)
+    extra_lib_paths_line = (
+        f'EXTRA_LIB_PATHS="{extra_lib_paths}"\n' if extra_lib_paths else "EXTRA_LIB_PATHS=\n"
+    )
+    extra_include_flags = "".join(f' "-I{p}"' for p in harness.extra_include_paths)
+
     if whole_archive:
         if sys.platform == "darwin":
             wa_before, wa_after = "-Wl,-all_load", ""
@@ -215,6 +215,7 @@ def build_harness_script(
         + ")\n"
         + "\n"
         + extra_line
+        + extra_lib_paths_line
         + "\n"
         + 'for harness in "$HARNESS_DIR"/*; do\n'
         + '  [ -f "$harness" ] || continue\n'
@@ -222,12 +223,18 @@ def build_harness_script(
         + '  output="${name%.*}"\n'
         + '  case "$harness" in\n'
         + "    *.c)\n"
-        + '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-        + f'        {static_libs_str} $EXTRA_LINK_FLAGS{engine_flag} -o "{out_ref}/$output"\n'
+        + f'      "$CC" $CFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$harness" \\\n'
+        + (
+            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
+            f' -o "{out_ref}/$output"\n'
+        )
         + "      ;;\n"
         + "    *.cc|*.cpp|*.cxx)\n"
-        + '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-        + f'        {static_libs_str} $EXTRA_LINK_FLAGS{engine_flag} -o "{out_ref}/$output"\n'
+        + f'      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$harness" \\\n'
+        + (
+            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
+            f' -o "{out_ref}/$output"\n'
+        )
         + "      ;;\n"
         + "  esac\n"
         + "done\n"

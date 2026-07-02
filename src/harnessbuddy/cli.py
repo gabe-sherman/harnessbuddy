@@ -117,26 +117,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def load_system_deps(analysis: AnalysisResult) -> None:
-    """Populate analysis.system_packages from system_deps.json written by a prior agent run.
-
-    system_deps.json lives in the source directory and is written by the library builder
-    agent when it identifies required apt packages. Loading it here means subsequent runs
-    can embed the packages into the generated Dockerfile and setup.sh without re-running
-    the agent.
-    """
-    deps_file = analysis.source_path / "system_deps.json"
-    if not deps_file.exists():
-        return
-    try:
-        data = json.loads(deps_file.read_text())
-        packages = data.get("apt_packages", [])
-        if isinstance(packages, list):
-            analysis.system_packages = [str(p) for p in packages]
-    except (json.JSONDecodeError, OSError):
-        pass
-
-
 def load_project_state(state_file: Path) -> _ProjectState:
     """Load state.json for a project; return empty state if absent or malformed."""
     if not state_file.exists():
@@ -211,17 +191,25 @@ def build_harness(
     analysis: AnalysisResult,
     install_dir: Path,
     workspace: Path,
+    library_result: BuildExplorationResult,
     *,
     agent: str | None = None,
 ) -> HarnessExplorationResult:
     """Probe harness compilation, then optionally fall back to an LLM agent if it fails.
 
     Returns the final HarnessExplorationResult. result.llm_used is True when the
-    agent path was taken.
+    agent path was taken. library_result's extra_include_paths/extra_library_paths
+    (from the library-build agent's AgentReport, if any) are threaded into the probe.
     """
     from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 
-    result = explore_harness_compilation(install_dir, workspace, analysis.language)
+    result = explore_harness_compilation(
+        install_dir,
+        workspace,
+        analysis.language,
+        extra_include_paths=library_result.extra_include_paths,
+        extra_library_paths=library_result.extra_library_paths,
+    )
     if not result.succeeded and agent is not None:
         from harnessbuddy.library_builder.agents import invoke_harness_builder_agent
         from harnessbuddy.library_builder.models import HarnessPaths
@@ -268,8 +256,7 @@ def _ingest_source(args: argparse.Namespace, state_dir: Path) -> RepoSource | in
 
 def _resolve_output_paths(args: argparse.Namespace, analysis: AnalysisResult) -> tuple[Path, Path]:
     """Determine local/oss-fuzz output paths, prompting to overwrite an existing directory."""
-    parent_path = Path(args.output) if args.output else Path.cwd()
-    base_output = parent_path / analysis.project_name / "output"
+    base_output = Path(args.output) if args.output else Path.cwd() / "output" / analysis.project_name
     if base_output.exists():
         if sys.stdin.isatty():
             overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")
@@ -289,17 +276,7 @@ def _run_library_phase(
     state: _ProjectState,
     state_file: Path,
 ) -> BuildExplorationResult:
-    """Merge agent-detected system deps into state, then build the library."""
-    if analysis.system_packages:
-        merge_packages_into_state(
-            state,
-            apt_packages=analysis.system_packages,
-            brew_packages=[],
-            unknown_libs=[],
-            source_tag="agent",
-        )
-        save_project_state(state_file, state)
-
+    """Build the library, persisting any packages the library-build agent reported missing."""
     print(f"Running host build in {workspace} ...")
     if agent:
         print(f"Agent fallback enabled ({agent}).")
@@ -309,13 +286,24 @@ def _run_library_phase(
     if result.llm_used:
         print("Agent finished.")
 
+    if result.missing_system_packages:
+        merge_packages_into_state(
+            state,
+            apt_packages=result.missing_system_packages,
+            brew_packages=[],
+            unknown_libs=[],
+            source_tag="library_agent",
+        )
+        save_project_state(state_file, state)
+
     return result
 
 
-def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
+def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
     analysis: AnalysisResult,
     install_dir: Path,
     workspace: Path,
+    library_result: BuildExplorationResult,
     agent: str | None,
     state: _ProjectState,
     state_file: Path,
@@ -324,7 +312,7 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 6 params are dis
     from harnessbuddy.library_builder.package_names import translate as translate_packages
 
     print("Probing harness compilation ...")
-    harness_result = build_harness(analysis, install_dir, workspace, agent=agent)
+    harness_result = build_harness(analysis, install_dir, workspace, library_result, agent=agent)
 
     if harness_result.llm_used:
         print("Harness agent finished.")
@@ -340,6 +328,18 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 6 params are dis
             brew_packages=translation.brew_packages,
             unknown_libs=translation.unknown_libs,
             source_tag="linker",
+        )
+        save_project_state(state_file, state)
+
+    # The harness-build agent's own self-reported packages are already resolved names,
+    # unlike missing_system_libs above (bare library names requiring translation).
+    if harness_result.missing_system_packages:
+        merge_packages_into_state(
+            state,
+            apt_packages=harness_result.missing_system_packages,
+            brew_packages=[],
+            unknown_libs=[],
+            source_tag="harness_agent",
         )
         save_project_state(state_file, state)
 
@@ -451,7 +451,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     base_output.mkdir(parents=True, exist_ok=True)
 
     workspace = project_dir(state_dir, analysis.project_name)
-    load_system_deps(analysis)
 
     state_file = project_state_file(state_dir, analysis.project_name)
     state = load_project_state(state_file)
@@ -460,6 +459,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     try:
         result = _run_library_phase(analysis, workspace, agent, state, state_file)
     except (BuildFailureError, LLMBudgetError) as exc:
+        if exc.report and exc.report.missing_system_packages:
+            merge_packages_into_state(
+                state,
+                apt_packages=exc.report.missing_system_packages,
+                brew_packages=[],
+                unknown_libs=[],
+                source_tag="library_agent",
+            )
+            save_project_state(state_file, state)
         print(
             f"Agent requires user action before the build can proceed:\n{exc.output}",
             file=sys.stderr,
@@ -467,7 +475,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         _write_run_stats(
             base_output,
             start_time,
-            agent_phase_stats_from_agent_error(exc.summary),
+            agent_phase_stats_from_agent_error(exc.summary, exc.report),
             not_invoked_agent_stats(),
             RunStatus.FAILED_LIBRARY_BUILD,
         )
@@ -487,9 +495,18 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     install_dir = workspace / "install"
     try:
         harness_result, brew_packages = _run_harness_phase(
-            analysis, install_dir, workspace, agent, state, state_file
+            analysis, install_dir, workspace, result, agent, state, state_file
         )
     except (BuildFailureError, LLMBudgetError) as exc:
+        if exc.report and exc.report.missing_system_packages:
+            merge_packages_into_state(
+                state,
+                apt_packages=exc.report.missing_system_packages,
+                brew_packages=[],
+                unknown_libs=[],
+                source_tag="harness_agent",
+            )
+            save_project_state(state_file, state)
         print(
             f"Agent requires user action before the harness build can proceed:\n{exc.output}",
             file=sys.stderr,
@@ -498,7 +515,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             base_output,
             start_time,
             agent_phase_stats_from_build(result),
-            agent_phase_stats_from_agent_error(exc.summary),
+            agent_phase_stats_from_agent_error(exc.summary, exc.report),
             RunStatus.FAILED_HARNESS_BUILD,
         )
         return 1

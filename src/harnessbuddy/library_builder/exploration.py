@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import shutil
 import stat
 from pathlib import Path
 
 from harnessbuddy.core.subprocesses import run_command_streaming
 from harnessbuddy.library_builder.models import (
+    AgentReport,
     AnalysisResult,
     BuildExplorationResult,
     BuildPaths,
@@ -99,6 +101,39 @@ def explore(
         duration_seconds=result.duration_seconds,
         script_path=script_path if standard_layout else None,
     )
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return []
+    return [str(item) for item in value]
+
+
+def read_agent_report(workdir: Path) -> AgentReport | None:
+    """Read and delete workdir/agent_report.json, tolerantly parsing its contents.
+
+    Returns None if the file is absent, isn't valid JSON, or isn't a JSON object.
+    Deletes the file whenever it existed, regardless of parse outcome, so a later,
+    unrelated invocation never picks up a stale report.
+    """
+    report_path = workdir / "agent_report.json"
+    if not report_path.exists():
+        return None
+    try:
+        data = json.loads(report_path.read_text())
+        if not isinstance(data, dict):
+            return None
+        summary = data.get("summary")
+        return AgentReport(
+            summary=summary if isinstance(summary, str) else None,
+            missing_system_packages=_string_list(data.get("missing_system_packages")),
+            extra_include_paths=_string_list(data.get("extra_include_paths")),
+            extra_library_paths=_string_list(data.get("extra_library_paths")),
+        )
+    except (json.JSONDecodeError, OSError):
+        return None
+    finally:
+        report_path.unlink(missing_ok=True)
 
 
 def _validate_install_artifacts(install_dir: Path) -> list[str]:

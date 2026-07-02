@@ -6,7 +6,11 @@ from enum import Enum
 from pathlib import Path
 
 from harnessbuddy.core.agent_stream import AgentRunSummary
-from harnessbuddy.library_builder.models import BuildExplorationResult, HarnessExplorationResult
+from harnessbuddy.library_builder.models import (
+    AgentReport,
+    BuildExplorationResult,
+    HarnessExplorationResult,
+)
 
 
 class RunStatus(Enum):
@@ -36,11 +40,22 @@ class AgentPhaseStats:
 
 
 def not_invoked_agent_stats() -> AgentPhaseStats:
-    return AgentPhaseStats(invoked=False, duration_seconds="N/A", cost_usd="N/A",  input_tokens="N/A",  output_tokens="N/A", summary="N/A")
+    return AgentPhaseStats(
+        invoked=False,
+        duration_seconds="N/A",
+        cost_usd="N/A",
+        input_tokens="N/A",
+        output_tokens="N/A",
+        summary="N/A",
+    )
 
 
 def _invoked_agent_stats(
-    duration_seconds: float, cost_usd: float | None, input_tokens: int, output_tokens: int, summary: str | None
+    duration_seconds: float,
+    cost_usd: float | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    summary: str | None,
 ) -> AgentPhaseStats:
     return AgentPhaseStats(
         invoked=True,
@@ -55,17 +70,37 @@ def _invoked_agent_stats(
 def agent_phase_stats_from_build(result: BuildExplorationResult) -> AgentPhaseStats:
     if not result.llm_used:
         return not_invoked_agent_stats()
-    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.input_tokens, result.output_tokens, result.agent_summary)
+    return _invoked_agent_stats(
+        result.duration_seconds,
+        result.cost_usd,
+        result.input_tokens,
+        result.output_tokens,
+        result.agent_summary,
+    )
 
 
 def agent_phase_stats_from_harness(result: HarnessExplorationResult) -> AgentPhaseStats:
     if not result.llm_used:
         return not_invoked_agent_stats()
-    return _invoked_agent_stats(result.duration_seconds, result.cost_usd, result.input_tokens, result.output_tokens, result.agent_summary)
+    return _invoked_agent_stats(
+        result.duration_seconds,
+        result.cost_usd,
+        result.input_tokens,
+        result.output_tokens,
+        result.agent_summary,
+    )
 
 
-def agent_phase_stats_from_agent_error(summary: AgentRunSummary) -> AgentPhaseStats:
-    return _invoked_agent_stats(summary.duration_seconds, summary.cost_usd, summary.input_tokens, summary.output_tokens, summary.final_message)
+def agent_phase_stats_from_agent_error(
+    summary: AgentRunSummary, report: AgentReport | None
+) -> AgentPhaseStats:
+    return _invoked_agent_stats(
+        summary.duration_seconds,
+        summary.cost_usd,
+        summary.input_tokens,
+        summary.output_tokens,
+        report.summary if report else None,
+    )
 
 
 @dataclass
