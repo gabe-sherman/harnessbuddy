@@ -7,12 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from harnessbuddy.cli import (
-    load_project_state,
-    main,
-    merge_packages_into_state,
-    save_project_state,
-)
+from harnessbuddy.cli import main
 from harnessbuddy.core.agent_stream import AgentStreamResult
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.models import (
@@ -785,7 +780,13 @@ def test_generate_library_missing_package_reaches_output_on_success(
         (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
         (workdir / "install" / "include" / "foo.h").write_text("stub")
         (workdir / "agent_report.json").write_text(
-            json.dumps({"summary": "done", "missing_system_packages": ["libssl-dev"]})
+            json.dumps(
+                {
+                    "summary": "done",
+                    "missing_apt_packages": ["libssl-dev"],
+                    "missing_brew_packages": ["openssl"],
+                }
+            )
         )
         return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
 
@@ -814,7 +815,7 @@ def test_generate_library_missing_package_reaches_output_on_success(
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     assert "libssl-dev" in dockerfile
-    assert "libssl-dev" in setup_sh
+    assert ("openssl" if sys.platform == "darwin" else "libssl-dev") in setup_sh
 
 
 def test_generate_library_missing_package_reaches_state_then_next_run_output(
@@ -829,7 +830,13 @@ def test_generate_library_missing_package_reaches_state_then_next_run_output(
     ) -> AgentStreamResult:
         workdir = Path(cwd)
         (workdir / "agent_report.json").write_text(
-            json.dumps({"summary": "Needs libssl-dev.", "missing_system_packages": ["libssl-dev"]})
+            json.dumps(
+                {
+                    "summary": "Needs libssl-dev.",
+                    "missing_apt_packages": ["libssl-dev"],
+                    "missing_brew_packages": ["openssl"],
+                }
+            )
         )
         return AgentStreamResult(
             combined_text="ACTION REQUIRED: install libssl-dev",
@@ -862,13 +869,14 @@ def test_generate_library_missing_package_reaches_state_then_next_run_output(
     state_file = Path(".harnessbuddy") / "mylib" / "state.json"
     state = json.loads(state_file.read_text())
     assert "libssl-dev" in state["apt_packages"]
+    assert "openssl" in state["brew_packages"]
 
     rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc2 == 0
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     assert "libssl-dev" in dockerfile
-    assert "libssl-dev" in setup_sh
+    assert ("openssl" if sys.platform == "darwin" else "libssl-dev") in setup_sh
 
 
 def test_generate_harness_missing_package_reaches_output_on_success(
@@ -897,7 +905,13 @@ def test_generate_harness_missing_package_reaches_output_on_success(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
         (workdir / "agent_report.json").write_text(
-            json.dumps({"summary": "done", "missing_system_packages": ["libfoo-dev"]})
+            json.dumps(
+                {
+                    "summary": "done",
+                    "missing_apt_packages": ["libfoo-dev"],
+                    "missing_brew_packages": ["foo"],
+                }
+            )
         )
         return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
 
@@ -922,7 +936,78 @@ def test_generate_harness_missing_package_reaches_output_on_success(
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     assert "libfoo-dev" in dockerfile
-    assert "libfoo-dev" in setup_sh
+    assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
+
+
+def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An agent that resolves a link failure using a library already on its own machine
+    (nothing to install there) must still report that library's packages, so the
+    generated output stays portable to environments that don't already have it — closing
+    the remaining gap identified in specs/007-complete-dependency-packaging's research.md.
+    """
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
+
+    def fake_run_agent_streaming(
+        _cmd: list[str], cwd: Path, _timeout: int, _tool: str
+    ) -> AgentStreamResult:
+        workdir = Path(cwd)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "out").mkdir(parents=True, exist_ok=True)
+        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "compile_harnesses.sh").write_text(
+            'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-lfoo"\n'
+        )
+        (workdir / "agent_report.json").write_text(
+            json.dumps(
+                {
+                    "summary": "Added -lfoo; already present on this machine.",
+                    "missing_libs": ["foo"],
+                    "missing_apt_packages": ["libfoo-dev"],
+                    "missing_brew_packages": ["foo"],
+                }
+            )
+        )
+        return AgentStreamResult(combined_text="done", exit_code=0, duration_seconds=1.0)
+
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch(
+            "harnessbuddy.library_builder.agents.run_agent_streaming",
+            side_effect=fake_run_agent_streaming,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 0
+    assert "ACTION REQUIRED" not in capsys.readouterr().err
+    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
+    setup_sh = (output_dir / "local" / "setup.sh").read_text()
+    local_compile_harnesses = (output_dir / "local" / "compile_harnesses.sh").read_text()
+    oss_fuzz_compile_harnesses = (output_dir / "oss-fuzz" / "compile_harnesses.sh").read_text()
+    assert "libfoo-dev" in dockerfile
+    assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
+    assert "-lfoo" in local_compile_harnesses
+    assert "-lfoo" in oss_fuzz_compile_harnesses
 
 
 def test_generate_harness_missing_package_reaches_state_then_next_run_output(
@@ -946,7 +1031,13 @@ def test_generate_harness_missing_package_reaches_state_then_next_run_output(
         workdir = Path(cwd)
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "agent_report.json").write_text(
-            json.dumps({"summary": "Needs libfoo-dev.", "missing_system_packages": ["libfoo-dev"]})
+            json.dumps(
+                {
+                    "summary": "Needs libfoo-dev.",
+                    "missing_apt_packages": ["libfoo-dev"],
+                    "missing_brew_packages": ["foo"],
+                }
+            )
         )
         return AgentStreamResult(
             combined_text="ACTION REQUIRED: install libfoo-dev",
@@ -976,13 +1067,14 @@ def test_generate_harness_missing_package_reaches_state_then_next_run_output(
     state_file = Path(".harnessbuddy") / "mylib" / "state.json"
     state = json.loads(state_file.read_text())
     assert "libfoo-dev" in state["apt_packages"]
+    assert "foo" in state["brew_packages"]
 
     rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc2 == 0
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     assert "libfoo-dev" in dockerfile
-    assert "libfoo-dev" in setup_sh
+    assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
 
 
 def test_generate_harness_linked_flags_only_reaches_output_on_success(
@@ -1133,66 +1225,6 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
 
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     assert dockerfile.count("libzstd-dev") == 1
-
-
-# load_project_state / save_project_state / merge_packages_into_state
-
-
-def test_load_project_state_absent_returns_empty(tmp_path: Path) -> None:
-    state = load_project_state(tmp_path / "state.json")
-    assert state["apt_packages"] == []
-    assert state["brew_packages"] == []
-    assert state["unknown_libs"] == []
-    assert state["sources"] == {}
-
-
-def test_save_and_load_project_state_roundtrip(tmp_path: Path) -> None:
-    state_file = tmp_path / "state.json"
-    state = load_project_state(state_file)
-    merge_packages_into_state(
-        state,
-        apt_packages=["libzstd-dev"],
-        brew_packages=["zstd"],
-        unknown_libs=[],
-        source_tag="linker",
-    )
-    save_project_state(state_file, state)
-    loaded = load_project_state(state_file)
-    assert loaded["apt_packages"] == ["libzstd-dev"]
-    assert loaded["brew_packages"] == ["zstd"]
-
-
-def test_merge_packages_unions_across_calls(tmp_path: Path) -> None:
-    state = load_project_state(tmp_path / "state.json")
-    merge_packages_into_state(
-        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="agent"
-    )
-    merge_packages_into_state(
-        state,
-        apt_packages=["libzstd-dev"],
-        brew_packages=["zstd"],
-        unknown_libs=[],
-        source_tag="linker",
-    )
-    assert state["apt_packages"] == ["libssl-dev", "libzstd-dev"]
-    assert state["brew_packages"] == ["zstd"]
-
-
-def test_merge_packages_deduplicates(tmp_path: Path) -> None:
-    state = load_project_state(tmp_path / "state.json")
-    merge_packages_into_state(
-        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="agent"
-    )
-    merge_packages_into_state(
-        state, apt_packages=["libssl-dev"], brew_packages=[], unknown_libs=[], source_tag="linker"
-    )
-    assert state["apt_packages"] == ["libssl-dev"]
-
-
-def test_load_project_state_ignores_malformed_json(tmp_path: Path) -> None:
-    (tmp_path / "state.json").write_text("not json{{{")
-    state = load_project_state(tmp_path / "state.json")
-    assert state["apt_packages"] == []
 
 
 # extract-features

@@ -1,40 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from harnessbuddy.core.repos import RepoSource
+    from harnessbuddy.library_builder.dependency_resolution import DependencyState
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
         HarnessExplorationResult,
     )
     from harnessbuddy.library_builder.stats import AgentPhaseStats, RunStatus
-
-
-class _ProjectState(TypedDict):
-    version: int
-    apt_packages: list[str]
-    brew_packages: list[str]
-    unknown_libs: list[str]
-    sources: dict[str, list[str]]
-
-
-def _empty_state() -> _ProjectState:
-    return {
-        "version": 1,
-        "apt_packages": [],
-        "brew_packages": [],
-        "unknown_libs": [],
-        "sources": {},
-    }
 
 
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
@@ -161,49 +143,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def load_project_state(state_file: Path) -> _ProjectState:
-    """Load state.json for a project; return empty state if absent or malformed."""
-    if not state_file.exists():
-        return _empty_state()
-    try:
-        data = json.loads(state_file.read_text())
-        state = _empty_state()
-        if isinstance(data.get("apt_packages"), list):
-            state["apt_packages"] = [str(p) for p in data["apt_packages"]]
-        if isinstance(data.get("brew_packages"), list):
-            state["brew_packages"] = [str(p) for p in data["brew_packages"]]
-        if isinstance(data.get("unknown_libs"), list):
-            state["unknown_libs"] = [str(p) for p in data["unknown_libs"]]
-        if isinstance(data.get("sources"), dict):
-            state["sources"] = {
-                k: [str(p) for p in v] for k, v in data["sources"].items() if isinstance(v, list)
-            }
-        return state
-    except (json.JSONDecodeError, OSError):
-        return _empty_state()
-
-
-def save_project_state(state_file: Path, state: _ProjectState) -> None:
-    """Write state.json for a project."""
-    state_file.write_text(json.dumps(state, indent=2))
-
-
-def merge_packages_into_state(
-    state: _ProjectState,
-    *,
-    apt_packages: list[str],
-    brew_packages: list[str],
-    unknown_libs: list[str],
-    source_tag: str,
-) -> None:
-    """Union new packages into state in-place, deduplicating while preserving order."""
-    state["apt_packages"] = list(dict.fromkeys(state["apt_packages"] + apt_packages))
-    state["brew_packages"] = list(dict.fromkeys(state["brew_packages"] + brew_packages))
-    state["unknown_libs"] = list(dict.fromkeys(state["unknown_libs"] + unknown_libs))
-    existing = state["sources"].get(source_tag, [])
-    state["sources"][source_tag] = list(dict.fromkeys(existing + apt_packages))
-
-
 def build_library(
     analysis: AnalysisResult,
     workspace: Path,
@@ -319,10 +258,13 @@ def _run_library_phase(
     analysis: AnalysisResult,
     workspace: Path,
     agent: str | None,
-    state: _ProjectState,
+    state: DependencyState,
     state_file: Path,
 ) -> BuildExplorationResult:
     """Build the library, persisting any packages the library-build agent reported missing."""
+    from harnessbuddy.library_builder import dependency_resolution
+    from harnessbuddy.library_builder.dependency_resolution import DependencySource
+
     print(f"Running host build in {workspace} ...")
     if agent:
         print(f"Agent fallback enabled ({agent}).")
@@ -333,16 +275,40 @@ def _run_library_phase(
         print("Agent finished.")
 
     if result.missing_apt_packages or result.missing_brew_packages:
-        merge_packages_into_state(
-            state,
-            apt_packages=result.missing_apt_packages,
-            brew_packages=result.missing_brew_packages,
-            unknown_libs=[],
-            source_tag="library_agent",
+        dependencies = dependency_resolution.from_agent_report(
+            [],
+            result.missing_apt_packages,
+            result.missing_brew_packages,
+            source=DependencySource.LIBRARY_AGENT,
         )
-        save_project_state(state_file, state)
+        dependency_resolution.merge(state, dependencies)
+        dependency_resolution.save_state(state_file, state)
 
     return result
+
+
+def _print_harness_failure_message(
+    harness_result: HarnessExplorationResult, apt_hint_list: list[str], brew_hint_list: list[str]
+) -> None:
+    """Print the best-effort-continue warning for a failed harness compilation."""
+    if apt_hint_list or brew_hint_list:
+        libs = ", ".join(harness_result.missing_system_libs)
+        apt_hint = " ".join(apt_hint_list) or "(none mapped)"
+        brew_hint = " ".join(brew_hint_list) or "(none mapped)"
+        print(
+            f"Harness compilation incomplete — missing system libraries: {libs}\n"
+            f"  apt:  {apt_hint}\n"
+            f"  brew: {brew_hint}\n"
+            f"Install these packages and re-run for a complete harness build.\n"
+            f"Generating output files with best-effort harness info ...",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"Harness compilation failed — generating output with stub scripts.\n"
+            f"{harness_result.stderr}",
+            file=sys.stderr,
+        )
 
 
 def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
@@ -351,12 +317,12 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     workspace: Path,
     library_result: BuildExplorationResult,
     agent: str | None,
-    state: _ProjectState,
+    state: DependencyState,
     state_file: Path,
 ) -> tuple[HarnessExplorationResult, list[str]]:
     """Probe harness compilation, persist any newly-discovered packages, and report status."""
-    from harnessbuddy.library_builder.harness_explorer import lib_names_from_link_flags
-    from harnessbuddy.library_builder.package_names import translate as translate_packages
+    from harnessbuddy.library_builder import dependency_resolution
+    from harnessbuddy.library_builder.dependency_resolution import DependencySource
 
     print("Probing harness compilation ...")
     harness_result = build_harness(analysis, install_dir, workspace, library_result, agent=agent)
@@ -364,83 +330,55 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     if harness_result.llm_used:
         print("Harness agent finished.")
 
-    # Translate every linked dependency to packages and persist immediately, regardless
-    # of whether exploration succeeded or failed. This covers both libs the linker
-    # reported missing (missing_system_libs) and libs it resolved silently because the
-    # exploration host already had them (transitive_link_flags).
-    linked_libs = list(
-        dict.fromkeys(
-            harness_result.missing_system_libs
-            + lib_names_from_link_flags(harness_result.transitive_link_flags)
-        )
+    # Covers both libs the linker reported missing (missing_system_libs) and libs it
+    # resolved silently because the exploration host already had them
+    # (transitive_link_flags).
+    linker_deps = dependency_resolution.from_static_probe(
+        harness_result.missing_system_libs, harness_result.transitive_link_flags
     )
-    translation = None
-    if linked_libs:
-        translation = translate_packages(linked_libs)
-        merge_packages_into_state(
-            state,
-            apt_packages=translation.apt_packages,
-            brew_packages=translation.brew_packages,
-            unknown_libs=translation.unknown_libs,
-            source_tag="linker",
-        )
-        save_project_state(state_file, state)
+    # The harness-build agent reports its own apt/brew package names directly (drawn from
+    # its general knowledge of the library's packaging), bypassing the translation table.
+    harness_agent_deps = dependency_resolution.from_agent_report(
+        [],
+        harness_result.missing_apt_packages,
+        harness_result.missing_brew_packages,
+        source=DependencySource.HARNESS_AGENT,
+    )
+    if linker_deps or harness_agent_deps:
+        dependency_resolution.merge(state, linker_deps + harness_agent_deps)
+        dependency_resolution.save_state(state_file, state)
 
-    if translation is not None and translation.unknown_libs:
-        unknown = ", ".join(translation.unknown_libs)
+    unknown_names = [
+        dep.name
+        for dep in linker_deps
+        if dep.name is not None and dep.apt_package is None and dep.brew_package is None
+    ]
+    if unknown_names:
+        unknown = ", ".join(unknown_names)
         print(
             f"Warning: no known apt/brew package mapping for: {unknown}. "
             "Install these manually before building elsewhere.",
             file=sys.stderr,
         )
 
-    # The harness-build agent reports its own apt/brew package names directly (drawn from
-    # its general knowledge of the library's packaging), bypassing the translation table above.
-    if harness_result.missing_apt_packages or harness_result.missing_brew_packages:
-        merge_packages_into_state(
-            state,
-            apt_packages=harness_result.missing_apt_packages,
-            brew_packages=harness_result.missing_brew_packages,
-            unknown_libs=[],
-            source_tag="harness_agent",
-        )
-        save_project_state(state_file, state)
-
     # Apply accumulated apt packages so generators (Dockerfile, setup.sh) see them.
-    analysis.system_packages = state["apt_packages"]
-    brew_packages: list[str] = state["brew_packages"]
+    analysis.system_packages = state.apt_packages
+    brew_packages: list[str] = state.brew_packages
 
     if not harness_result.succeeded:
         apt_hint_list = list(
             dict.fromkeys(
-                (translation.apt_packages if translation else [])
+                [dep.apt_package for dep in linker_deps if dep.apt_package is not None]
                 + harness_result.missing_apt_packages
             )
         )
         brew_hint_list = list(
             dict.fromkeys(
-                (translation.brew_packages if translation else [])
+                [dep.brew_package for dep in linker_deps if dep.brew_package is not None]
                 + harness_result.missing_brew_packages
             )
         )
-        if apt_hint_list or brew_hint_list:
-            libs = ", ".join(harness_result.missing_system_libs)
-            apt_hint = " ".join(apt_hint_list) or "(none mapped)"
-            brew_hint = " ".join(brew_hint_list) or "(none mapped)"
-            print(
-                f"Harness compilation incomplete — missing system libraries: {libs}\n"
-                f"  apt:  {apt_hint}\n"
-                f"  brew: {brew_hint}\n"
-                f"Install these packages and re-run for a complete harness build.\n"
-                f"Generating output files with best-effort harness info ...",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"Harness compilation failed — generating output with stub scripts.\n"
-                f"{harness_result.stderr}",
-                file=sys.stderr,
-            )
+        _print_harness_failure_message(harness_result, apt_hint_list, brew_hint_list)
     else:
         print("Successfully produced harness compilation!")
 
@@ -498,8 +436,10 @@ def _write_run_stats(
 
 def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
+    from harnessbuddy.library_builder import dependency_resolution
     from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.dependency_resolution import DependencySource
     from harnessbuddy.library_builder.stats import (
         RunStatus,
         agent_phase_stats_from_agent_error,
@@ -528,21 +468,21 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     workspace = project_dir(state_dir, analysis.project_name)
 
     state_file = project_state_file(state_dir, analysis.project_name)
-    state = load_project_state(state_file)
+    state = dependency_resolution.load_state(state_file)
     agent = None if args.no_agents else args.agent
 
     try:
         result = _run_library_phase(analysis, workspace, agent, state, state_file)
     except (BuildFailureError, LLMBudgetError) as exc:
         if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
-            merge_packages_into_state(
-                state,
-                apt_packages=exc.report.missing_apt_packages,
-                brew_packages=exc.report.missing_brew_packages,
-                unknown_libs=[],
-                source_tag="library_agent",
+            dependencies = dependency_resolution.from_agent_report(
+                [],
+                exc.report.missing_apt_packages,
+                exc.report.missing_brew_packages,
+                source=DependencySource.LIBRARY_AGENT,
             )
-            save_project_state(state_file, state)
+            dependency_resolution.merge(state, dependencies)
+            dependency_resolution.save_state(state_file, state)
         print(
             f"Agent requires user action before the build can proceed:\n{exc.output}",
             file=sys.stderr,
@@ -574,14 +514,14 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
     except (BuildFailureError, LLMBudgetError) as exc:
         if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
-            merge_packages_into_state(
-                state,
-                apt_packages=exc.report.missing_apt_packages,
-                brew_packages=exc.report.missing_brew_packages,
-                unknown_libs=[],
-                source_tag="harness_agent",
+            dependencies = dependency_resolution.from_agent_report(
+                [],
+                exc.report.missing_apt_packages,
+                exc.report.missing_brew_packages,
+                source=DependencySource.HARNESS_AGENT,
             )
-            save_project_state(state_file, state)
+            dependency_resolution.merge(state, dependencies)
+            dependency_resolution.save_state(state_file, state)
         print(
             f"Agent requires user action before the harness build can proceed:\n{exc.output}",
             file=sys.stderr,
