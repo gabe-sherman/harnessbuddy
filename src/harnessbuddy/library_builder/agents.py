@@ -10,6 +10,7 @@ from harnessbuddy.core.agent_stream import (
     run_agent_streaming,
     write_agent_report,
 )
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.exploration import (
     _validate_install_artifacts,
     is_standard_source_layout,
@@ -48,6 +49,24 @@ _HARNESS_INLINE_INSTRUCTIONS: str = (
     "so that compiling and linking the probe harness against the installed static "
     "libraries succeeds and produces a binary in out/."
 )
+
+_AGENTS_SCRIPTS_DIR: Path = Path(__file__).parent.parent.parent.parent / "agents" / "scripts"
+
+
+def _verification_command(
+    environment: Environment,
+    *,
+    workdir: Path,
+    project_name: str,
+    oss_fuzz_project_dir: Path | None,
+) -> str:
+    """The concrete command (FR-009) that proves a fix works in the selected environment."""
+    if environment is Environment.OSS_FUZZ:
+        project_dir = oss_fuzz_project_dir if oss_fuzz_project_dir is not None else workdir
+        script = _AGENTS_SCRIPTS_DIR / "check_docker_build.sh"
+        return f"bash {script} {project_dir} {project_name}"
+    script = _AGENTS_SCRIPTS_DIR / "check_local_build.sh"
+    return f"bash {script} {workdir}"
 
 _ACTION_REQUIRED = "ACTION REQUIRED"
 
@@ -137,10 +156,19 @@ def build_library_prompt(
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
     workdir: Path,
+    environment: Environment,
+    *,
+    oss_fuzz_project_dir: Path | None = None,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed library build."""
     instructions = _SKILL_PATH.read_text() if _SKILL_PATH.exists() else _INLINE_INSTRUCTIONS
     stdout_tail = "\n".join(exploration.stdout.splitlines()[-200:])
+    verify_command = _verification_command(
+        environment,
+        workdir=workdir,
+        project_name=analysis.project_name,
+        oss_fuzz_project_dir=oss_fuzz_project_dir,
+    )
     return (
         f"{instructions}\n\n"
         f"## Build failure context\n\n"
@@ -152,7 +180,10 @@ def build_library_prompt(
         f"- install_dir: {workdir / 'install'}\n"
         f"- build_dir: {workdir / 'build'}\n\n"
         f"### Build output (last 200 lines)\n\n"
-        f"```\n{stdout_tail}\n```\n"
+        f"```\n{stdout_tail}\n```\n\n"
+        f"### Verification\n\n"
+        f"After applying a fix, verify it works by running this exact command:\n\n"
+        f"    {verify_command}\n"
     )
 
 
@@ -174,20 +205,24 @@ def construct_codex_command(prompt: str) -> list[str]:
     return cmd
 
 
-def invoke_library_builder_agent(
+def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all params are distinct required inputs
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
     workdir: Path,
     *,
     tool: str = "claude",
     timeout: int = 600,
+    environment: Environment = Environment.LOCAL,
+    oss_fuzz_project_dir: Path | None = None,
 ) -> BuildExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed build.
 
     Streams agent output to the terminal. CWD is set to workdir, where build_library.sh
     lives; the agent can still read and modify the repo's build files via source_dir.
     """
-    prompt = build_library_prompt(analysis, exploration, workdir)
+    prompt = build_library_prompt(
+        analysis, exploration, workdir, environment, oss_fuzz_project_dir=oss_fuzz_project_dir
+    )
     if tool == "claude":
         cmd = construct_claude_command(prompt)
     elif tool == "codex":
@@ -229,14 +264,18 @@ def invoke_library_builder_agent(
         missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=report.extra_library_paths if report else [],
+        environment=environment,
     )
 
 
-def build_harness_prompt(
+def build_harness_prompt(  # noqa: PLR0913 -- public API; all params are distinct required inputs
     analysis: AnalysisResult,
     harness: HarnessExplorationResult,
     install_dir: Path,
     workdir: Path,
+    environment: Environment,
+    *,
+    oss_fuzz_project_dir: Path | None = None,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed harness link probe."""
     instructions = (
@@ -245,6 +284,13 @@ def build_harness_prompt(
         else _HARNESS_INLINE_INSTRUCTIONS
     )
     stderr_tail = "\n".join(harness.stderr.splitlines()[-200:])
+    harness_dir_name = "harness_source" if environment is Environment.OSS_FUZZ else "harness_src"
+    verify_command = _verification_command(
+        environment,
+        workdir=workdir,
+        project_name=analysis.project_name,
+        oss_fuzz_project_dir=oss_fuzz_project_dir,
+    )
     return (
         f"{instructions}\n\n"
         f"## Harness compilation failure context\n\n"
@@ -252,31 +298,43 @@ def build_harness_prompt(
         f"- install_dir: {install_dir}\n"
         f"- workdir: {workdir}\n"
         f"- compile_harnesses.sh: {workdir / 'compile_harnesses.sh'}\n"
-        f"- harness_src: {workdir / 'harness_src'}\n"
+        f"- harness_src: {workdir / harness_dir_name}\n"
         f"- static_libs: {', '.join(p.name for p in harness.static_libs) or '(none)'}\n"
         f"- auto_resolved_link_flags: {' '.join(harness.transitive_link_flags) or '(none)'}\n"
         f"- missing_system_libs (linker-reported): "
         f"{', '.join(harness.missing_system_libs) or '(none detected)'}\n"
         f"- exit_code: {harness.exit_code}\n\n"
         f"### Linker/compiler output (last 200 lines of stderr)\n\n"
-        f"```\n{stderr_tail}\n```\n"
+        f"```\n{stderr_tail}\n```\n\n"
+        f"### Verification\n\n"
+        f"After applying a fix, verify it works by running this exact command:\n\n"
+        f"    {verify_command}\n"
     )
 
 
-def invoke_harness_builder_agent(
+def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all params are distinct required inputs
     analysis: AnalysisResult,
     harness: HarnessExplorationResult,
     paths: HarnessPaths,
     *,
     tool: str = "claude",
     timeout: int = 600,
+    environment: Environment = Environment.LOCAL,
+    oss_fuzz_project_dir: Path | None = None,
 ) -> HarnessExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
     and modify compile_harnesses.sh and harness_src/ directly.
     """
-    prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir)
+    prompt = build_harness_prompt(
+        analysis,
+        harness,
+        paths.install_dir,
+        paths.workdir,
+        environment,
+        oss_fuzz_project_dir=oss_fuzz_project_dir,
+    )
     if tool == "claude":
         cmd = construct_claude_command(prompt)
     elif tool == "codex":
@@ -351,4 +409,5 @@ def invoke_harness_builder_agent(
         missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=extra_library_paths,
+        environment=environment,
     )

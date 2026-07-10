@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from harnessbuddy.library_builder.environments.base import Environment
+
 
 class BuildSystem(Enum):
     CMAKE = "cmake"
@@ -75,6 +77,7 @@ class BuildExplorationResult:
     missing_brew_packages: list[str] = field(default_factory=list)
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
+    environment: Environment = Environment.LOCAL
 
 
 @dataclass
@@ -100,6 +103,7 @@ class HarnessExplorationResult:
     missing_brew_packages: list[str] = field(default_factory=list)
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
+    environment: Environment = Environment.LOCAL
 
 
 @dataclass

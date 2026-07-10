@@ -13,6 +13,7 @@ from harnessbuddy.cli import build_library
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.analysis import analyze
+from harnessbuddy.library_builder.environments.local import LocalExecutor
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
@@ -110,7 +111,9 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     )
     source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
-    result = build_library(analyze(source), workdir, agent=_AGENT)
+    result = build_library(
+        analyze(source), workdir, LocalExecutor(), workdir / "oss-fuzz", agent=_AGENT
+    )
     return LibBuild(spec=lib, result=result, workdir=workdir, source=src)
 
 
@@ -134,7 +137,8 @@ def broken_cmake_build(
     )
     (src / "stub.h").write_text("#pragma once\n")
     workdir = tmp_path_factory.mktemp("broken_cmake_work")
-    result = build_library(analyze(RepoSource(src, "https://example.com", "broken", None)), workdir)
+    analysis = analyze(RepoSource(src, "https://example.com", "broken", None))
+    result = build_library(analysis, workdir, LocalExecutor(), workdir / "oss-fuzz")
     return result, workdir
 
 

@@ -325,12 +325,69 @@
   agent-reported library the moment its package is installed, without a
   second agent invocation.
 
+### Phase 13 — Structured build environments (spec 009)
+
+- Added `--environment {local,oss-fuzz}` to `generate` (default `local`, preserving prior
+  behavior). Stage validation moved from a post-build translation step into a during-build,
+  per-stage gate against the selected environment: `library_builder/environments/` holds the
+  `Environment` enum, `EnvironmentExecutor` protocol, `EnvironmentUnavailableError`, and two
+  concrete executors (`LocalExecutor`, `OssFuzzExecutor`).
+- `OssFuzzExecutor` builds a run-scoped probe image (`harnessbuddy-probe/<project>:latest`,
+  `gcr.io/oss-fuzz-base/base-builder` + accumulated apt packages, rebuilt only when that set
+  changes) and runs each stage via `docker run --rm --entrypoint bash` with the workdir
+  bind-mounted at its own absolute path, so `install/`/`out/` persist across the two separate
+  `docker run` calls without a long-lived container. `docker info` gates availability;
+  Docker/network failures raise `EnvironmentUnavailableError` (no agent fallback), while a
+  genuine probe-image build failure (e.g. a bad apt package name) returns a normal failed
+  `BuildExplorationResult` that agent fallback can still repair.
+- `BuildExplorationResult`/`HarnessExplorationResult` gained an `environment` field
+  (default `Environment.LOCAL`); `generate_local`/`generate_oss_fuzz` now only take the
+  verbatim-copy shortcut for a script validated in their *own* environment, falling back to
+  the regenerated template otherwise — closes the pre-existing gap where a host-validated
+  script was pasted unchanged into the oss-fuzz project it was never tested against.
+  `RunStats`/`stats.json` gained a matching `environment` field.
+- `agents/scripts/check_local_build.sh` and `check_docker_build.sh` were rewritten to match
+  the real generated script names/arguments (both were broken — wrong filenames, undefined
+  variables, a shell-command string passed as `docker run`'s argv instead of executed via
+  `--entrypoint bash -c`). `build_library_prompt`/`build_harness_prompt` now append the
+  concrete verification command for the selected environment; both SKILL.md files were
+  updated to say "run the verification command given in the failure context" instead of
+  independently re-invoking the build script.
+- Found and fixed two unrelated, pre-existing bugs surfaced while testing this phase (both in
+  uncommitted working-tree changes, not part of this feature): a missing `}` and a missing
+  leading `-` in `build_harness_script`'s local-environment `CFLAGS`/`CXXFLAGS` default
+  (`-fsanitize=fuzzer`), and the harness exploration probe source defining `main()`, which
+  collides with libFuzzer's own `main` once `-fsanitize=fuzzer` is linked — the probe now
+  defines `LLVMFuzzerTestOneInput` instead, compatible with both environments.
+- Superseded and closed two now-redundant issues (`harnessbuddy-zgo`, `harnessbuddy-0no`)
+  that proposed a *post-generation* Docker validation step — this phase's per-stage,
+  during-build gate replaces that design.
+- No Docker available in the sandbox this session — `OssFuzzExecutor`'s Docker-boundary
+  tests are mocked at the subprocess layer (constitution-compliant) plus one
+  `@pytest.mark.docker`-gated end-to-end test (skipped by default, per the new `docker`
+  pytest marker); quickstart.md scenarios 3, 4, 6, and 7 (real Docker daemon required) were
+  not run live this session and should be re-verified against a host with Docker before
+  calling `--environment oss-fuzz` production-ready.
+- Found, but did **not** fix (out of this feature's scope): 5 `feature_extractor` tests fail
+  for reasons unrelated to spec 009 — `/workspace/zlib_feature_test/compile_commands.json`
+  is a local dev fixture generated on a different machine (macOS, `/opt/homebrew` clang,
+  `/Users/gabrielsherman/projects/harnessbuddy` paths baked into every compile command);
+  regenerating it needs a fresh CMake configure of that zlib checkout on this host. Deleted
+  stray untracked CMake build artifacts under `src/harnessbuddy/feature_extractor/native/`
+  and the stale native-tool cache under `.harnessbuddy/native-build/` that had the same
+  other-machine path baked in (harmless cleanup — both rebuild from source automatically;
+  this alone didn't fix the `zlib_feature_test` fixture issue above).
+
 ---
 
 ## Not Yet Started
 
 - Harness builder agent (step 7 in workflow — LLM-generated harness sources)
-- OSS-Fuzz Docker validation (`--skip-validation` currently a no-op)
+- Wire `--skip-validation` to skip the new per-stage environment gate (both stages still run,
+  but a failing stage no longer stops the pipeline before generation) — documented as the
+  intended interaction in spec 009's research.md but not implemented; currently still a no-op
+- Fix stale native-build-cache path in `feature_extractor/` (hardcoded to a different
+  machine's absolute path) — breaks 3 tests unrelated to spec 009
 - Seed corpus support
 - `--target-headers` option to constrain fuzzing scope
 - Self-refining build loop (track success rates, usage costs) — per-invocation

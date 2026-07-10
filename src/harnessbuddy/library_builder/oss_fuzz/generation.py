@@ -4,6 +4,7 @@ import shutil
 import stat
 from pathlib import Path
 
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     AutotoolsSetup,
@@ -134,11 +135,16 @@ def _write_build_library_sh(
 
     The Dockerfile clones the repo to $SRC/src, matching the $SCRIPT_DIR/src the explored
     script uses, so copying it verbatim preserves any fixes an agent made during exploration.
-    Falls back to the static template when no exploration was run or its script isn't safe
-    to copy (e.g. a non-standard source layout).
+    Falls back to the static template when no exploration was run, its script isn't safe
+    to copy (e.g. a non-standard source layout), or it was validated in a different
+    environment than this output directory (Environment.OSS_FUZZ).
     """
     path = output_path / "build_library.sh"
-    if exploration is not None and exploration.script_path is not None:
+    if (
+        exploration is not None
+        and exploration.script_path is not None
+        and exploration.environment is Environment.OSS_FUZZ
+    ):
         shutil.copy2(exploration.script_path, path)
     else:
         path.write_text(
@@ -159,7 +165,23 @@ def _write_build_library_sh(
 def _write_compile_harnesses_sh(
     output_path: Path, harness: HarnessExplorationResult | None
 ) -> Path:
+    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed)
+    script when it was validated in this project's environment (Environment.OSS_FUZZ).
+
+    The validated script was written with harness_dir_name="harness_source" for that
+    environment (matching this project's layout), so copying it verbatim preserves any
+    in-container fixes. Falls back to the regenerated template otherwise.
+    """
     path = output_path / "compile_harnesses.sh"
+    if (
+        harness is not None
+        and harness.script_path is not None
+        and harness.environment is Environment.OSS_FUZZ
+    ):
+        shutil.copy2(harness.script_path, path)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return path
+
     content = (
         build_harness_script(harness, harness_dir_name="harness_source", oss_fuzz=True)
         if harness is not None

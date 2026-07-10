@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from harnessbuddy.core.repos import RepoSource
-    from harnessbuddy.library_builder.dependency_resolution import DependencyState
+    from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
+    from harnessbuddy.library_builder.dependency_resolution import DependencySource, DependencyState
+    from harnessbuddy.library_builder.environments.base import Environment, EnvironmentExecutor
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
@@ -48,6 +50,13 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         help="Branch, tag, or commit to check out in the generated Dockerfile.",
     )
     p.add_argument(
+        "--environment",
+        choices=["local", "oss-fuzz"],
+        default="local",
+        metavar="local|oss-fuzz",
+        help="Target environment to build and validate each stage in. Default: local.",
+    )
+    p.add_argument(
         "--skip-validation",
         action="store_true",
         help="Skip oss-fuzz validation after project generation.",
@@ -66,16 +75,16 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
 
 def _configure_extract_features_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "output_dir",
-        metavar="OUTPUT_DIR",
+        "build_path",
+        metavar="BUILD_PATH",
         help="Directory containing compile_commands.json to extract features from.",
     )
 
 
 def _configure_generate_benchmark_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "output_dir",
-        metavar="OUTPUT_DIR",
+        "build_path",
+        metavar="BUILD_PATH",
         help="Directory containing features.json from a prior extract-features run.",
     )
     p.add_argument(
@@ -117,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _configure_extract_features_parser(extract_features)
     generate_benchmark = subparsers.add_parser(
-        "generate-benchmark",
+        "generate-yaml",
         help="Convert an extracted feature artifact into an oss-fuzz-gen benchmark YAML.",
         description="Convert features.json into a curated, oss-fuzz-gen-compatible "
         "benchmark YAML file.",
@@ -138,43 +147,55 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_generate(args)
     if args.command == "extract-features":
         return _cmd_extract_features(args)
-    if args.command == "generate-benchmark":
+    if args.command == "generate-yaml":
         return _cmd_generate_benchmark(args)
+    else:
+        raise ValueError("Unknown command")
     return 0
 
 
-def build_library(
+def build_library(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
     analysis: AnalysisResult,
     workspace: Path,
+    executor: EnvironmentExecutor,
+    oss_output_path: Path,
     *,
     agent: str | None = None,
     timeout: int = 300,
 ) -> BuildExplorationResult:
-    """Run explore, then optionally fall back to an LLM agent if the build fails.
+    """Run the executor's library build, then optionally fall back to an LLM agent.
 
     Returns the final BuildExplorationResult. result.llm_used is True when the
-    agent path was taken.
+    agent path was taken. oss_output_path is the eventual oss-fuzz/ project directory,
+    referenced in the repair agent's verification command when environment is OSS_FUZZ.
     """
-    from harnessbuddy.library_builder.exploration import explore
-
-    result = explore(analysis, workspace, timeout=timeout)
+    result = executor.run_library_build(analysis, workspace, timeout=timeout)
     if not result.succeeded:
         if agent is not None:
             from harnessbuddy.library_builder.agents import invoke_library_builder_agent
 
             print("Deterministic library build failed, invoking library build agent")
             print("=" * 25 + "Begin Agent Output" + "=" * 25)
-            result = invoke_library_builder_agent(analysis, result, workspace, tool=agent)
+            result = invoke_library_builder_agent(
+                analysis,
+                result,
+                workspace,
+                tool=agent,
+                environment=result.environment,
+                oss_fuzz_project_dir=oss_output_path,
+            )
         else:
             print("Library build failed and --agent argument was not provided ...")
     return result
 
 
-def build_harness(
+def build_harness(  # noqa: PLR0913 -- public API; all 7 params are distinct required inputs
     analysis: AnalysisResult,
     install_dir: Path,
     workspace: Path,
     library_result: BuildExplorationResult,
+    executor: EnvironmentExecutor,
+    oss_output_path: Path,
     *,
     agent: str | None = None,
 ) -> HarnessExplorationResult:
@@ -183,10 +204,10 @@ def build_harness(
     Returns the final HarnessExplorationResult. result.llm_used is True when the
     agent path was taken. library_result's extra_include_paths/extra_library_paths
     (from the library-build agent's AgentReport, if any) are threaded into the probe.
+    oss_output_path is the eventual oss-fuzz/ project directory, referenced in the repair
+    agent's verification command when environment is OSS_FUZZ.
     """
-    from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
-
-    result = explore_harness_compilation(
+    result = executor.run_harness_compile(
         install_dir,
         workspace,
         analysis.language,
@@ -198,7 +219,12 @@ def build_harness(
         from harnessbuddy.library_builder.models import HarnessPaths
 
         result = invoke_harness_builder_agent(
-            analysis, result, HarnessPaths(install_dir=install_dir, workdir=workspace), tool=agent
+            analysis,
+            result,
+            HarnessPaths(install_dir=install_dir, workdir=workspace),
+            tool=agent,
+            environment=result.environment,
+            oss_fuzz_project_dir=oss_output_path,
         )
     return result
 
@@ -254,22 +280,24 @@ def _resolve_output_paths(args: argparse.Namespace, analysis: AnalysisResult) ->
     return base_output / "local", base_output / "oss-fuzz"
 
 
-def _run_library_phase(
+def _run_library_phase(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
     analysis: AnalysisResult,
     workspace: Path,
     agent: str | None,
     state: DependencyState,
     state_file: Path,
+    executor: EnvironmentExecutor,
+    oss_output_path: Path,
 ) -> BuildExplorationResult:
     """Build the library, persisting any packages the library-build agent reported missing."""
     from harnessbuddy.library_builder import dependency_resolution
     from harnessbuddy.library_builder.dependency_resolution import DependencySource
 
-    print(f"Running host build in {workspace} ...")
+    print(f"Running build in {workspace} ...")
     if agent:
         print(f"Agent fallback enabled ({agent}).")
 
-    result = build_library(analysis, workspace, agent=agent)
+    result = build_library(analysis, workspace, executor, oss_output_path, agent=agent)
 
     if result.llm_used:
         print("Agent finished.")
@@ -311,7 +339,7 @@ def _print_harness_failure_message(
         )
 
 
-def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
+def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 9 params are distinct required inputs
     analysis: AnalysisResult,
     install_dir: Path,
     workspace: Path,
@@ -319,13 +347,17 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     agent: str | None,
     state: DependencyState,
     state_file: Path,
+    executor: EnvironmentExecutor,
+    oss_output_path: Path,
 ) -> tuple[HarnessExplorationResult, list[str]]:
     """Probe harness compilation, persist any newly-discovered packages, and report status."""
     from harnessbuddy.library_builder import dependency_resolution
     from harnessbuddy.library_builder.dependency_resolution import DependencySource
 
     print("Probing harness compilation ...")
-    harness_result = build_harness(analysis, install_dir, workspace, library_result, agent=agent)
+    harness_result = build_harness(
+        analysis, install_dir, workspace, library_result, executor, oss_output_path, agent=agent
+    )
 
     if harness_result.llm_used:
         print("Harness agent finished.")
@@ -385,13 +417,14 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 7 params are dis
     return harness_result, brew_packages
 
 
-def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
+def _generate_outputs(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
     analysis: AnalysisResult,
     local_output_path: Path,
     oss_output_path: Path,
     result: BuildExplorationResult,
     harness_result: HarnessExplorationResult,
     brew_packages: list[str],
+    environment: Environment,
 ) -> int:
     """Write the local dev scaffold and OSS-Fuzz project, reporting their output paths."""
     from harnessbuddy.library_builder.local.generation import generate_local
@@ -407,18 +440,20 @@ def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are dist
         print(f"Output directory already exists: {exc}", file=sys.stderr)
         return 1
 
+    print(f"Environment:  {environment.value}")
     print(f"Local build:  {local_result.output_path}")
     print(f"OSS-Fuzz:     {oss_fuzz_result.output_path}")
 
     return 0
 
 
-def _write_run_stats(
+def _write_run_stats(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
     base_output: Path,
     start_time: float,
     library_build_agent: AgentPhaseStats,
     harness_build_agent: AgentPhaseStats,
     status: RunStatus,
+    environment: Environment,
 ) -> None:
     """Build and persist stats.json for this run."""
     from harnessbuddy.library_builder.stats import RunStats, write_run_stats
@@ -430,8 +465,51 @@ def _write_run_stats(
             library_build_agent=library_build_agent,
             harness_build_agent=harness_build_agent,
             status=status,
+            environment=environment,
         ),
     )
+
+
+def _select_executor(environment: Environment) -> EnvironmentExecutor:
+    from harnessbuddy.library_builder.environments.base import Environment
+    from harnessbuddy.library_builder.environments.local import LocalExecutor
+    from harnessbuddy.library_builder.environments.oss_fuzz import OssFuzzExecutor
+
+    if environment is Environment.OSS_FUZZ:
+        return OssFuzzExecutor()
+    return LocalExecutor()
+
+
+def _merge_agent_error_dependencies(
+    exc: BuildFailureError | LLMBudgetError,
+    state: DependencyState,
+    state_file: Path,
+    source: DependencySource,
+) -> None:
+    """Persist any apt/brew packages an agent reported before raising a stop-for-human error."""
+    from harnessbuddy.library_builder import dependency_resolution
+
+    if not (exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages)):
+        return
+    dependencies = dependency_resolution.from_agent_report(
+        [], exc.report.missing_apt_packages, exc.report.missing_brew_packages, source=source
+    )
+    dependency_resolution.merge(state, dependencies)
+    dependency_resolution.save_state(state_file, state)
+
+
+def _check_environment_availability(
+    executor: EnvironmentExecutor, environment: Environment
+) -> int | None:
+    """Return an exit code if the environment is unavailable, else None to proceed."""
+    from harnessbuddy.library_builder.environments.base import EnvironmentUnavailableError
+
+    try:
+        executor.check_availability()
+    except EnvironmentUnavailableError as exc:
+        print(f"Environment '{environment.value}' is unavailable: {exc}", file=sys.stderr)
+        return 1
+    return None
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
@@ -440,6 +518,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
     from harnessbuddy.library_builder.dependency_resolution import DependencySource
+    from harnessbuddy.library_builder.environments.base import Environment
     from harnessbuddy.library_builder.stats import (
         RunStatus,
         agent_phase_stats_from_agent_error,
@@ -450,6 +529,12 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
     start_time = time.monotonic()
     state_dir = default_state_dir()
+    environment = Environment(args.environment)
+    executor = _select_executor(environment)
+
+    availability_rc = _check_environment_availability(executor, environment)
+    if availability_rc is not None:
+        return availability_rc
 
     source = _ingest_source(args, state_dir)
     if isinstance(source, int):
@@ -472,17 +557,11 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     agent = None if args.no_agents else args.agent
 
     try:
-        result = _run_library_phase(analysis, workspace, agent, state, state_file)
+        result = _run_library_phase(
+            analysis, workspace, agent, state, state_file, executor, oss_output_path
+        )
     except (BuildFailureError, LLMBudgetError) as exc:
-        if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
-            dependencies = dependency_resolution.from_agent_report(
-                [],
-                exc.report.missing_apt_packages,
-                exc.report.missing_brew_packages,
-                source=DependencySource.LIBRARY_AGENT,
-            )
-            dependency_resolution.merge(state, dependencies)
-            dependency_resolution.save_state(state_file, state)
+        _merge_agent_error_dependencies(exc, state, state_file, DependencySource.LIBRARY_AGENT)
         print(
             f"Agent requires user action before the build can proceed:\n{exc.output}",
             file=sys.stderr,
@@ -493,16 +572,21 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             agent_phase_stats_from_agent_error(exc.summary, exc.report),
             not_invoked_agent_stats(),
             RunStatus.FAILED_LIBRARY_BUILD,
+            environment,
         )
         return 1
     if not result.succeeded:
-        print(f"Failed to produce valid build: {result.stdout}", file=sys.stderr)
+        print(
+            f"Failed to produce valid build ({environment.value}): {result.stdout}",
+            file=sys.stderr,
+        )
         _write_run_stats(
             base_output,
             start_time,
             agent_phase_stats_from_build(result),
             not_invoked_agent_stats(),
             RunStatus.FAILED_LIBRARY_BUILD,
+            environment,
         )
         return 1
     print("Successfully produced library build!")
@@ -510,18 +594,18 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     install_dir = workspace / "install"
     try:
         harness_result, brew_packages = _run_harness_phase(
-            analysis, install_dir, workspace, result, agent, state, state_file
+            analysis,
+            install_dir,
+            workspace,
+            result,
+            agent,
+            state,
+            state_file,
+            executor,
+            oss_output_path,
         )
     except (BuildFailureError, LLMBudgetError) as exc:
-        if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
-            dependencies = dependency_resolution.from_agent_report(
-                [],
-                exc.report.missing_apt_packages,
-                exc.report.missing_brew_packages,
-                source=DependencySource.HARNESS_AGENT,
-            )
-            dependency_resolution.merge(state, dependencies)
-            dependency_resolution.save_state(state_file, state)
+        _merge_agent_error_dependencies(exc, state, state_file, DependencySource.HARNESS_AGENT)
         print(
             f"Agent requires user action before the harness build can proceed:\n{exc.output}",
             file=sys.stderr,
@@ -532,11 +616,18 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             agent_phase_stats_from_build(result),
             agent_phase_stats_from_agent_error(exc.summary, exc.report),
             RunStatus.FAILED_HARNESS_BUILD,
+            environment,
         )
         return 1
 
     rc = _generate_outputs(
-        analysis, local_output_path, oss_output_path, result, harness_result, brew_packages
+        analysis,
+        local_output_path,
+        oss_output_path,
+        result,
+        harness_result,
+        brew_packages,
+        environment,
     )
     _write_run_stats(
         base_output,
@@ -544,6 +635,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         agent_phase_stats_from_build(result),
         agent_phase_stats_from_harness(harness_result),
         RunStatus.SUCCESS if harness_result.succeeded else RunStatus.FAILED_HARNESS_BUILD,
+        environment,
     )
     return rc
 
@@ -556,9 +648,9 @@ def _cmd_extract_features(args: argparse.Namespace) -> int:
     )
     from harnessbuddy.feature_extractor.native_build import NativeBuildError
 
-    output_dir = Path(args.output_dir)
+    build_path = Path(args.build_path)
     try:
-        result = extract_features(output_dir)
+        result = extract_features(build_path)
     except (MissingCompileCommandsError, NativeBuildError, FeatureArtifactError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -566,7 +658,7 @@ def _cmd_extract_features(args: argparse.Namespace) -> int:
     print(
         f"Extracted {len(result.functions)} functions, {len(result.typedefs)} typedefs, "
         f"{len(result.macros)} macros, {len(result.enums)} enums, "
-        f"{len(result.records)} records -> {output_dir / 'features.json'}"
+        f"{len(result.records)} records -> {build_path / 'features.json'}"
     )
     return 0
 
@@ -578,10 +670,10 @@ def _cmd_generate_benchmark(args: argparse.Namespace) -> int:
         MissingFeatureArtifactError,
     )
 
-    output_dir = Path(args.output_dir)
+    build_path = Path(args.build_path)
     try:
         benchmark = generate_benchmark(
-            output_dir, target_name=args.target_name, target_path=args.target_path
+            build_path, target_name=args.target_name, target_path=args.target_path
         )
     except (MissingFeatureArtifactError, FeatureArtifactError) as exc:
         print(str(exc), file=sys.stderr)
@@ -589,7 +681,7 @@ def _cmd_generate_benchmark(args: argparse.Namespace) -> int:
 
     print(
         f"Generated benchmark for {len(benchmark.functions)} public functions -> "
-        f"{output_dir / f'{benchmark.project}.yaml'}"
+        f"{build_path / f'{benchmark.project}.yaml'}"
     )
     return 0
 

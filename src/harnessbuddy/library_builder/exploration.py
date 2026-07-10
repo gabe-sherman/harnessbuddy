@@ -5,7 +5,8 @@ import shutil
 import stat
 from pathlib import Path
 
-from harnessbuddy.core.subprocesses import run_command_streaming
+from harnessbuddy.core.subprocesses import Runner, run_command_streaming
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AgentReport,
     AnalysisResult,
@@ -28,16 +29,26 @@ def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
 
 
 def explore(
-    analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
+    analysis: AnalysisResult,
+    workdir: Path,
+    *,
+    timeout: int = 300,
+    environment: Environment = Environment.LOCAL,
+    run: Runner | None = None,
 ) -> BuildExplorationResult:
-    """Write a host-native build_library.sh into workdir and run it.
+    """Write a build_library.sh into workdir and run it in the given environment.
 
     The script is written to workdir/build_library.sh. When the source uses the
     standard workdir/src layout, its paths are $SCRIPT_DIR-relative so the script
     can be copied verbatim into generated output directories, preserving any agent
     fixes; BuildExplorationResult.script_path is set in that case. Otherwise paths
-    fall back to absolute and script_path is left unset. Streams build output to
-    stdout in real time.
+    fall back to absolute and script_path is left unset.
+
+    environment selects host CC/CXX/CFLAGS/CXXFLAGS fallbacks (Environment.LOCAL only —
+    Environment.OSS_FUZZ relies on the container image's own toolchain env) and is
+    recorded on the returned result. run defaults to streaming the command as a host
+    subprocess; callers running this inside a container (e.g. OssFuzzExecutor) pass a
+    run primitive that wraps the command in a `docker run` invocation instead.
     """
     workdir = workdir.resolve()
     build_dir = workdir / "build"
@@ -61,7 +72,7 @@ def explore(
             build_dir="$SCRIPT_DIR/build",
             install_dir="$SCRIPT_DIR/install",
         ),
-        host_fallbacks=True,
+        host_fallbacks=environment is Environment.LOCAL,
         autotools_setup=analysis.autotools_setup,
     )
     script_path = workdir / "build_library.sh"
@@ -77,10 +88,12 @@ def explore(
             stderr="",
             exit_code=-1,
             duration_seconds=0.0,
+            environment=environment,
         )
 
     command = ["bash", str(script_path.name)]
-    result = run_command_streaming(command, workdir, timeout)
+    runner = run if run is not None else run_command_streaming
+    result = runner(command, workdir, timeout)
 
     succeeded = result.exit_code == 0
     stderr = result.stderr
@@ -99,6 +112,7 @@ def explore(
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
         script_path=script_path if standard_layout else None,
+        environment=environment,
     )
 
 

@@ -199,8 +199,8 @@ def build_harness_script(
         preamble += (
             'CC="${CC:-clang}"\n'
             'CXX="${CXX:-clang++}"\n'
-            'CFLAGS="${CFLAGS:--O2 -g}"\n'
-            'CXXFLAGS="${CXXFLAGS:--O2 -g}"\n'
+            'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
+            'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
             "\n"
         )
     preamble += f'INSTALL_DIR="$SCRIPT_DIR/install"\nHARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'

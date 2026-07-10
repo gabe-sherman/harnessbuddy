@@ -16,6 +16,7 @@ from harnessbuddy.library_builder.agents import (
     invoke_harness_builder_agent,
     invoke_library_builder_agent,
 )
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AgentReport,
     AnalysisResult,
@@ -73,9 +74,72 @@ def test_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
         exit_code=1,
         duration_seconds=1.0,
     )
-    prompt = build_library_prompt(_analysis(tmp_path), exploration, tmp_path / "work")
+    prompt = build_library_prompt(
+        _analysis(tmp_path), exploration, tmp_path / "work", Environment.LOCAL
+    )
     assert error_line in prompt
     assert preamble_line not in prompt
+
+
+# verification command (T027, FR-009)
+
+
+def test_library_prompt_local_environment_references_check_local_build(tmp_path: Path) -> None:
+    exploration = _failed_cmake_exploration(tmp_path)
+    prompt = build_library_prompt(
+        _analysis(tmp_path), exploration, tmp_path / "work", Environment.LOCAL
+    )
+    assert "check_local_build.sh" in prompt
+    assert str(tmp_path / "work") in prompt
+    assert "check_docker_build.sh" not in prompt
+
+
+def test_library_prompt_oss_fuzz_environment_references_check_docker_build(
+    tmp_path: Path,
+) -> None:
+    exploration = _failed_cmake_exploration(tmp_path)
+    oss_fuzz_dir = tmp_path / "output" / "oss-fuzz"
+    prompt = build_library_prompt(
+        _analysis(tmp_path),
+        exploration,
+        tmp_path / "work",
+        Environment.OSS_FUZZ,
+        oss_fuzz_project_dir=oss_fuzz_dir,
+    )
+    assert "check_docker_build.sh" in prompt
+    assert str(oss_fuzz_dir) in prompt
+    assert "testlib" in prompt
+    assert "check_local_build.sh" not in prompt
+
+
+def test_harness_prompt_local_environment_references_check_local_build(tmp_path: Path) -> None:
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        _failed_harness(""),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    assert "check_local_build.sh" in prompt
+    assert "harness_src" in prompt
+    assert "harness_source" not in prompt
+
+
+def test_harness_prompt_oss_fuzz_environment_references_check_docker_build(
+    tmp_path: Path,
+) -> None:
+    oss_fuzz_dir = tmp_path / "output" / "oss-fuzz"
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        _failed_harness(""),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.OSS_FUZZ,
+        oss_fuzz_project_dir=oss_fuzz_dir,
+    )
+    assert "check_docker_build.sh" in prompt
+    assert str(oss_fuzz_dir) in prompt
+    assert "harness_source" in prompt
 
 
 def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
@@ -175,6 +239,7 @@ def test_harness_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
         _failed_harness(long_stderr),
         tmp_path / "work" / "install",
         tmp_path / "work",
+        Environment.LOCAL,
     )
     assert error_line in prompt
     assert preamble_line not in prompt

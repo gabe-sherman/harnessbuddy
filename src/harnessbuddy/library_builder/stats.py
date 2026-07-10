@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 from harnessbuddy.core.agent_stream import AgentRunSummary
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AgentReport,
     BuildExplorationResult,
@@ -109,6 +110,7 @@ class RunStats:
     library_build_agent: AgentPhaseStats
     harness_build_agent: AgentPhaseStats
     status: RunStatus
+    environment: Environment = Environment.LOCAL
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -116,6 +118,7 @@ class RunStats:
             "library_build_agent": self.library_build_agent.to_dict(),
             "harness_build_agent": self.harness_build_agent.to_dict(),
             "status": self.status.value,
+            "environment": self.environment.value,
         }
 
 

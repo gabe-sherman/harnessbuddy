@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,12 @@ class RunResult:
     stderr: str
     exit_code: int
     duration_seconds: float
+
+
+# (command, cwd, timeout) -> RunResult — the one shape both host-subprocess and
+# docker-wrapped stage execution share, so callers (exploration.py, harness_explorer.py)
+# can swap how a command runs without changing their retry/parsing logic.
+Runner = Callable[[list[str], Path, int], RunResult]
 
 
 def run_command_streaming(command: list[str], cwd: Path, timeout: int) -> RunResult:

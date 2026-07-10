@@ -5,14 +5,21 @@ import re
 import stat
 from pathlib import Path
 
-from harnessbuddy.core.subprocesses import run_command
+from harnessbuddy.core.subprocesses import Runner, run_command
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import HarnessExplorationResult, Language
 from harnessbuddy.library_builder.scripts import build_harness_script
 
 _MAX_ATTEMPTS = 5
 
-_PROBE_C = "#include <stddef.h>\n#include <stdint.h>\nint main(void) { return 0; }\n"
-_PROBE_CC = '#include <stddef.h>\n#include <stdint.h>\nextern "C" int main(void) { return 0; }\n'
+_PROBE_C = (
+    "#include <stddef.h>\n#include <stdint.h>\n"
+    "int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) { return 0; }\n"
+)
+_PROBE_CC = (
+    "#include <stddef.h>\n#include <stdint.h>\n"
+    'extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) { return 0; }\n'
+)
 
 _PATTERNS_FILE = Path(__file__).parent / "symbol_patterns.json"
 
@@ -37,13 +44,15 @@ _EXTRA_LIB_PATHS_RE = re.compile(r'^EXTRA_LIB_PATHS=(?:"([^"]*)")?\s*$', re.MULT
 _BREW_LIB_PREFIX = "-L$(brew --prefix)/lib "
 
 
-def explore_harness_compilation(
+def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is a distinct required input
     install_dir: Path,
     workdir: Path,
     language: Language,
     *,
     extra_include_paths: list[str] | None = None,
     extra_library_paths: list[str] | None = None,
+    environment: Environment = Environment.LOCAL,
+    run: Runner | None = None,
 ) -> HarnessExplorationResult:
     """Test harness compilation against install artifacts to discover transitive deps.
 
@@ -54,6 +63,12 @@ def explore_harness_compilation(
 
     extra_include_paths/extra_library_paths are fixed inputs (e.g. from a prior agent's
     AgentReport) threaded unchanged into every returned HarnessExplorationResult.
+
+    environment selects the generated script variant (Environment.OSS_FUZZ uses the base
+    image's own $OUT/$LIB_FUZZING_ENGINE instead of local defaults) and is recorded on the
+    returned result. run defaults to running the command as a host subprocess; callers
+    running this inside a container pass a run primitive that wraps the command in a
+    `docker run` invocation instead.
     """
     extra_include_paths = extra_include_paths or []
     extra_library_paths = extra_library_paths or []
@@ -73,15 +88,22 @@ def explore_harness_compilation(
             exit_code=-1,
             extra_include_paths=extra_include_paths,
             extra_library_paths=extra_library_paths,
+            environment=environment,
         )
 
+    oss_fuzz = environment is Environment.OSS_FUZZ
+    # Matches the harness source directory name each generator uses (local/generation.py's
+    # harness_src/ vs. oss_fuzz/generation.py's harness_source/), so a container-validated
+    # script's $SCRIPT_DIR-relative HARNESS_DIR still resolves once copied verbatim (FR-008).
+    harness_dir_name = "harness_source" if oss_fuzz else "harness_src"
     use_cpp = language == Language.CPP
-    harness_src_dir = workdir / "harness_src"
+    harness_src_dir = workdir / harness_dir_name
     harness_src_dir.mkdir(exist_ok=True)
     probe_src = harness_src_dir / ("probe_harness.cc" if use_cpp else "probe_harness.c")
     probe_src.write_text(_PROBE_CC if use_cpp else _PROBE_C)
 
     script_path = workdir / "compile_harnesses.sh"
+    runner = run if run is not None else run_command
     extra_flags: list[str] = []
     seen_flags: set[str] = set()
     last_stdout = ""
@@ -101,10 +123,17 @@ def explore_harness_compilation(
             extra_include_paths=extra_include_paths,
             extra_library_paths=extra_library_paths,
         )
-        script_path.write_text(build_harness_script(intermediate, whole_archive=True))
+        script_path.write_text(
+            build_harness_script(
+                intermediate,
+                whole_archive=True,
+                harness_dir_name=harness_dir_name,
+                oss_fuzz=oss_fuzz,
+            )
+        )
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         command = ["bash", str(script_path.name)]
-        result = run_command(command, workdir, timeout=60)
+        result = runner(command, workdir, 60)
         last_stdout = result.stdout
         last_stderr = result.stderr
         last_exit = result.exit_code
@@ -122,6 +151,7 @@ def explore_harness_compilation(
                 script_path=script_path,
                 extra_include_paths=extra_include_paths,
                 extra_library_paths=extra_library_paths,
+                environment=environment,
             )
 
         upgraded_to_cxx = False
@@ -150,6 +180,7 @@ def explore_harness_compilation(
         missing_system_libs=_extract_missing_system_libs(last_stderr),
         extra_include_paths=extra_include_paths,
         extra_library_paths=extra_library_paths,
+        environment=environment,
     )
 
 

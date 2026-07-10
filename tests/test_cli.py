@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from harnessbuddy.cli import main
+from harnessbuddy.cli import build_parser, main
 from harnessbuddy.core.agent_stream import AgentStreamResult
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.models import (
@@ -222,7 +222,7 @@ def test_generate_prints_host_build_status(
     output_dir.mkdir()
     main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     out = capsys.readouterr().out
-    assert "host build" in out.lower()
+    assert "running build" in out.lower()
 
 
 def test_generate_exploration_runs_bash_script(
@@ -1240,13 +1240,13 @@ def test_extract_features_missing_compile_commands_exits_with_actionable_message
     assert "CMAKE_EXPORT_COMPILE_COMMANDS" in err
 
 
-# generate-benchmark
+# generate-yaml
 
 
 def test_generate_benchmark_missing_features_json_exits_with_actionable_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    rc = main(["generate-benchmark", str(tmp_path)])
+    rc = main(["generate-yaml", str(tmp_path)])
     assert rc == 1
     err = capsys.readouterr().err
     assert "features.json" in err
@@ -1262,6 +1262,198 @@ def test_generate_never_creates_feature_extractor_output(
     assert rc == 0
     assert not list(output_dir.rglob("features.json"))
     # project.yaml is generate's own existing oss-fuzz output; no other .yaml (a
-    # generate-benchmark artifact) should appear alongside it.
+    # generate-yaml artifact) should appear alongside it.
     yaml_names = {p.name for p in output_dir.rglob("*.yaml")}
     assert yaml_names == {"project.yaml"}
+
+
+# --environment flag (spec 009)
+
+
+def test_environment_flag_defaults_to_local() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", _REPO])
+    assert args.environment == "local"
+
+
+def test_environment_flag_accepts_local() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", _REPO, "--environment", "local"])
+    assert args.environment == "local"
+
+
+def test_environment_flag_accepts_oss_fuzz() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", _REPO, "--environment", "oss-fuzz"])
+    assert args.environment == "oss-fuzz"
+
+
+def test_environment_flag_rejects_invalid_value(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["generate", _REPO, "--environment", "bogus"])
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+
+
+def test_generate_default_and_explicit_local_report_environment_local(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    default_dir = tmp_path / "default"
+    default_dir.mkdir()
+    explicit_dir = tmp_path / "explicit"
+    explicit_dir.mkdir()
+
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc_default = main(["generate", str(local_repo_with_origin), "--output", str(default_dir)])
+        rc_explicit = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(explicit_dir),
+                "--environment",
+                "local",
+            ]
+        )
+    assert rc_default == 0
+    assert rc_explicit == 0
+    default_stats = json.loads((default_dir / "stats.json").read_text())
+    explicit_stats = json.loads((explicit_dir / "stats.json").read_text())
+    assert default_stats["environment"] == "local"
+    assert explicit_stats["environment"] == "local"
+    # Identical modulo the total_duration_seconds timing field.
+    del default_stats["total_duration_seconds"]
+    del explicit_stats["total_duration_seconds"]
+    assert default_stats == explicit_stats
+
+
+def _mock_oss_fuzz_docker(*, docker_info_ok: bool = True, probe_build_ok: bool = True) -> tuple:
+    """Return (run_command_patch, run_command_streaming_patch) contexts for OssFuzzExecutor."""
+    docker_info_result = RunResult(
+        stdout="Server Version: 24.0" if docker_info_ok else "",
+        stderr="" if docker_info_ok else "Cannot connect to the Docker daemon",
+        exit_code=0 if docker_info_ok else 1,
+        duration_seconds=0.1,
+    )
+    probe_build_result = RunResult(
+        stdout="",
+        stderr="" if probe_build_ok else "E: Unable to locate package bogus-package",
+        exit_code=0 if probe_build_ok else 1,
+        duration_seconds=0.1,
+    )
+
+    call_count = {"n": 0}
+
+    def _run_command(*_args: object, **_kwargs: object) -> RunResult:
+        call_count["n"] += 1
+        return docker_info_result if call_count["n"] == 1 else probe_build_result
+
+    return (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            side_effect=_run_command,
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+    )
+
+
+def test_generate_oss_fuzz_success_reports_environment_oss_fuzz(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=[],
+        ),
+        patch(
+            "harnessbuddy.library_builder.harness_explorer.explore_harness_compilation",
+            return_value=_succeeded_harness_result(),
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+    assert rc == 0
+    stats = json.loads((output_dir / "stats.json").read_text())
+    assert stats["environment"] == "oss-fuzz"
+
+
+def test_generate_oss_fuzz_docker_unavailable_exits_without_agent(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(
+                stdout="",
+                stderr="Cannot connect to the Docker daemon",
+                exit_code=1,
+                duration_seconds=0.1,
+            ),
+        ),
+        patch("harnessbuddy.library_builder.agents.invoke_library_builder_agent") as mock_agent,
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+                "--agent",
+                "claude",
+            ]
+        )
+    assert rc == 1
+    mock_agent.assert_not_called()
+    err = capsys.readouterr().err
+    assert "unavailable" in err.lower()
+    assert not output_dir.exists() or not (output_dir / "stats.json").exists()
+
+
+def test_generate_oss_fuzz_library_failure_stops_before_harness_phase(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker(probe_build_ok=False)
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch(
+            "harnessbuddy.library_builder.harness_explorer.explore_harness_compilation"
+        ) as mock_harness,
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+    assert rc == 1
+    mock_harness.assert_not_called()
+    assert not (output_dir / "local").exists()
+    assert not (output_dir / "oss-fuzz").exists()

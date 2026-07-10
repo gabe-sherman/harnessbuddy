@@ -5,6 +5,7 @@ import stat
 import sys
 from pathlib import Path
 
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
@@ -82,10 +83,16 @@ def _write_build_library_sh(
     The explored script already uses $SCRIPT_DIR-relative paths matching this output
     layout (src/, build/, install/), so copying it verbatim preserves any fixes an
     agent made during exploration. Falls back to the static template when no
-    exploration was run or its script isn't safe to copy (e.g. a non-standard source layout).
+    exploration was run, its script isn't safe to copy (e.g. a non-standard source
+    layout), or it was validated in a different environment than this output directory
+    (Environment.LOCAL).
     """
     path = output_path / "build_library.sh"
-    if exploration is not None and exploration.script_path is not None:
+    if (
+        exploration is not None
+        and exploration.script_path is not None
+        and exploration.environment is Environment.LOCAL
+    ):
         shutil.copy2(exploration.script_path, path)
     else:
         path.write_text(
@@ -113,10 +120,15 @@ def _write_compile_harnesses_sh(
     The validated script already uses $SCRIPT_DIR-relative paths matching this output
     layout (install/, harness_src/, out/), so copying it verbatim preserves any fixes
     made while resolving transitive link flags. Falls back to the static template
-    (regenerated from static_libs/transitive_link_flags) when no exploration was run.
+    (regenerated from static_libs/transitive_link_flags) when no exploration was run, or
+    it was validated in a different environment than this output directory (Environment.LOCAL).
     """
     path = output_path / "compile_harnesses.sh"
-    if harness is not None and harness.script_path is not None:
+    if (
+        harness is not None
+        and harness.script_path is not None
+        and harness.environment is Environment.LOCAL
+    ):
         shutil.copy2(harness.script_path, path)
     else:
         content = (

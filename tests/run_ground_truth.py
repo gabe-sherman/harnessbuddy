@@ -31,11 +31,24 @@ class LibSpec:
     url: str
     project_name: str
     build_system: BuildSystem
+    builds_deterministically: bool | None
 
 
 LIBS = [
-    LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE),
-    LibSpec("https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE),
+    # LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
+    # LibSpec(
+    #     "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
+    # ),
+    # LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
+    LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
+    # LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
+    # LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
+    LibSpec("https://github.com/ImageMagick/ImageMagick", "imagemagick", BuildSystem.CMAKE, None),
+    LibSpec("https://github.com/htop-dev/htop.git", "htop", BuildSystem.AUTOTOOLS, None),
+    LibSpec("https://github.com/libusb/libusb", "libusb", BuildSystem.AUTOTOOLS, None),
+    LibSpec(
+        "https://github.com/openvenues/libpostal.git", "libpostal", BuildSystem.AUTOTOOLS, None
+    ),
 ]
 
 _AGENT = "claude"
@@ -76,9 +89,20 @@ def _docker_build_and_compile(project_name: str) -> bool:
 
     # Compile the harness and fuzz it for 2 seconds
     result = subprocess.run(
-        ["docker", "run", "-e", f"FUZZING_LANGUAGE={ext}", "--rm",
-        "--entrypoint", "bash", tag, "-c", f"compile && /out/{project_name} -max_total_time=2"],
-        cwd=oss_fuzz_dir, check=False,
+        [
+            "docker",
+            "run",
+            "-e",
+            f"FUZZING_LANGUAGE={ext}",
+            "--rm",
+            "--entrypoint",
+            "bash",
+            tag,
+            "-c",
+            f"compile && /out/{project_name} -max_total_time=2",
+        ],
+        cwd=oss_fuzz_dir,
+        check=False,
     )
     if result.returncode != 0:
         logger.error("harness compile failed for %s", project_name)

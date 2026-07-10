@@ -6,10 +6,12 @@ import pytest
 
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AutotoolsSetup,
     BuildExplorationResult,
     BuildSystem,
+    HarnessExplorationResult,
 )
 from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
 
@@ -173,7 +175,9 @@ def test_compile_harnesses_sh_deterministic(tmp_path: Path) -> None:
     ).read_text()
 
 
-def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
+def _fake_exploration(
+    succeeded: bool = True, *, environment: Environment = Environment.OSS_FUZZ
+) -> BuildExplorationResult:
     return BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=succeeded,
@@ -182,6 +186,7 @@ def _fake_exploration(succeeded: bool = True) -> BuildExplorationResult:
         stderr="",
         exit_code=0 if succeeded else 1,
         duration_seconds=1.2,
+        environment=environment,
     )
 
 
@@ -279,3 +284,62 @@ def test_build_library_sh_falls_back_to_template_without_script_path(tmp_path: P
     result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _fake_exploration())
     content = (result.output_path / "build_library.sh").read_text()
     assert "$SCRIPT_DIR/src" in content
+
+
+def test_build_library_sh_falls_back_to_template_when_environment_mismatched(
+    tmp_path: Path,
+) -> None:
+    """A local-environment result is never copied verbatim into oss-fuzz output (FR-008) —
+    it wasn't validated against the container this project targets."""
+    explored = tmp_path / "explored_build_library.sh"
+    explored.write_text("#!/bin/bash\n# agent fix: -DCARES_STATIC=ON\n")
+    exploration = _fake_exploration(environment=Environment.LOCAL)
+    exploration.script_path = explored
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert content != explored.read_text()
+    assert "$SCRIPT_DIR/src" in content
+
+
+# compile_harnesses.sh — reuse of the validated (possibly agent-fixed) script
+
+
+def _fake_harness(
+    script_path: Path | None = None, *, environment: Environment = Environment.OSS_FUZZ
+) -> HarnessExplorationResult:
+    return HarnessExplorationResult(
+        succeeded=True,
+        command=["bash", "compile_harnesses.sh"],
+        static_libs=[Path("libfoo.a")],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=["-lresolv"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        script_path=script_path,
+        environment=environment,
+    )
+
+
+def test_compile_harnesses_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
+    validated = tmp_path / "validated_compile_harnesses.sh"
+    validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", harness_exploration=_fake_harness(validated)
+    )
+    content = (result.output_path / "compile_harnesses.sh").read_text()
+    assert content == validated.read_text()
+
+
+def test_compile_harnesses_sh_falls_back_to_template_when_environment_mismatched(
+    tmp_path: Path,
+) -> None:
+    validated = tmp_path / "validated_compile_harnesses.sh"
+    validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
+    harness = _fake_harness(validated, environment=Environment.LOCAL)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", harness_exploration=harness
+    )
+    content = (result.output_path / "compile_harnesses.sh").read_text()
+    assert content != validated.read_text()
+    assert "libfoo.a" in content
