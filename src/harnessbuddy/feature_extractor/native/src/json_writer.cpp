@@ -1,193 +1,154 @@
 #include "feature_extractor.hpp"
 
-#include <sstream>
+#include <cJSON.h>
 
 namespace feature_extractor {
 
 namespace {
 
-void appendEscaped(std::ostringstream &out, const std::string &value) {
-  out << '"';
-  for (unsigned char c : value) {
-    switch (c) {
-    case '"':
-      out << "\\\"";
-      break;
-    case '\\':
-      out << "\\\\";
-      break;
-    case '\n':
-      out << "\\n";
-      break;
-    case '\r':
-      out << "\\r";
-      break;
-    case '\t':
-      out << "\\t";
-      break;
-    default:
-      if (c < 0x20) {
-        static const char *kHexDigits = "0123456789abcdef";
-        out << "\\u00" << kHexDigits[(c >> 4) & 0xF] << kHexDigits[c & 0xF];
-      } else {
-        out << static_cast<char>(c);
-      }
-    }
+cJSON *createParamArray(const std::vector<Param> &params) {
+  cJSON *array = cJSON_CreateArray();
+  for (const auto &param : params) {
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "name", param.name.c_str());
+    cJSON_AddStringToObject(item, "type", param.type.c_str());
+    cJSON_AddItemToArray(array, item);
   }
-  out << '"';
+  return array;
 }
 
-void writeString(std::ostringstream &out, const std::string &value) {
-  appendEscaped(out, value);
+cJSON *createStringArray(const std::vector<std::string> &values) {
+  cJSON *array = cJSON_CreateArray();
+  for (const auto &value : values) {
+    cJSON_AddItemToArray(array, cJSON_CreateString(value.c_str()));
+  }
+  return array;
 }
 
-void writeOptionalString(std::ostringstream &out,
-                         const std::optional<std::string> &value) {
+void addOptionalString(cJSON *object, const char *key,
+                        const std::optional<std::string> &value) {
   if (value.has_value()) {
-    appendEscaped(out, *value);
+    cJSON_AddStringToObject(object, key, value->c_str());
   } else {
-    out << "null";
+    cJSON_AddNullToObject(object, key);
   }
 }
 
-void writeBool(std::ostringstream &out, bool value) {
-  out << (value ? "true" : "false");
+cJSON *createFunction(const FunctionInfo &fn) {
+  cJSON *object = cJSON_CreateObject();
+  cJSON_AddStringToObject(object, "name", fn.name.c_str());
+  cJSON_AddStringToObject(object, "return_type", fn.return_type.c_str());
+  cJSON_AddItemToObject(object, "params", createParamArray(fn.params));
+  cJSON_AddStringToObject(object, "signature", fn.signature.c_str());
+  cJSON_AddBoolToObject(object, "is_public_api", fn.is_public_api);
+  cJSON_AddStringToObject(object, "header_path", fn.header_path.c_str());
+  return object;
 }
 
-template <typename Container, typename WriteItem>
-void writeArray(std::ostringstream &out, const Container &items,
-                WriteItem write_item) {
-  out << '[';
-  bool first = true;
-  for (const auto &item : items) {
-    if (!first) {
-      out << ',';
-    }
-    first = false;
-    write_item(item);
+cJSON *createTypedef(const TypedefInfo &td) {
+  cJSON *object = cJSON_CreateObject();
+  cJSON_AddStringToObject(object, "name", td.name.c_str());
+  cJSON_AddStringToObject(object, "underlying_type", td.underlying_type.c_str());
+  cJSON_AddStringToObject(object, "header_path", td.header_path.c_str());
+  return object;
+}
+
+cJSON *createMacro(const MacroInfo &macro) {
+  cJSON *object = cJSON_CreateObject();
+  cJSON_AddStringToObject(object, "name", macro.name.c_str());
+  cJSON_AddBoolToObject(object, "is_function_like", macro.is_function_like);
+  cJSON_AddItemToObject(object, "params", createStringArray(macro.params));
+  cJSON_AddStringToObject(object, "value", macro.value.c_str());
+  cJSON_AddStringToObject(object, "header_path", macro.header_path.c_str());
+  return object;
+}
+
+cJSON *createEnumerator(const Enumerator &e) {
+  cJSON *object = cJSON_CreateObject();
+  cJSON_AddStringToObject(object, "name", e.name.c_str());
+  // cJSON stores numbers as double, so enumerator values beyond +-2^53 lose
+  // precision; real-world enum constants stay well within that range.
+  cJSON_AddNumberToObject(object, "value", static_cast<double>(e.value));
+  return object;
+}
+
+cJSON *createEnum(const EnumInfo &e) {
+  cJSON *object = cJSON_CreateObject();
+  addOptionalString(object, "name", e.name);
+  cJSON *enumerators = cJSON_CreateArray();
+  for (const auto &enumerator : e.enumerators) {
+    cJSON_AddItemToArray(enumerators, createEnumerator(enumerator));
   }
-  out << ']';
+  cJSON_AddItemToObject(object, "enumerators", enumerators);
+  cJSON_AddStringToObject(object, "header_path", e.header_path.c_str());
+  return object;
 }
 
-void writeParam(std::ostringstream &out, const Param &param) {
-  out << "{\"name\":";
-  writeString(out, param.name);
-  out << ",\"type\":";
-  writeString(out, param.type);
-  out << '}';
+cJSON *createField(const Field &field) {
+  cJSON *object = cJSON_CreateObject();
+  cJSON_AddStringToObject(object, "name", field.name.c_str());
+  cJSON_AddStringToObject(object, "type", field.type.c_str());
+  return object;
 }
 
-void writeParams(std::ostringstream &out, const std::vector<Param> &params) {
-  writeArray(out, params, [&](const Param &p) { writeParam(out, p); });
-}
-
-void writeFunction(std::ostringstream &out, const FunctionInfo &fn) {
-  out << "{\"name\":";
-  writeString(out, fn.name);
-  out << ",\"return_type\":";
-  writeString(out, fn.return_type);
-  out << ",\"params\":";
-  writeParams(out, fn.params);
-  out << ",\"signature\":";
-  writeString(out, fn.signature);
-  out << ",\"is_public_api\":";
-  writeBool(out, fn.is_public_api);
-  out << ",\"header_path\":";
-  writeString(out, fn.header_path);
-  out << '}';
-}
-
-void writeTypedef(std::ostringstream &out, const TypedefInfo &td) {
-  out << "{\"name\":";
-  writeString(out, td.name);
-  out << ",\"underlying_type\":";
-  writeString(out, td.underlying_type);
-  out << ",\"header_path\":";
-  writeString(out, td.header_path);
-  out << '}';
-}
-
-void writeMacro(std::ostringstream &out, const MacroInfo &macro) {
-  out << "{\"name\":";
-  writeString(out, macro.name);
-  out << ",\"is_function_like\":";
-  writeBool(out, macro.is_function_like);
-  out << ",\"params\":";
-  writeArray(out, macro.params,
-             [&](const std::string &p) { writeString(out, p); });
-  out << ",\"value\":";
-  writeString(out, macro.value);
-  out << ",\"header_path\":";
-  writeString(out, macro.header_path);
-  out << '}';
-}
-
-void writeEnumerator(std::ostringstream &out, const Enumerator &e) {
-  out << "{\"name\":";
-  writeString(out, e.name);
-  out << ",\"value\":" << e.value << '}';
-}
-
-void writeEnum(std::ostringstream &out, const EnumInfo &e) {
-  out << "{\"name\":";
-  writeOptionalString(out, e.name);
-  out << ",\"enumerators\":";
-  writeArray(out, e.enumerators,
-             [&](const Enumerator &en) { writeEnumerator(out, en); });
-  out << ",\"header_path\":";
-  writeString(out, e.header_path);
-  out << '}';
-}
-
-void writeField(std::ostringstream &out, const Field &field) {
-  out << "{\"name\":";
-  writeString(out, field.name);
-  out << ",\"type\":";
-  writeString(out, field.type);
-  out << '}';
-}
-
-void writeRecord(std::ostringstream &out, const RecordInfo &record) {
-  out << "{\"name\":";
-  writeOptionalString(out, record.name);
-  out << ",\"kind\":";
-  writeString(out, record.kind);
-  out << ",\"fields\":";
-  writeArray(out, record.fields, [&](const Field &f) { writeField(out, f); });
-  out << ",\"header_path\":";
-  writeString(out, record.header_path);
-  out << '}';
+cJSON *createRecord(const RecordInfo &record) {
+  cJSON *object = cJSON_CreateObject();
+  addOptionalString(object, "name", record.name);
+  cJSON_AddStringToObject(object, "kind", record.kind.c_str());
+  cJSON *fields = cJSON_CreateArray();
+  for (const auto &field : record.fields) {
+    cJSON_AddItemToArray(fields, createField(field));
+  }
+  cJSON_AddItemToObject(object, "fields", fields);
+  cJSON_AddStringToObject(object, "header_path", record.header_path.c_str());
+  return object;
 }
 
 } // namespace
 
 std::string writeJson(const FeatureArtifact &artifact) {
-  std::ostringstream out;
-  out << "{\"schema_version\":" << artifact.schema_version;
-  out << ",\"project_name\":";
-  writeString(out, artifact.project_name);
-  out << ",\"language\":";
-  writeString(out, artifact.language);
-  out << ",\"functions\":";
-  writeArray(out, artifact.functions,
-             [&](const FunctionInfo &fn) { writeFunction(out, fn); });
-  out << ",\"typedefs\":";
-  writeArray(out, artifact.typedefs,
-             [&](const TypedefInfo &td) { writeTypedef(out, td); });
-  out << ",\"macros\":";
-  writeArray(out, artifact.macros,
-             [&](const MacroInfo &m) { writeMacro(out, m); });
-  out << ",\"enums\":";
-  writeArray(out, artifact.enums,
-             [&](const EnumInfo &e) { writeEnum(out, e); });
-  out << ",\"records\":";
-  writeArray(out, artifact.records,
-             [&](const RecordInfo &r) { writeRecord(out, r); });
-  out << ",\"warnings\":";
-  writeArray(out, artifact.warnings,
-             [&](const std::string &w) { writeString(out, w); });
-  out << '}';
-  return out.str();
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "schema_version", artifact.schema_version);
+  cJSON_AddStringToObject(root, "project_name", artifact.project_name.c_str());
+  cJSON_AddStringToObject(root, "language", artifact.language.c_str());
+
+  cJSON *functions = cJSON_CreateArray();
+  for (const auto &fn : artifact.functions) {
+    cJSON_AddItemToArray(functions, createFunction(fn));
+  }
+  cJSON_AddItemToObject(root, "functions", functions);
+
+  cJSON *typedefs = cJSON_CreateArray();
+  for (const auto &td : artifact.typedefs) {
+    cJSON_AddItemToArray(typedefs, createTypedef(td));
+  }
+  cJSON_AddItemToObject(root, "typedefs", typedefs);
+
+  cJSON *macros = cJSON_CreateArray();
+  for (const auto &macro : artifact.macros) {
+    cJSON_AddItemToArray(macros, createMacro(macro));
+  }
+  cJSON_AddItemToObject(root, "macros", macros);
+
+  cJSON *enums = cJSON_CreateArray();
+  for (const auto &e : artifact.enums) {
+    cJSON_AddItemToArray(enums, createEnum(e));
+  }
+  cJSON_AddItemToObject(root, "enums", enums);
+
+  cJSON *records = cJSON_CreateArray();
+  for (const auto &record : artifact.records) {
+    cJSON_AddItemToArray(records, createRecord(record));
+  }
+  cJSON_AddItemToObject(root, "records", records);
+
+  cJSON_AddItemToObject(root, "warnings", createStringArray(artifact.warnings));
+
+  char *rendered = cJSON_PrintUnformatted(root);
+  std::string result(rendered);
+  cJSON_free(rendered);
+  cJSON_Delete(root);
+  return result;
 }
 
 } // namespace feature_extractor
