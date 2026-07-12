@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,11 +21,16 @@ from harnessbuddy.library_builder.models import (
 _FAKE_URL = "https://github.com/example/testlib.git"
 
 
-def _analysis(source_path: Path, system_packages: list[str] | None = None) -> AnalysisResult:
+def _analysis(
+    source_path: Path,
+    system_packages: list[str] | None = None,
+    *,
+    build_system: BuildSystem = BuildSystem.CMAKE,
+) -> AnalysisResult:
     return AnalysisResult(
         project_name="testlib",
         source_path=source_path,
-        build_system=BuildSystem.CMAKE,
+        build_system=build_system,
         build_files=[],
         headers=[],
         language=Language.C,
@@ -71,15 +77,18 @@ def test_check_availability_ok_when_docker_info_succeeds() -> None:
 def test_run_library_build_network_failure_raises_environment_unavailable(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
-    with patch(
-        "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-        return_value=RunResult(
-            stdout="",
-            stderr="Error response from daemon: Get https://gcr.io: no such host",
-            exit_code=1,
-            duration_seconds=0.1,
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(
+                stdout="",
+                stderr="Error response from daemon: Get https://gcr.io: no such host",
+                exit_code=1,
+                duration_seconds=0.1,
+            ),
         ),
-    ), pytest.raises(EnvironmentUnavailableError) as exc_info:
+        pytest.raises(EnvironmentUnavailableError) as exc_info,
+    ):
         OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
     assert exc_info.value.environment is Environment.OSS_FUZZ
 
@@ -157,6 +166,71 @@ def test_docker_run_invocation_mounts_workdir_and_uses_bash_entrypoint(tmp_path:
     assert f"{workdir.resolve()}:{workdir.resolve()}" in docker_command
 
 
+# _ensure_probe_image — bear is a hard requirement in the probe image (T013, FR-011)
+
+
+def _capture_dockerfile(dockerfiles: dict[str, str]):  # type: ignore[no-untyped-def]
+    def fake_run_command(command: list[str], cwd: Path, _timeout: int) -> RunResult:
+        if command[:2] == ["docker", "build"]:
+            dockerfiles["text"] = (cwd / "Dockerfile").read_text()
+        return RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1)
+
+    return fake_run_command
+
+
+def test_ensure_probe_image_dockerfile_includes_bear_with_no_system_packages(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+    dockerfiles: dict[str, str] = {}
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            side_effect=_capture_dockerfile(dockerfiles),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=[],
+        ),
+    ):
+        OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
+
+    assert "bear" in dockerfiles["text"]
+
+
+def test_ensure_probe_image_dockerfile_includes_bear_alongside_system_packages(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+    dockerfiles: dict[str, str] = {}
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            side_effect=_capture_dockerfile(dockerfiles),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=[],
+        ),
+    ):
+        OssFuzzExecutor().run_library_build(_analysis(workdir / "src", ["libssl-dev"]), workdir)
+
+    assert "bear" in dockerfiles["text"]
+    assert "libssl-dev" in dockerfiles["text"]
+    # Both are provisioned in the same apt-get invocation, not a second RUN line.
+    assert dockerfiles["text"].count("apt-get install") == 1
+
+
 # run_harness_compile — requires a prior successful run_library_build on the same instance
 
 
@@ -224,3 +298,38 @@ def test_run_library_build_real_docker_end_to_end(tmp_path: Path) -> None:
     result = OssFuzzExecutor().run_library_build(_analysis(source), workdir)
     assert result.succeeded is True
     assert result.environment is Environment.OSS_FUZZ
+
+
+@pytest.mark.docker
+def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: Path) -> None:
+    """T014 (US3): the oss-fuzz probe image guarantees bear (FR-011), so Make/
+    Autotools compile-commands capture must succeed there unconditionally — no
+    PATH-dependent flakiness the way the local host has."""
+    workdir = tmp_path / "work"
+    source = workdir / "src"
+    source.mkdir(parents=True)
+    (source / "mylib.c").write_text("int mylib_symbol(void) { return 0; }\n")
+    (source / "mylib.h").write_text("#pragma once\nint mylib_symbol(void);\n")
+    (source / "Makefile").write_text(
+        "all:\n"
+        "\t$(CC) $(CFLAGS) -c mylib.c -o mylib.o\n"
+        "\tar rcs libmylib.a mylib.o\n"
+        "\n"
+        "install: all\n"
+        "\tmkdir -p $(PREFIX)/lib $(PREFIX)/include\n"
+        "\tcp libmylib.a $(PREFIX)/lib/\n"
+        "\tcp mylib.h $(PREFIX)/include/\n"
+        "\n"
+        ".PHONY: all install\n"
+    )
+
+    result = OssFuzzExecutor().run_library_build(
+        _analysis(source, build_system=BuildSystem.MAKEFILE), workdir
+    )
+    assert result.succeeded is True
+    assert result.environment is Environment.OSS_FUZZ
+    assert result.compile_commands_error is None
+    assert result.compile_commands_path is not None
+    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
+    entries = json.loads(result.compile_commands_path.read_text())
+    assert any("mylib.c" in entry["file"] for entry in entries)

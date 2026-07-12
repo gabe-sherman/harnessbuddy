@@ -16,6 +16,13 @@ from harnessbuddy.library_builder.models import (
 )
 from harnessbuddy.library_builder.scripts import build_library_script
 
+_BEAR_NOT_FOUND_ERROR = (
+    "bear not found on PATH; install bear to capture compile_commands.json for "
+    "Make/Autotools builds"
+)
+
+_MAKE_LIKE_SYSTEMS = (BuildSystem.MAKEFILE, BuildSystem.AUTOTOOLS)
+
 
 def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
     """True when the source was cloned to workdir/src, the layout generated output
@@ -91,7 +98,8 @@ def explore(
             environment=environment,
         )
 
-    command = ["bash", str(script_path.name)]
+    command, bear_missing_error = _build_command(analysis.build_system, environment, script_path)
+
     runner = run if run is not None else run_command_streaming
     result = runner(command, workdir, timeout)
 
@@ -103,6 +111,13 @@ def explore(
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
 
+    compile_commands_path: Path | None = None
+    compile_commands_error: str | None = None
+    if succeeded:
+        compile_commands_path, compile_commands_error = _capture_compile_commands(
+            analysis, workdir, runner, timeout, bear_missing_error
+        )
+
     return BuildExplorationResult(
         build_system=analysis.build_system,
         succeeded=succeeded,
@@ -113,7 +128,79 @@ def explore(
         duration_seconds=result.duration_seconds,
         script_path=script_path if standard_layout else None,
         environment=environment,
+        compile_commands_path=compile_commands_path,
+        compile_commands_error=compile_commands_error,
     )
+
+
+def _build_command(
+    build_system: BuildSystem, environment: Environment, script_path: Path
+) -> tuple[list[str], str | None]:
+    """Choose the canonical build invocation, wrapping Make/Autotools with `bear --`.
+
+    Returns (command, bear_missing_error). The wrap is unconditional in the oss-fuzz
+    environment (bear is guaranteed present there, FR-011); on the local host it's
+    best-effort via shutil.which, since a missing bear must never turn into a build
+    failure (FR-008) — bear_missing_error is set instead so the caller can report it
+    once the build itself has succeeded.
+    """
+    plain = ["bash", str(script_path.name)]
+    if build_system not in _MAKE_LIKE_SYSTEMS:
+        return plain, None
+    if environment is Environment.OSS_FUZZ or shutil.which("bear") is not None:
+        return ["bear", "--", *plain], None
+    return plain, _BEAR_NOT_FOUND_ERROR
+
+
+def _capture_compile_commands(
+    analysis: AnalysisResult,
+    workdir: Path,
+    runner: Runner,
+    timeout: int,
+    bear_missing_error: str | None,
+) -> tuple[Path | None, str | None]:
+    """Capture compile_commands.json as a byproduct of the build that just succeeded.
+
+    Returns (path, error) — exactly one is non-None. CMake re-configures with
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON (no rebuild needed, since CMake writes the file
+    during configure); Meson's Ninja backend already wrote the file unprompted; Make/
+    Autotools relies on the `bear --` wrap explore() already applied (or didn't, if
+    bear_missing_error is set) to the canonical build command above.
+    """
+    build_dir = workdir / "build"
+    target = workdir / "compile_commands.json"
+
+    if analysis.build_system == BuildSystem.CMAKE:
+        configure_command = [
+            "cmake",
+            "-B",
+            str(build_dir),
+            "-S",
+            str(analysis.source_path.resolve()),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ]
+        configure_result = runner(configure_command, workdir, timeout)
+        source = build_dir / "compile_commands.json"
+        if configure_result.exit_code != 0 or not source.exists():
+            return None, "cmake re-configure did not produce compile_commands.json"
+        shutil.copy2(source, target)
+        return target, None
+
+    if analysis.build_system == BuildSystem.MESON:
+        source = build_dir / "compile_commands.json"
+        if not source.exists():
+            return None, "meson build did not produce compile_commands.json"
+        shutil.copy2(source, target)
+        return target, None
+
+    if analysis.build_system in _MAKE_LIKE_SYSTEMS:
+        if bear_missing_error is not None:
+            return None, bear_missing_error
+        if not target.exists():
+            return None, "bear did not produce compile_commands.json"
+        return target, None
+
+    return None, None
 
 
 def _string_list(value: object) -> list[str]:

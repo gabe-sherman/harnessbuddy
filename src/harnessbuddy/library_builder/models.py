@@ -23,7 +23,7 @@ class AutotoolsSetup(Enum):
 
 class Language(Enum):
     C = "c"
-    CPP = "cpp"
+    CPP = "cxx"
     UNKNOWN = "unknown"
 
 
@@ -78,6 +78,11 @@ class BuildExplorationResult:
     extra_include_paths: list[str] = field(default_factory=list)
     extra_library_paths: list[str] = field(default_factory=list)
     environment: Environment = Environment.LOCAL
+    # Set when compile-commands capture succeeded for this build; None when the main
+    # build failed (capture is never attempted) or capture was attempted and failed/
+    # was skipped. Mutually exclusive with compile_commands_error.
+    compile_commands_path: Path | None = None
+    compile_commands_error: str | None = None
 
 
 @dataclass

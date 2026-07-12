@@ -231,7 +231,9 @@ def test_generate_exploration_runs_bash_script(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    cmd = mock_host_build.call_args[0][0]
+    # First call is the canonical build; a later call is the compile-commands capture
+    # re-configure explore() issues after a successful CMake build.
+    cmd = mock_host_build.call_args_list[0][0][0]
     assert cmd[0] == "bash"
     assert cmd[1].endswith("build_library.sh")
 
@@ -386,6 +388,62 @@ def test_generate_writes_stats_json_failed_library_build(
     assert stats_path.exists()
     stats = json.loads(stats_path.read_text())
     assert stats["status"] == "failed_library_build"
+
+
+# --skip-validation — extends to skip the per-stage environment gate (harnessbuddy-6gn)
+
+
+def test_skip_validation_continues_past_failed_library_build(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="build failed",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--skip-validation",
+            ]
+        )
+    # Both stages still ran and generation still happened — a failed library build no
+    # longer stops the pipeline before generation (spec 009 research.md decision #7).
+    assert rc == 0
+    assert (output_dir / "local").is_dir()
+    assert (output_dir / "oss-fuzz").is_dir()
+    stats = json.loads(_stats_json_path(output_dir).read_text())
+    assert stats["status"] == "failed_library_build"
+
+
+def test_without_skip_validation_still_stops_on_failed_library_build(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="build failed",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+    assert not (output_dir / "local").exists()
 
 
 def test_generate_writes_stats_json_failed_harness_build_emits_stub_output(

@@ -235,6 +235,7 @@ def test_write_run_stats_clean_success(tmp_path: Path) -> None:
         },
         "status": "success",
         "environment": "local",
+        "compile_commands_path": None,
     }
 
 
@@ -280,6 +281,7 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
         },
         "status": "success",
         "environment": "local",
+        "compile_commands_path": None,
     }
 
 
@@ -319,4 +321,5 @@ def test_write_run_stats_harness_unrecoverable_with_codex(tmp_path: Path) -> Non
         },
         "status": "failed_harness_build",
         "environment": "local",
+        "compile_commands_path": None,
     }

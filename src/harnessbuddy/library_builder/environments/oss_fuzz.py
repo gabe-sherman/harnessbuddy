@@ -156,12 +156,15 @@ class OssFuzzExecutor:
         if self._image_tag == tag and self._built_apt_packages == packages:
             return
 
-        dockerfile = f"FROM {_BASE_IMAGE}\n"
-        if packages:
-            pkgs = " ".join(packages)
-            dockerfile += (
-                f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n"
-            )
+        # bear is a hard requirement in this container (FR-011): unlike the local
+        # host's best-effort shutil.which check, HarnessBuddy provisions this image
+        # itself, so Make/Autotools compile-commands capture must never depend on
+        # whatever the repository's own analysis.system_packages happens to include.
+        all_packages = " ".join(("bear", *packages))
+        dockerfile = (
+            f"FROM {_BASE_IMAGE}\n"
+            f"RUN apt-get update && apt-get install -y --no-install-recommends {all_packages}\n"
+        )
 
         with tempfile.TemporaryDirectory(prefix="harnessbuddy-probe-") as raw_context_dir:
             context_dir = Path(raw_context_dir)

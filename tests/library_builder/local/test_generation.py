@@ -183,6 +183,38 @@ def test_build_library_sh_falls_back_to_template_without_exploration(tmp_path: P
     assert "$SCRIPT_DIR/src" in content
 
 
+# build_library.sh — never carries compile-commands capture instrumentation (T010)
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
+def test_build_library_sh_has_no_capture_instrumentation_template_fallback(
+    fixture_name: str, tmp_path: Path
+) -> None:
+    """The regenerated template (no exploration, or exploration without a copyable
+    script) must never carry CMake/bear capture-only flags — capture is applied at
+    the orchestration level (explore()), never baked into build_library_script()'s
+    output, so shipped scripts are structurally unaffected (spec 010 User Story 2)."""
+    result = generate_local(_analysis(fixture_name), tmp_path / "out")
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in content
+    assert "bear" not in content
+
+
+def test_build_library_sh_has_no_capture_instrumentation_copied_verbatim(
+    tmp_path: Path,
+) -> None:
+    """The copy-verbatim path also never leaks capture instrumentation, since
+    explore() never writes it into the script text it hands off as script_path."""
+    explored = tmp_path / "explored_build_library.sh"
+    explored.write_text("#!/bin/bash\nset -euo pipefail\ncmake -B build -S src\n")
+    result = generate_local(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_with_script(explored)
+    )
+    content = (result.output_path / "build_library.sh").read_text()
+    assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in content
+    assert "bear" not in content
+
+
 # compile_harnesses.sh — reuse of the validated (possibly agent-fixed) script
 
 

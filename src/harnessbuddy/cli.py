@@ -59,7 +59,10 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--skip-validation",
         action="store_true",
-        help="Skip oss-fuzz validation after project generation.",
+        help=(
+            "Don't let a failed library build stop the pipeline before generation. "
+            "Both stages still run to produce the artifacts generation needs."
+        ),
     )
     p.add_argument(
         "--no-agents",
@@ -447,13 +450,14 @@ def _generate_outputs(  # noqa: PLR0913 -- private helper; all 7 params are dist
     return 0
 
 
-def _write_run_stats(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
+def _write_run_stats(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
     base_output: Path,
     start_time: float,
     library_build_agent: AgentPhaseStats,
     harness_build_agent: AgentPhaseStats,
     status: RunStatus,
     environment: Environment,
+    compile_commands_path: Path | None = None,
 ) -> None:
     """Build and persist stats.json for this run."""
     from harnessbuddy.library_builder.stats import RunStats, write_run_stats
@@ -466,6 +470,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; all 6 params are disti
             harness_build_agent=harness_build_agent,
             status=status,
             environment=environment,
+            compile_commands_path=str(compile_commands_path) if compile_commands_path else None,
         ),
     )
 
@@ -510,6 +515,90 @@ def _check_environment_availability(
         print(f"Environment '{environment.value}' is unavailable: {exc}", file=sys.stderr)
         return 1
     return None
+
+
+def _handle_library_build_failure(
+    result: BuildExplorationResult,
+    environment: Environment,
+    *,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> int | None:
+    """Report a failed library build. Returns an exit code to stop the pipeline, or
+    None to continue past it — --skip-validation extends to also skip this per-stage
+    environment gate (spec 009 research.md decision #7): both stages still run to
+    produce the artifacts generation needs, but a failing stage no longer blocks
+    progressing to generation.
+    """
+    from harnessbuddy.library_builder.stats import (
+        RunStatus,
+        agent_phase_stats_from_build,
+        not_invoked_agent_stats,
+    )
+
+    print(
+        f"Failed to produce valid build ({environment.value}): {result.stdout}",
+        file=sys.stderr,
+    )
+    if not skip_validation:
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_build(result),
+            not_invoked_agent_stats(),
+            RunStatus.FAILED_LIBRARY_BUILD,
+            environment,
+            result.compile_commands_path,
+        )
+        return 1
+    print(
+        "--skip-validation set: continuing to the harness phase and generation "
+        "despite the failed library build.",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _report_library_build_result(
+    result: BuildExplorationResult,
+    environment: Environment,
+    *,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> int | None:
+    """Print the library-build outcome. Returns an exit code to stop the pipeline on
+    failure (unless skip_validation), or None to continue to the harness phase."""
+    if not result.succeeded:
+        return _handle_library_build_failure(
+            result,
+            environment,
+            skip_validation=skip_validation,
+            base_output=base_output,
+            start_time=start_time,
+        )
+    print("Successfully produced library build!")
+    if result.compile_commands_path is not None:
+        print(f"Compile commands: {result.compile_commands_path}")
+    else:
+        print(f"Compile commands: not captured ({result.compile_commands_error})")
+    return None
+
+
+def _final_run_status(
+    result: BuildExplorationResult, harness_result: HarnessExplorationResult
+) -> RunStatus:
+    """The first-failing-stage wins: a library-build failure that was carried past the
+    --skip-validation gate is still reported as such, even if the harness stage (run
+    against whatever partial install artifacts exist) also fails."""
+    from harnessbuddy.library_builder.stats import RunStatus
+
+    if not result.succeeded:
+        return RunStatus.FAILED_LIBRARY_BUILD
+    if not harness_result.succeeded:
+        return RunStatus.FAILED_HARNESS_BUILD
+    return RunStatus.SUCCESS
 
 
 def _cmd_generate(args: argparse.Namespace) -> int:
@@ -575,21 +664,15 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             environment,
         )
         return 1
-    if not result.succeeded:
-        print(
-            f"Failed to produce valid build ({environment.value}): {result.stdout}",
-            file=sys.stderr,
-        )
-        _write_run_stats(
-            base_output,
-            start_time,
-            agent_phase_stats_from_build(result),
-            not_invoked_agent_stats(),
-            RunStatus.FAILED_LIBRARY_BUILD,
-            environment,
-        )
-        return 1
-    print("Successfully produced library build!")
+    rc = _report_library_build_result(
+        result,
+        environment,
+        skip_validation=args.skip_validation,
+        base_output=base_output,
+        start_time=start_time,
+    )
+    if rc is not None:
+        return rc
 
     install_dir = workspace / "install"
     try:
@@ -617,6 +700,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             agent_phase_stats_from_agent_error(exc.summary, exc.report),
             RunStatus.FAILED_HARNESS_BUILD,
             environment,
+            result.compile_commands_path,
         )
         return 1
 
@@ -634,8 +718,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         start_time,
         agent_phase_stats_from_build(result),
         agent_phase_stats_from_harness(harness_result),
-        RunStatus.SUCCESS if harness_result.succeeded else RunStatus.FAILED_HARNESS_BUILD,
+        _final_run_status(result, harness_result),
         environment,
+        result.compile_commands_path,
     )
     return rc
 

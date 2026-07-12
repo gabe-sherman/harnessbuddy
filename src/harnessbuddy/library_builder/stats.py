@@ -111,6 +111,7 @@ class RunStats:
     harness_build_agent: AgentPhaseStats
     status: RunStatus
     environment: Environment = Environment.LOCAL
+    compile_commands_path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -119,6 +120,7 @@ class RunStats:
             "harness_build_agent": self.harness_build_agent.to_dict(),
             "status": self.status.value,
             "environment": self.environment.value,
+            "compile_commands_path": self.compile_commands_path,
         }
 
 
