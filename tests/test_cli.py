@@ -10,6 +10,7 @@ import pytest
 from harnessbuddy.cli import build_parser, main
 from harnessbuddy.core.agent_stream import AgentStreamResult
 from harnessbuddy.core.subprocesses import RunResult
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     BuildExplorationResult,
     BuildSystem,
@@ -47,15 +48,13 @@ def mock_host_build() -> Generator[MagicMock]:
 def test_generate_success_local_repo(local_repo_with_origin: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
     project_dir = output_dir
     assert project_dir.is_dir()
 
-    oss_fuzz_dir = project_dir / "oss-fuzz"
-    assert (oss_fuzz_dir / "Dockerfile").exists()
-    assert (oss_fuzz_dir / "build.sh").exists()
-    assert (oss_fuzz_dir / "project.yaml").exists()
+    assert not (project_dir / "oss-fuzz").exists()
     local_dir = project_dir / "local"
     assert (local_dir / "setup.sh").exists()
     assert (local_dir / "build_library.sh").exists()
@@ -66,11 +65,12 @@ def test_generate_success_prints_summary(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Local build" in out
-    assert "OSS-Fuzz" in out
+    assert "Environment:  local" in out
+    assert f"Output:       {output_dir / 'local'}" in out
 
 
 def test_generate_success_project_name_override(
@@ -78,16 +78,17 @@ def test_generate_success_project_name_override(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    rc = main(
-        [
-            "generate",
-            str(local_repo_with_origin),
-            "--output",
-            str(output_dir),
-            "--project-name",
-            "custom",
-        ]
-    )
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--project-name",
+                "custom",
+            ]
+        )
     assert rc == 0
     assert (Path(".harnessbuddy") / "custom").is_dir()
 
@@ -111,7 +112,8 @@ def test_generate_success_default_output_uses_cwd(
     output_dir = tmp_path / "cwd"
     output_dir.mkdir()
     monkeypatch.chdir(output_dir)
-    rc = main(["generate", str(repo)])
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(repo)])
     assert rc == 0
     assert (output_dir / "output" / "srcrepo").is_dir()
 
@@ -192,11 +194,13 @@ def test_generate_no_cpp_signals_prints_error(
     assert "C/C++" in err
 
 
-def test_generate_output_dir_exists_exits_nonzero(
+# generate — pre-existing output directory (non-interactive overwrite, not an error)
+
+
+def test_generate_output_dir_exists_overwrites_and_succeeds(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
     output_dir = tmp_path / "output"
-
     output_dir.mkdir()
     local_out = output_dir / "local"
     local_out.mkdir(parents=True)
@@ -214,34 +218,6 @@ def test_generate_output_dir_exists_prints_warning(
     main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     out = capsys.readouterr().out
     assert "already exists" in out
-
-
-# host build exploration
-
-
-def test_generate_prints_host_build_status(
-    local_repo_with_origin: Path,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    out = capsys.readouterr().out
-    assert "running build" in out.lower()
-
-
-def test_generate_exploration_runs_bash_script(
-    mock_host_build: MagicMock, local_repo_with_origin: Path, tmp_path: Path
-) -> None:
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
-    # First call is the canonical build; a later call is the compile-commands capture
-    # re-configure explore() issues after a successful CMake build.
-    cmd = mock_host_build.call_args_list[0][0][0]
-    assert cmd[0] == "bash"
-    assert cmd[1].endswith("build_library.sh")
 
 
 # --no-agents
@@ -431,7 +407,7 @@ def test_skip_validation_continues_past_failed_library_build(
     # longer stops the pipeline before generation (spec 009 research.md decision #7).
     assert rc == 0
     assert (output_dir / "local").is_dir()
-    assert (output_dir / "oss-fuzz").is_dir()
+    assert not (output_dir / "oss-fuzz").exists()
     stats = json.loads(_stats_json_path(output_dir).read_text())
     assert stats["status"] == "failed_library_build"
 
@@ -464,7 +440,7 @@ def test_generate_writes_stats_json_failed_harness_build_emits_stub_output(
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
     assert (output_dir / "local").is_dir()
-    assert (output_dir / "oss-fuzz").is_dir()
+    assert not (output_dir / "oss-fuzz").exists()
     stats = json.loads((output_dir / "stats.json").read_text())
     assert stats["status"] == "failed_harness_build"
 
@@ -699,7 +675,7 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_success(
         workdir = Path(cwd)
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
-        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "out" / "default_fuzzer").write_text("stub binary")
         (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
@@ -789,7 +765,7 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_action_required(
     )
 
 
-def test_generate_agent_report_extra_library_path_reaches_both_harness_scripts(
+def test_generate_agent_report_extra_library_path_reaches_local_harness_script(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
     output_dir = tmp_path / "output"
@@ -836,9 +812,7 @@ def test_generate_agent_report_extra_library_path_reaches_both_harness_scripts(
         )
     assert rc == 0
     local_script = (output_dir / "local" / "compile_harnesses.sh").read_text()
-    oss_fuzz_script = (output_dir / "oss-fuzz" / "compile_harnesses.sh").read_text()
     assert f"-L{extra_lib_path}" in local_script
-    assert f"-L{extra_lib_path}" in oss_fuzz_script
 
 
 # agent_report.json missing-package flow (Structured Agent Report feature, US3)
@@ -896,9 +870,7 @@ def test_generate_library_missing_package_reaches_output_on_success(
             ]
         )
     assert rc == 0
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
-    assert "libssl-dev" in dockerfile
     assert ("openssl" if sys.platform == "darwin" else "libssl-dev") in setup_sh
 
 
@@ -961,9 +933,7 @@ def test_generate_library_missing_package_reaches_state_then_next_run_output(
 
     rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc2 == 0
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
-    assert "libssl-dev" in dockerfile
     assert ("openssl" if sys.platform == "darwin" else "libssl-dev") in setup_sh
 
 
@@ -988,7 +958,7 @@ def test_generate_harness_missing_package_reaches_output_on_success(
         workdir = Path(cwd)
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
-        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "out" / "default_fuzzer").write_text("stub binary")
         (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
@@ -1021,9 +991,7 @@ def test_generate_harness_missing_package_reaches_output_on_success(
             ]
         )
     assert rc == 0
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
-    assert "libfoo-dev" in dockerfile
     assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
 
 
@@ -1053,7 +1021,7 @@ def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
         workdir = Path(cwd)
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
-        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "out" / "default_fuzzer").write_text("stub binary")
         (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-lfoo"\n'
         )
@@ -1088,14 +1056,10 @@ def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
         )
     assert rc == 0
     assert "ACTION REQUIRED" not in capsys.readouterr().err
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     local_compile_harnesses = (output_dir / "local" / "compile_harnesses.sh").read_text()
-    oss_fuzz_compile_harnesses = (output_dir / "oss-fuzz" / "compile_harnesses.sh").read_text()
-    assert "libfoo-dev" in dockerfile
     assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
     assert "-lfoo" in local_compile_harnesses
-    assert "-lfoo" in oss_fuzz_compile_harnesses
 
 
 def test_generate_harness_missing_package_reaches_state_then_next_run_output(
@@ -1159,9 +1123,7 @@ def test_generate_harness_missing_package_reaches_state_then_next_run_output(
 
     rc2 = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc2 == 0
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
-    assert "libfoo-dev" in dockerfile
     assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
 
 
@@ -1184,10 +1146,6 @@ def test_generate_harness_linked_flags_only_reaches_output_on_success(
     with patch("harnessbuddy.cli.build_harness", return_value=fake_harness_result):
         rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
-
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
-    assert "libzstd-dev" in dockerfile
-    assert "zlib1g-dev" in dockerfile
 
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     if sys.platform == "darwin":
@@ -1219,7 +1177,7 @@ def test_generate_agent_repaired_harness_linked_flags_reaches_output_on_success(
         workdir = Path(cwd)
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
-        (workdir / "out" / "probe_harness").write_text("stub binary")
+        (workdir / "out" / "default_fuzzer").write_text("stub binary")
         (workdir / "compile_harnesses.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-llzma"\n'
         )
@@ -1244,9 +1202,6 @@ def test_generate_agent_repaired_harness_linked_flags_reaches_output_on_success(
             ]
         )
     assert rc == 0
-
-    dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
-    assert "liblzma-dev" in dockerfile
 
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
     if sys.platform == "darwin":
@@ -1307,8 +1262,23 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
     with (
         patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
         patch("harnessbuddy.cli.build_harness", return_value=fake_harness_result),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(
+                stdout="Server Version: 24.0", stderr="", exit_code=0, duration_seconds=0.1
+            ),
+        ),
     ):
-        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
     assert rc == 0
 
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
@@ -1341,6 +1311,36 @@ def test_generate_benchmark_missing_features_json_exits_with_actionable_message(
     assert "extract-features" in err
 
 
+def test_generate_local_copies_compile_commands_alongside_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    workspace_compile_commands = tmp_path / "workspace_compile_commands.json"
+    workspace_compile_commands.write_text("[]")
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        compile_commands_path=workspace_compile_commands,
+    )
+    with (
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    dest = output_dir / "compile_commands.json"
+    assert dest.exists()
+    assert dest.read_text() == "[]"
+    # Alongside the environment subdirs, not copied into either one.
+    assert not (output_dir / "local" / "compile_commands.json").exists()
+
+
 def test_generate_never_creates_feature_extractor_output(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
@@ -1349,10 +1349,9 @@ def test_generate_never_creates_feature_extractor_output(
     rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
     assert rc == 0
     assert not list(output_dir.rglob("features.json"))
-    # project.yaml is generate's own existing oss-fuzz output; no other .yaml (a
-    # generate-yaml artifact) should appear alongside it.
-    yaml_names = {p.name for p in output_dir.rglob("*.yaml")}
-    assert yaml_names == {"project.yaml"}
+    # local is the default --environment, which never writes project.yaml (an oss-fuzz-only
+    # artifact) — no .yaml file (e.g. a stray generate-yaml artifact) should appear at all.
+    assert not list(output_dir.rglob("*.yaml"))
 
 
 # --environment flag (spec 009)
@@ -1480,6 +1479,87 @@ def test_generate_oss_fuzz_success_reports_environment_oss_fuzz(
     assert rc == 0
     stats = json.loads((output_dir / "stats.json").read_text())
     assert stats["environment"] == "oss-fuzz"
+
+
+def test_generate_oss_fuzz_only_writes_oss_fuzz_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch(
+            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            return_value=[],
+        ),
+        patch(
+            "harnessbuddy.library_builder.harness_explorer.explore_harness_compilation",
+            return_value=_succeeded_harness_result(),
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+    assert rc == 0
+    assert not (output_dir / "local").exists()
+    oss_fuzz_dir = output_dir / "oss-fuzz"
+    assert (oss_fuzz_dir / "Dockerfile").exists()
+    assert (oss_fuzz_dir / "build.sh").exists()
+    assert (oss_fuzz_dir / "project.yaml").exists()
+
+
+def test_generate_oss_fuzz_copies_compile_commands_alongside_output(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    workspace_compile_commands = tmp_path / "workspace_compile_commands.json"
+    workspace_compile_commands.write_text("[]")
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        environment=Environment.OSS_FUZZ,
+        compile_commands_path=workspace_compile_commands,
+    )
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch("harnessbuddy.cli.build_library", return_value=fake_build_result),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+    assert rc == 0
+    dest = output_dir / "compile_commands.json"
+    assert dest.exists()
+    assert dest.read_text() == "[]"
+    # Alongside the environment subdirs, not copied into either one — matches the
+    # upstream OSS-Fuzz project convention that the shipped project looks like a plain
+    # git clone plus build scripts.
+    assert not (output_dir / "oss-fuzz" / "compile_commands.json").exists()
 
 
 def test_generate_oss_fuzz_docker_unavailable_exits_without_agent(

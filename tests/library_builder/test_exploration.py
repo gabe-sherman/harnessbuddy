@@ -256,6 +256,55 @@ def test_cmake_capture_reconfigures_and_copies_file(tmp_path: Path) -> None:
     assert (workdir / "compile_commands.json").read_text() == "[]"
 
 
+def test_cmake_capture_reconfigure_uses_relative_paths_for_standard_layout(
+    tmp_path: Path,
+) -> None:
+    """Environment.OSS_FUZZ's runner bind-mounts workdir at /src, not at its own host
+    path — an absolute host path here wouldn't resolve to anything inside the container,
+    so -B/-S must be cwd-relative when the source lives at the standard workdir/src."""
+    workdir = tmp_path / "work"
+    source = workdir / "src"
+    source.mkdir(parents=True)
+    seen_commands: list[list[str]] = []
+
+    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
+        seen_commands.append(command)
+        if command[0] == "cmake":
+            (cwd / "build" / "compile_commands.json").write_text("[]")
+        return _ok_result()
+
+    _run_explore_with(workdir, source, build_system=BuildSystem.CMAKE, side_effect=side_effect)
+
+    configure_command = next(c for c in seen_commands if c[0] == "cmake")
+    assert "-B" in configure_command
+    assert configure_command[configure_command.index("-B") + 1] == "build"
+    assert "-S" in configure_command
+    assert configure_command[configure_command.index("-S") + 1] == "src"
+    assert str(workdir.resolve()) not in " ".join(configure_command)
+
+
+def test_cmake_capture_reconfigure_uses_absolute_source_for_non_standard_layout(
+    tmp_path: Path,
+) -> None:
+    """Non-standard layout (source outside workdir) is mounted separately at its own
+    absolute path (extra_mounts), so it must keep using that absolute path here."""
+    workdir = tmp_path / "work"
+    source = tmp_path / "elsewhere" / "src"
+    source.mkdir(parents=True)
+    seen_commands: list[list[str]] = []
+
+    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
+        seen_commands.append(command)
+        if command[0] == "cmake":
+            (cwd / "build" / "compile_commands.json").write_text("[]")
+        return _ok_result()
+
+    _run_explore_with(workdir, source, build_system=BuildSystem.CMAKE, side_effect=side_effect)
+
+    configure_command = next(c for c in seen_commands if c[0] == "cmake")
+    assert configure_command[configure_command.index("-S") + 1] == str(source.resolve())
+
+
 def test_cmake_capture_records_error_when_reconfigure_produces_no_file(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     source = workdir / "src"

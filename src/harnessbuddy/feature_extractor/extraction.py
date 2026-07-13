@@ -64,15 +64,20 @@ def extract_features(output_dir: Path) -> FeatureArtifactSet:
     binary = build_native_tool()
     features_json = output_dir / "features.json"
     project_name = output_dir.resolve().name
+    cmd = [str(binary.resolve()), str(output_dir.resolve()), str(features_json), project_name]
     result = run_command_streaming(
-        [str(binary.resolve()), str(output_dir.resolve()), str(features_json), project_name],
+        cmd,
         Path.cwd(),
         timeout=600,
     )
     if result.exit_code != 0:
         raise FeatureArtifactError(
-            f"Native feature_extractor tool failed (exit code {result.exit_code}):\n{result.stdout}"
+            f"Native feature_extractor tool failed\n"
+            "Run below command to reproduce:\n"
+            f"cd {Path.cwd()} && "
+            f"{' '.join(cmd)}"
         )
+    features_json.write_text(json.dumps(json.loads(features_json.read_text()), indent=2) + "\n")
     return load_feature_artifact(features_json)
 
 

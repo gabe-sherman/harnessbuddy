@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import types
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from harnessbuddy.cli import build_library
+from harnessbuddy.cli import build_harness, build_library
 from harnessbuddy.core.repos import RepoSource
-from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.analysis import analyze
+from harnessbuddy.library_builder.environments.base import Environment, EnvironmentUnavailableError
 from harnessbuddy.library_builder.environments.local import LocalExecutor
+from harnessbuddy.library_builder.environments.oss_fuzz import OssFuzzExecutor
 from harnessbuddy.library_builder.models import (
-    AnalysisResult,
     BuildExplorationResult,
     BuildSystem,
-    Language,
+    HarnessExplorationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,9 @@ class LibSpec:
 @dataclass
 class LibBuild:
     spec: LibSpec
-    result: BuildExplorationResult
+    environment: Environment
+    library_result: BuildExplorationResult
+    harness_result: HarnessExplorationResult
     workdir: Path
     source: Path
 
@@ -71,25 +73,28 @@ LIBS = [
 ]
 
 _STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
-AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
+_AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
 _AGENT = "claude"
 
+# Smoke subset: a small, fast cross-section of build systems (cmake, make, autotools x3)
+# that runs by default. The rest of _STATIC_LIBS is real but slower coverage, opt-in via
+# `-m build_matrix` (see pyproject.toml's addopts).
+_SMOKE_PROJECT_NAMES = {"zlib", "lcms", "lz4", "libplist", "file"}
+_SMOKE_STATIC_LIBS = [lib for lib in _STATIC_LIBS if lib.project_name in _SMOKE_PROJECT_NAMES]
+_EXTENDED_STATIC_LIBS = [
+    lib for lib in _STATIC_LIBS if lib.project_name not in _SMOKE_PROJECT_NAMES
+]
 
-def _make_analysis(build_system: BuildSystem, source_path: Path) -> AnalysisResult:
-    return AnalysisResult(
-        project_name="testlib",
-        source_path=source_path,
-        build_system=build_system,
-        build_files=[],
-        headers=[],
-        language=Language.C,
-        clone_url="https://example.com/testlib.git",
-        repo_ref=None,
-    )
-
-
-def _timeout() -> RunResult:
-    return RunResult(stdout="", stderr="", exit_code=-1, duration_seconds=120.0)
+# Round-robin the smoke libraries across environments so both LocalExecutor and
+# OssFuzzExecutor get exercised by default, without doubling the smoke set's real build
+# count. Everything not listed here (extended statics, agentic libs) stays LOCAL.
+_SMOKE_ENVIRONMENTS: dict[str, Environment] = {
+    "zlib": Environment.OSS_FUZZ,
+    "lz4": Environment.LOCAL,
+    "lcms": Environment.OSS_FUZZ,
+    "file": Environment.LOCAL,
+    "libplist": Environment.OSS_FUZZ,
+}
 
 
 def _require_cmake() -> None:
@@ -101,8 +106,26 @@ def _require_cmake() -> None:
         pytest.skip("cmake not available")
 
 
+def _select_executor(environment: Environment) -> LocalExecutor | OssFuzzExecutor:
+    if environment is Environment.LOCAL:
+        _require_cmake()
+        return LocalExecutor()
+    executor = OssFuzzExecutor()
+    try:
+        executor.check_availability()
+    except EnvironmentUnavailableError as exc:
+        pytest.skip(f"oss-fuzz environment unavailable: {exc}")
+    return executor
+
+
 def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBuild:
-    _require_cmake()
+    """Clone lib and run the library build then the harness-compile probe against it once,
+    so library-build tests and harness-probe tests share a single real build instead of
+    each re-cloning and re-building the same library. Both stages go through the same
+    executor instance, since OssFuzzExecutor.run_harness_compile depends on state (the
+    run-scoped image) that only its own prior run_library_build call establishes."""
+    environment = _SMOKE_ENVIRONMENTS.get(lib.project_name, Environment.LOCAL)
+    executor = _select_executor(environment)
     src = tmp_path_factory.mktemp(f"{lib.project_name}_src")
     subprocess.run(
         ["git", "clone", "--depth=1", lib.url, str(src)],
@@ -111,8 +134,20 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     )
     source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
-    result = build_library(analyze(source), workdir, LocalExecutor(), agent=_AGENT)
-    return LibBuild(spec=lib, result=result, workdir=workdir, source=src)
+    analysis = analyze(source)
+    library_result = build_library(analysis, workdir, executor, agent=_AGENT)
+    install_dir = workdir / "install"
+    harness_result = build_harness(
+        analysis, install_dir, workdir, library_result, executor, agent=_AGENT
+    )
+    return LibBuild(
+        spec=lib,
+        environment=environment,
+        library_result=library_result,
+        harness_result=harness_result,
+        workdir=workdir,
+        source=src,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -140,17 +175,20 @@ def broken_cmake_build(
     return result, workdir
 
 
-# build succeeds and installs artifacts
+# static (deterministic) library builds succeed and install artifacts
+#
+# NB: class declaration order matters here. real_library_build is session-scoped, so
+# whichever test runs first for a given library actually triggers _build_lib. The two
+# *LibraryBuildChecks classes (which carry the _forbid_agent guard) must stay declared —
+# and therefore collected/run — before the *HarnessBuildChecks classes and the per-library
+# classes further down (TestZlibBuild, TestLibtiffBuild), so that guard is active the first
+# time each library is actually built.
 
 
-@pytest.mark.build_matrix
-@pytest.mark.parametrize(
-    "real_library_build", _STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
-)
-class TestStaticBuilds:
+class _StaticLibraryBuildChecks:
     # Assert no claude code usage here
     @pytest.fixture(autouse=True)
-    def _forbid_agent(self) -> types.GeneratorType:
+    def _forbid_agent(self) -> Generator[None]:
         with patch(
             "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
             side_effect=AssertionError(
@@ -160,7 +198,7 @@ class TestStaticBuilds:
             yield
 
     def test_library_builds(self, real_library_build: LibBuild) -> None:
-        result = real_library_build.result
+        result = real_library_build.library_result
         assert result.succeeded, (
             f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"
         )
@@ -176,16 +214,102 @@ class TestStaticBuilds:
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()
 
-    def test_result_succeeded(self, real_library_build: LibBuild) -> None:
-        assert real_library_build.result.succeeded is True
-
-    def test_result_exit_code_zero(self, real_library_build: LibBuild) -> None:
-        assert real_library_build.result.exit_code == 0
-
     def test_result_command_is_bash_script(self, real_library_build: LibBuild) -> None:
-        cmd = real_library_build.result.command
+        # The reported "reproduce with" command is the shared verification script for
+        # the environment the build actually ran in (spec 011), not build_library.sh
+        # itself.
+        cmd = real_library_build.library_result.command
         assert cmd[0] == "bash"
-        assert Path(cmd[1]).name == "build_library.sh"
+        expected_script = (
+            "check_docker_build.sh"
+            if real_library_build.environment is Environment.OSS_FUZZ
+            else "check_local_build.sh"
+        )
+        assert Path(cmd[1]).name == expected_script
+
+
+@pytest.mark.smoke
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _SMOKE_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestSmokeStaticLibraryBuilds(_StaticLibraryBuildChecks):
+    """Runs by default (pytest -q) — a fast cross-section of build systems."""
+
+
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _EXTENDED_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestExtendedStaticLibraryBuilds(_StaticLibraryBuildChecks):
+    """Opt-in only (`-m build_matrix`) — the rest of the static-build matrix."""
+
+
+# harness-compile probe succeeds against those same install artifacts
+
+
+class _StaticHarnessBuildChecks:
+    def test_harness_compiles(self, real_library_build: LibBuild) -> None:
+        result = real_library_build.harness_result
+        assert result.succeeded, (
+            f"{real_library_build.spec.project_name} harness probe failed:\n{result.stderr}"
+        )
+
+
+@pytest.mark.smoke
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _SMOKE_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestSmokeStaticHarnessBuilds(_StaticHarnessBuildChecks):
+    """Runs by default (pytest -q)."""
+
+
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _EXTENDED_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestExtendedStaticHarnessBuilds(_StaticHarnessBuildChecks):
+    """Opt-in only (`-m build_matrix`)."""
+
+
+# agentic (non-deterministic) builds — the repair agent may be invoked to fix them
+
+
+@pytest.mark.agentic
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _AGENTIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestAgenticLibraryBuilds:
+    def test_library_builds(self, real_library_build: LibBuild) -> None:
+        result = real_library_build.library_result
+        assert result.succeeded, (
+            f"{real_library_build.spec.project_name} build failed:\n{result.stderr}"
+        )
+
+    def test_static_library_installed(self, real_library_build: LibBuild) -> None:
+        lib_dir = real_library_build.workdir / "install" / "lib"
+        assert any(lib_dir.glob("*.a")), f"no static library in {lib_dir}"
+
+    def test_headers_installed(self, real_library_build: LibBuild) -> None:
+        include_dir = real_library_build.workdir / "install" / "include"
+        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
+
+    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
+        assert (real_library_build.workdir / "build_library.sh").exists()
+
+@pytest.mark.agentic
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build", _AGENTIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+)
+class TestAgenticHarnessBuilds:
+    def test_harness_compiles(self, real_library_build: LibBuild) -> None:
+        result = real_library_build.harness_result
+        assert result.succeeded, (
+            f"{real_library_build.spec.project_name} harness probe failed:\n{result.stderr}"
+        )
 
 
 @pytest.mark.agentic
@@ -196,22 +320,14 @@ class TestStaticBuilds:
     ids=lambda lib: lib.project_name,
 )
 class TestCurlBuild:
-    def test_builds(self, real_library_build: LibBuild) -> None:
-        assert real_library_build.result.succeeded, (
-            f"curl build failed:\n{real_library_build.result.stderr}"
-        )
-        assert real_library_build.result.llm_used, (
+    def test_llm_used_to_fix_missing_libpsl(self, real_library_build: LibBuild) -> None:
+        assert real_library_build.library_result.llm_used, (
             "build succeeded with no LLM usage, this indicates something weird is happening"
         )
 
-    def test_headers_installed(self, real_library_build: LibBuild) -> None:
-        include_dir = real_library_build.workdir / "install" / "include"
-        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
-    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.workdir / "build_library.sh").exists()
-
-
+@pytest.mark.smoke
+@pytest.mark.build_matrix
 @pytest.mark.parametrize(
     "real_library_build",
     [lib for lib in LIBS if lib.project_name == "zlib"],
@@ -219,17 +335,24 @@ class TestCurlBuild:
     ids=lambda lib: lib.project_name,
 )
 class TestZlibBuild:
-    def test_builds(self, real_library_build: LibBuild) -> None:
-        assert real_library_build.result.succeeded, (
-            f"curl build failed:\n{real_library_build.result.stderr}"
-        )
+    def test_library_path_in_compile_harnesses_script(self, real_library_build: LibBuild) -> None:
+        compile_harnesses_source = real_library_build.workdir / "compile_harnesses.sh"
+        assert compile_harnesses_source.exists()
+        assert "libz.a" in compile_harnesses_source.read_text()
 
-    def test_headers_installed(self, real_library_build: LibBuild) -> None:
-        include_dir = real_library_build.workdir / "install" / "include"
-        assert any(include_dir.iterdir()), f"no headers in {include_dir}"
 
-    def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
-        assert (real_library_build.workdir / "build_library.sh").exists()
+@pytest.mark.build_matrix
+@pytest.mark.parametrize(
+    "real_library_build",
+    [lib for lib in LIBS if lib.project_name == "libtiff"],
+    indirect=True,
+    ids=lambda lib: lib.project_name,
+)
+class TestLibtiffBuild:
+    def test_system_package_inclusion(self, real_library_build: LibBuild) -> None:
+        compile_harnesses_source = real_library_build.workdir / "compile_harnesses.sh"
+        assert compile_harnesses_source.exists()
+        assert "-llzma" in compile_harnesses_source.read_text()
 
 
 # real build failure

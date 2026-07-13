@@ -69,7 +69,7 @@ struct RecordInfo {
 struct FeatureArtifact {
   int schema_version = 1;
   std::string project_name;
-  std::string language; // "c" | "cpp"
+  std::string language; // "c" | "c++" — must match harnessbuddy.library_builder.models.Language
   std::vector<FunctionInfo> functions;
   std::vector<TypedefInfo> typedefs;
   std::vector<MacroInfo> macros;

@@ -21,14 +21,29 @@ class VerificationResult:
     duration_seconds: float
 
 
+def docker_verification_command(workspace: Path, project_name: str) -> list[str]:
+    """The check_docker_build.sh invocation for workspace/project_name, without running it —
+    shared by run_docker_verification and by callers that already know the answer (an
+    OssFuzzExecutor probe that already failed) and just need the reproduce-it command."""
+    script = _AGENTS_SCRIPTS_DIR / "check_docker_build.sh"
+    return ["bash", str(script), str(workspace), project_name]
+
+
+def local_verification_command(workspace: Path) -> list[str]:
+    """The check_local_build.sh invocation for workspace, without running it — shared by
+    run_local_verification and by callers that already know the answer (a LocalExecutor
+    probe that already failed) and just need the reproduce-it command."""
+    script = _AGENTS_SCRIPTS_DIR / "check_local_build.sh"
+    return ["bash", str(script), str(workspace)]
+
+
 def run_docker_verification(
     workspace: Path, project_name: str, *, timeout: int = _DEFAULT_TIMEOUT_SECONDS
 ) -> VerificationResult:
     """Run agents/scripts/check_docker_build.sh against workspace — the same command
     HarnessBuddy's own pipeline and the repair agent both invoke for the oss-fuzz
     environment (FR-001, FR-002)."""
-    script = _AGENTS_SCRIPTS_DIR / "check_docker_build.sh"
-    command = ["bash", str(script), str(workspace), project_name]
+    command = docker_verification_command(workspace, project_name)
     result = run_command_streaming(command, workspace, timeout)
     return VerificationResult(
         passed=result.exit_code == 0,
@@ -45,8 +60,7 @@ def run_local_verification(
     """Run agents/scripts/check_local_build.sh against workspace — the same command
     HarnessBuddy's own pipeline and the repair agent both invoke for the local
     environment (FR-001, FR-003)."""
-    script = _AGENTS_SCRIPTS_DIR / "check_local_build.sh"
-    command = ["bash", str(script), str(workspace)]
+    command = local_verification_command(workspace)
     result = run_command_streaming(command, workspace, timeout)
     return VerificationResult(
         passed=result.exit_code == 0,

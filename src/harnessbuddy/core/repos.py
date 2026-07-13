@@ -4,6 +4,7 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,10 @@ def ingest_url(
     name = project_name or name_from_url(url)
     dest = state_dir / name / "src"
     repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
-    if not dest.parent.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", url, str(dest)], check=True)
+    if dest.parent.exists():
+        shutil.rmtree(dest.parent) # clear the working state for new runs
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", url, str(dest)], check=True)
     return repo_source
 
 

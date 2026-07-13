@@ -18,7 +18,9 @@ if TYPE_CHECKING:
 
 class LocalExecutor:
     """Runs each pipeline stage as a host subprocess, gated by the same
-    agents/scripts/check_local_build.sh script the repair agent uses (FR-001, FR-003)."""
+    agents/scripts/check_local_build.sh script the repair agent uses (FR-001, FR-003).
+    That gate only runs after its stage's own probe succeeds — a failing probe already
+    proves the shared script would fail identically, so it's skipped rather than re-run."""
 
     def check_availability(self) -> None:
         """The host is always available; nothing to check."""
@@ -45,12 +47,23 @@ class LocalExecutor:
             # The stub compiles whatever's in harness_src/ (research.md #3) — write the
             # real default fuzzer stub now so check_local_build.sh's out/ non-empty check
             # (agents/scripts/check_local_build.sh) has something to find even before
-            # harness-link discovery ever runs.
+            # harness-link discovery ever runs. Written unconditionally (even when the
+            # probe below already failed) since a later repair agent's own verification
+            # run still needs it to exist.
             harness_src_dir = workdir / "harness_src"
             harness_src_dir.mkdir(exist_ok=True)
-            write_default_fuzzer(harness_src_dir, analysis)
+            write_default_fuzzer(harness_src_dir, analysis.language)
             stub_path.write_text(_COMPILE_HARNESSES_SH_STUB)
             stub_path.chmod(stub_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        if not exploration_result.succeeded:
+            # The probe above already failed against this exact build_library.sh —
+            # re-running the shared script would only reconfirm the same failure. Report
+            # the command a human/agent would use to verify a fix, without paying to run
+            # it again.
+            return dataclasses.replace(
+                exploration_result, command=verification.local_verification_command(workdir)
+            )
 
         result = verification.run_local_verification(workdir)
         return dataclasses.replace(
@@ -89,6 +102,15 @@ class LocalExecutor:
             # verification script to check.
             return harness_result
 
+        if not harness_result.succeeded:
+            # Discovery above already exhausted its attempts against this install/
+            # output — re-running the shared script would only reconfirm the same
+            # failure. Report the command a human/agent would use to verify a fix,
+            # without paying to run it again.
+            return dataclasses.replace(
+                harness_result, command=verification.local_verification_command(workdir)
+            )
+
         result = verification.run_local_verification(workdir)
         return dataclasses.replace(
             harness_result,
@@ -98,4 +120,31 @@ class LocalExecutor:
             stderr=result.stderr,
             exit_code=0 if result.passed else 1,
             duration_seconds=result.duration_seconds,
+        )
+
+    def sync_artifacts_after_agent_fix(
+        self,
+        analysis: AnalysisResult,
+        workdir: Path,  # noqa: ARG002 -- unused; signature must match the shared protocol
+        *,
+        timeout: int = 300,  # noqa: ARG002 -- unused; signature must match the shared protocol
+    ) -> BuildExplorationResult:
+        """No-op: Environment.LOCAL's repair-agent verification (check_local_build.sh)
+        already ran build_library.sh directly on the host, so workdir/install is already
+        correct — unlike Environment.OSS_FUZZ's unmounted docker equivalent, there's
+        nothing to hydrate. Re-running the build here would only be a redundant rebuild,
+        and a risky one: anything that made it behave differently from the agent's own
+        verified run would overwrite already-correct artifacts with worse ones.
+        """
+        from harnessbuddy.library_builder.models import BuildExplorationResult
+
+        return BuildExplorationResult(
+            build_system=analysis.build_system,
+            succeeded=True,
+            command=[],
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.0,
+            environment=Environment.LOCAL,
         )

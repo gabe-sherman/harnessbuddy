@@ -24,6 +24,8 @@ run, so a person (or the repair agent) inspecting it mid-run knows what to expec
 ├── build_library.sh
 ├── compile_harnesses.sh        # stub — no-op, exits 0 (research.md #3)
 ├── harness_source/
+│   └── default_fuzzer.c        # placeholder stub, written early so the atomic gate's
+│                                # non-empty-/out check has something to find
 └── compile_commands.json       # once capture succeeds (spec 010, unchanged)
 ```
 
@@ -38,21 +40,27 @@ run, so a person (or the repair agent) inspecting it mid-run knows what to expec
 ├── ... (as above)
 ├── compile_harnesses.sh        # real content: STATIC_LIBS, EXTRA_LINK_FLAGS resolved
 ├── harness_source/
-│   └── probe_harness.c|.cc     # discovery's probe source (removed before final generation)
-└── out/                        # compiled probe binary once compile_harnesses.sh succeeds
+│   └── default_fuzzer.c|.cc    # discovery rewrites the extension in place if it finds the
+│                                # link needs CXX — no separate probe file
+└── out/                        # compiled harness binary once compile_harnesses.sh succeeds
 ```
 
 ## What final generation does with this directory
 
 `generate_oss_fuzz(analysis, output_path, ...)` copies `project.yaml`,
-`build.sh`, `build_library.sh`, `compile_harnesses.sh`, and `harness_source/` (minus the
-discovery-only `probe_harness.*`, replaced by `write_default_fuzzer`'s real stub) verbatim
-from the workspace into `output_path`. It calls
+`build.sh`, `build_library.sh`, `compile_harnesses.sh`, and `harness_source/` — including
+its `default_fuzzer.{c,cc}`, whichever extension discovery settled on — verbatim from the
+workspace into `output_path`. `write_default_fuzzer` only runs again as a fallback when
+there was no validated workspace to copy from (e.g. an unknown build system). It calls
 `oss_fuzz.workspace.write_dockerfile(output_path, analysis, include_bear=False)` to produce
 the one file that intentionally differs from the workspace's live copy. `src/`, `build/`,
-`install/`, `out/`, `state.json`, `compile_commands.json` are exploration-only and are never
-copied to `output_path` — the shipped OSS-Fuzz project is exactly what a `git clone` of the
-real repository plus these files would look like, per the OSS-Fuzz project convention.
+`install/`, `out/`, `state.json` are exploration-only and are never copied to `output_path`
+— the shipped OSS-Fuzz project is exactly what a `git clone` of the real repository plus
+these files would look like, per the OSS-Fuzz project convention. `compile_commands.json`
+is copied too, but not into `output_path` itself — the CLI (`cli.py::_generate_outputs`)
+copies it to `output_path.parent / "compile_commands.json"`, alongside the `local`/`oss-fuzz`
+subdirs, so it's available for `extract-features` without keeping the exploration workspace
+around or digging into `.harnessbuddy/<project>/`.
 
 ## Local environment (`--environment local`), for comparison
 

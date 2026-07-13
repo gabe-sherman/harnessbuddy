@@ -11,3 +11,5 @@ treating any single plan as the whole project roadmap.
   compilation scripts, validation, and agent fallback.
 - `python_code_standards.md`: coding, linting, formatting, typing, testing, and
   safety standards for Python implementation work.
+- `ground_truth_test_modeling.md`: plan for grounding `tests/test_cli.py`'s mocked
+  fixtures in real output captured from `tests/run_ground_truth.py`.

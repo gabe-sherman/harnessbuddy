@@ -19,6 +19,21 @@ list(GET LLVM_LIBRARY_DIRS 0 _llvm_library_dir)
 set(CLANG_RESOURCE_DIR "${_llvm_library_dir}/clang/${LLVM_VERSION_MAJOR}")
 message(STATUS "Using clang resource dir: ${CLANG_RESOURCE_DIR}")
 
+# -resource-dir only covers clang's own builtin headers (stddef.h, stdarg.h, ...) — on
+# macOS, platform libc headers (inttypes.h, stdio.h, ...) live under the Xcode SDK and
+# are found only via -isysroot, which main.cpp adds explicitly rather than relying on
+# ClangTool's ad hoc driver invocation to auto-detect it.
+set(CLANG_SYSROOT "")
+if(APPLE)
+  execute_process(
+    COMMAND xcrun --show-sdk-path
+    OUTPUT_VARIABLE CLANG_SYSROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  message(STATUS "Using macOS SDK sysroot: ${CLANG_SYSROOT}")
+endif()
+
 include(FetchContent)
 set(ENABLE_CJSON_TEST OFF CACHE BOOL "" FORCE)
 set(ENABLE_CJSON_UTILS OFF CACHE BOOL "" FORCE)
@@ -48,6 +63,7 @@ target_include_directories(feature_extractor SYSTEM PRIVATE
 target_compile_definitions(feature_extractor PRIVATE ${LLVM_DEFINITIONS})
 target_compile_definitions(feature_extractor PRIVATE
   CLANG_RESOURCE_DIR="${CLANG_RESOURCE_DIR}"
+  CLANG_SYSROOT="${CLANG_SYSROOT}"
 )
 
 if(NOT LLVM_ENABLE_RTTI)

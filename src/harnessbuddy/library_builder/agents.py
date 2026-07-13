@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from harnessbuddy.core.agent_stream import (
@@ -10,6 +11,7 @@ from harnessbuddy.core.agent_stream import (
     run_agent_streaming,
     write_agent_report,
 )
+from harnessbuddy.library_builder.environments import verification
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.exploration import (
     _validate_install_artifacts,
@@ -50,8 +52,6 @@ _HARNESS_INLINE_INSTRUCTIONS: str = (
     "libraries succeeds and produces a binary in out/."
 )
 
-_AGENTS_SCRIPTS_DIR: Path = Path(__file__).parent.parent.parent.parent / "agents" / "scripts"
-
 
 def _verification_command(
     environment: Environment,
@@ -63,13 +63,49 @@ def _verification_command(
 
     workdir is the workspace, which during exploration is already the real oss-fuzz
     project directory (research.md #1, #7) — there is no separate "eventual output"
-    path to reference.
+    path to reference. Delegates to environments/verification.py so this is the exact
+    same command construction the pipeline itself uses to gate pass/fail.
     """
     if environment is Environment.OSS_FUZZ:
-        script = _AGENTS_SCRIPTS_DIR / "check_docker_build.sh"
-        return f"bash {script} {workdir} {project_name}"
-    script = _AGENTS_SCRIPTS_DIR / "check_local_build.sh"
-    return f"bash {script} {workdir}"
+        return " ".join(verification.docker_verification_command(workdir, project_name))
+    return " ".join(verification.local_verification_command(workdir))
+
+
+_LOCAL_PACKAGE_POLICY = (
+    "workdir is a directory on this actual host machine. Do not run apt-get/brew/dnf "
+    "install yourself here, even for a package you're fully confident about — that would "
+    "make an irreversible change to the user's system. Follow the missing-package steps "
+    "above: disable the optional feature if possible, otherwise report it in "
+    "agent_report.json and stop."
+)
+
+_OSS_FUZZ_PACKAGE_POLICY = (
+    "workdir is an OSS-Fuzz project directory containing a Dockerfile. The verification "
+    "command rebuilds this Dockerfile from scratch into a fresh, disposable container "
+    "every time — it never touches this host machine. Unlike the local environment, you "
+    "MAY add packages directly: append to (or add a new) `RUN apt-get install -y "
+    "--no-install-recommends ...` line in workdir/Dockerfile, then re-run the verification "
+    "command yourself to confirm it works. Still report every package you add via "
+    "missing_apt_packages/missing_brew_packages in agent_report.json — HarnessBuddy needs "
+    "both names recorded even though you resolved apt yourself, for portability to "
+    "brew/other hosts. Only stop and request human action if you cannot determine a "
+    "correct apt package name at all."
+)
+
+
+def _package_policy_note(environment: Environment) -> str:
+    """The environment-specific policy on installing missing system packages.
+
+    Both agent skills instruct stopping and reporting missing packages by default — safe
+    for Environment.LOCAL, since installing there mutates the user's real machine. In
+    Environment.OSS_FUZZ, missing packages are instead a Dockerfile edit into a disposable,
+    from-scratch-rebuilt container the agent can verify itself, so it may resolve those
+    directly rather than always stopping for a human.
+    """
+    policy = (
+        _OSS_FUZZ_PACKAGE_POLICY if environment is Environment.OSS_FUZZ else _LOCAL_PACKAGE_POLICY
+    )
+    return f"### Package installation policy\n\n{policy}\n"
 
 
 _ACTION_REQUIRED = "ACTION REQUIRED"
@@ -184,7 +220,8 @@ def build_library_prompt(
         f"```\n{stdout_tail}\n```\n\n"
         f"### Verification\n\n"
         f"After applying a fix, verify it works by running this exact command:\n\n"
-        f"    {verify_command}\n"
+        f"    {verify_command}\n\n"
+        f"{_package_policy_note(environment)}"
     )
 
 
@@ -204,6 +241,31 @@ def construct_claude_command(prompt: str) -> list[str]:
 def construct_codex_command(prompt: str) -> list[str]:
     cmd = ["codex", "exec", "--sandbox", "workspace-write", "--json", prompt]
     return cmd
+
+
+_DOCKER_VERIFICATION_SUCCESS_MARKER = "OK: docker build and in-container compile succeeded"
+
+
+def _post_agent_validation_errors(
+    environment: Environment, combined_text: str, host_artifact_check: Callable[[], list[str]]
+) -> list[str]:
+    """Validation errors to apply on top of an agent's own exit_code == 0 claim.
+
+    check_docker_build.sh's docker run is deliberately unmounted (research.md #1, #2), to
+    mirror real OSS-Fuzz build semantics — so install/out artifacts never land on
+    Environment.OSS_FUZZ's host workdir, and host_artifact_check (which looks for them,
+    correct for Environment.LOCAL) can't apply there. Instead, confirm the agent's own
+    transcript shows check_docker_build.sh's success marker, as defense-in-depth against a
+    false claim of success.
+    """
+    if environment is Environment.OSS_FUZZ:
+        if _DOCKER_VERIFICATION_SUCCESS_MARKER in combined_text:
+            return []
+        return [
+            "agent exited 0 but its transcript never shows check_docker_build.sh's own "
+            f'success marker ("{_DOCKER_VERIFICATION_SUCCESS_MARKER}")'
+        ]
+    return host_artifact_check()
 
 
 def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
@@ -236,7 +298,11 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     succeeded = result.exit_code == 0
     stderr = ""
     if succeeded:
-        validation_errors = _validate_install_artifacts(workdir / "install")
+        validation_errors = _post_agent_validation_errors(
+            environment,
+            result.combined_text,
+            lambda: _validate_install_artifacts(workdir / "install"),
+        )
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
@@ -303,7 +369,8 @@ def build_harness_prompt(
         f"```\n{stderr_tail}\n```\n\n"
         f"### Verification\n\n"
         f"After applying a fix, verify it works by running this exact command:\n\n"
-        f"    {verify_command}\n"
+        f"    {verify_command}\n\n"
+        f"{_package_policy_note(environment)}"
     )
 
 
@@ -342,7 +409,11 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     extra_library_paths = harness.extra_library_paths
     script_path = paths.workdir / "compile_harnesses.sh"
     if succeeded:
-        validation_errors = _validate_harness_artifacts(paths.workdir)
+        validation_errors = _post_agent_validation_errors(
+            environment,
+            result.combined_text,
+            lambda: _validate_harness_artifacts(paths.workdir),
+        )
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)

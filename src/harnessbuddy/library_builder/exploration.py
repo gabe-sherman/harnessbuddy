@@ -4,6 +4,7 @@ import json
 import shutil
 import stat
 from pathlib import Path
+import logging
 
 from harnessbuddy.core.subprocesses import Runner, run_command_streaming
 from harnessbuddy.library_builder.environments.base import Environment
@@ -15,6 +16,8 @@ from harnessbuddy.library_builder.models import (
     BuildSystem,
 )
 from harnessbuddy.library_builder.scripts import build_library_script
+
+logger = logging.getLogger(__name__)
 
 _BEAR_NOT_FOUND_ERROR = (
     "bear not found on PATH; install bear to capture compile_commands.json for "
@@ -35,40 +38,22 @@ def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
     return analysis.source_path.resolve() == (workdir / "src").resolve()
 
 
-def explore(
-    analysis: AnalysisResult,
-    workdir: Path,
-    *,
-    timeout: int = 300,
-    environment: Environment = Environment.LOCAL,
-    run: Runner | None = None,
-) -> BuildExplorationResult:
-    """Write a build_library.sh into workdir and run it in the given environment.
+def write_build_library_script(
+    analysis: AnalysisResult, workdir: Path, *, environment: Environment = Environment.LOCAL
+) -> tuple[Path, bool]:
+    """Write build_library.sh into workdir/build_library.sh.
 
-    The script is written to workdir/build_library.sh. When the source uses the
-    standard workdir/src layout, its paths are $SCRIPT_DIR-relative so the script
-    can be copied verbatim into generated output directories, preserving any agent
-    fixes; BuildExplorationResult.script_path is set in that case. Otherwise paths
-    fall back to absolute and script_path is left unset.
+    When the source uses the standard workdir/src layout, its paths are
+    $SCRIPT_DIR-relative so the script can be copied verbatim into generated output
+    directories, preserving any agent fixes. Otherwise paths fall back to absolute.
+    Returns (script_path, standard_layout) so callers can decide whether
+    BuildExplorationResult.script_path should be set.
 
-    environment selects host CC/CXX/CFLAGS/CXXFLAGS fallbacks (Environment.LOCAL only —
-    Environment.OSS_FUZZ relies on the container image's own toolchain env) and is
-    recorded on the returned result. run defaults to streaming the command as a host
-    subprocess; callers running this inside a container (e.g. OssFuzzExecutor) pass a
-    run primitive that wraps the command in a `docker run` invocation instead.
+    Split out of explore() so OssFuzzExecutor can write this file before building the
+    workspace image — the Dockerfile's COPY of build_library.sh requires it to already
+    exist on disk.
     """
     workdir = workdir.resolve()
-    build_dir = workdir / "build"
-    install_dir = workdir / "install"
-
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
-    build_dir.mkdir(parents=True)
-
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
-    install_dir.mkdir(parents=True)
-
     standard_layout = is_standard_source_layout(analysis, workdir)
     source_dir = "$SCRIPT_DIR/src" if standard_layout else str(analysis.source_path.resolve())
 
@@ -85,6 +70,52 @@ def explore(
     script_path = workdir / "build_library.sh"
     script_path.write_text(script)
     script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script_path, standard_layout
+
+
+def explore(  # noqa: PLR0913 -- 4 of 6 are keyword-only with defaults, each independently meaningful
+    analysis: AnalysisResult,
+    workdir: Path,
+    *,
+    timeout: int = 300,
+    environment: Environment = Environment.LOCAL,
+    run: Runner | None = None,
+    regenerate_script: bool = True,
+) -> BuildExplorationResult:
+    """Write a build_library.sh into workdir and run it in the given environment.
+
+    environment selects host CC/CXX/CFLAGS/CXXFLAGS fallbacks (Environment.LOCAL only —
+    Environment.OSS_FUZZ relies on the container image's own toolchain env) and is
+    recorded on the returned result. run defaults to streaming the command as a host
+    subprocess; callers running this inside a container (e.g. OssFuzzExecutor) pass a
+    run primitive that wraps the command in a `docker run` invocation instead.
+
+    regenerate_script=False reuses the existing workdir/build_library.sh verbatim instead
+    of rewriting it from the template — used to re-run a repair agent's already-fixed
+    script (which write_build_library_script would otherwise clobber) purely to capture
+    host-side install/ artifacts and compile_commands.json that the agent's own
+    out-of-band verification (e.g. oss-fuzz's unmounted check_docker_build.sh) doesn't
+    produce.
+    """
+    workdir = workdir.resolve()
+    build_dir = workdir / "build"
+    install_dir = workdir / "install"
+
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
+
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+    install_dir.mkdir(parents=True)
+
+    if regenerate_script:
+        script_path, standard_layout = write_build_library_script(
+            analysis, workdir, environment=environment
+        )
+    else:
+        script_path = workdir / "build_library.sh"
+        standard_layout = is_standard_source_layout(analysis, workdir)
 
     if analysis.build_system == BuildSystem.UNKNOWN:
         return BuildExplorationResult(
@@ -115,7 +146,7 @@ def explore(
     compile_commands_error: str | None = None
     if succeeded:
         compile_commands_path, compile_commands_error = _capture_compile_commands(
-            analysis, workdir, runner, timeout, bear_missing_error
+            analysis, workdir, runner, timeout, bear_missing_error, standard_layout=standard_layout
         )
 
     return BuildExplorationResult(
@@ -152,12 +183,14 @@ def _build_command(
     return plain, _BEAR_NOT_FOUND_ERROR
 
 
-def _capture_compile_commands(
+def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-only, independently meaningful
     analysis: AnalysisResult,
     workdir: Path,
     runner: Runner,
     timeout: int,
     bear_missing_error: str | None,
+    *,
+    standard_layout: bool,
 ) -> tuple[Path | None, str | None]:
     """Capture compile_commands.json as a byproduct of the build that just succeeded.
 
@@ -166,17 +199,26 @@ def _capture_compile_commands(
     during configure); Meson's Ninja backend already wrote the file unprompted; Make/
     Autotools relies on the `bear --` wrap explore() already applied (or didn't, if
     bear_missing_error is set) to the canonical build command above.
+
+    The CMake configure command below runs with cwd=workdir (runner(..., workdir, ...)),
+    so it must reference build/source by paths relative to that cwd — not absolute host
+    paths — since Environment.OSS_FUZZ's runner bind-mounts workdir at /src inside the
+    container (not at its own host path), where an absolute host path wouldn't resolve to
+    anything. standard_layout=True means the source lives at workdir/src, referenceable
+    the same "src"-relative way; the non-standard-layout case keeps the absolute host path
+    since that's mounted separately, at its own path, regardless of workdir's mount target.
     """
     build_dir = workdir / "build"
     target = workdir / "compile_commands.json"
 
     if analysis.build_system == BuildSystem.CMAKE:
+        source_arg = "src" if standard_layout else str(analysis.source_path.resolve())
         configure_command = [
             "cmake",
             "-B",
-            str(build_dir),
+            "build",
             "-S",
-            str(analysis.source_path.resolve()),
+            source_arg,
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         ]
         configure_result = runner(configure_command, workdir, timeout)

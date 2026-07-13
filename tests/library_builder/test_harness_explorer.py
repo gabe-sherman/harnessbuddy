@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harnessbuddy.core.subprocesses import RunResult
+from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.harness_explorer import (
     explore_harness_compilation,
     lib_names_from_link_flags,
@@ -106,6 +107,157 @@ def test_reparse_lib_paths_falls_back_when_format_not_found() -> None:
     assert lib_paths == ["/fallback"]
 
 
+# explore_harness_compilation — C -> C++ probe upgrade on C++ ABI leakage
+
+
+def test_upgrades_to_cxx_on_known_abi_symbol(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    results = [
+        RunResult(
+            stdout="",
+            stderr="undefined reference to `__cxa_throw'",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+        RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+    ]
+
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        side_effect=results,
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.succeeded is True
+    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+    assert not (tmp_path / "harness_src" / "default_fuzzer.c").exists()
+
+
+def test_upgrades_to_cxx_on_arbitrary_demangled_symbol(tmp_path: Path) -> None:
+    """A symbol outside _CXX_ABI_RE's known set (e.g. a libc++ std:: destructor) must
+    still trigger the C -> C++ probe upgrade, since it can only come from C++ code."""
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    results = [
+        RunResult(
+            stdout="",
+            stderr="undefined reference to `std::__1::locale::~locale()'",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+        RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+    ]
+
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        side_effect=results,
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.succeeded is True
+    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+    assert not (tmp_path / "harness_src" / "default_fuzzer.c").exists()
+
+
+def test_upgrades_to_cxx_on_mangled_itanium_symbol(tmp_path: Path) -> None:
+    """A raw (undemangled) Itanium-mangled symbol must also trigger the upgrade."""
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    results = [
+        RunResult(
+            stdout="",
+            stderr="undefined reference to `_ZNSt3__16localeD1Ev'",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+        RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+    ]
+
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        side_effect=results,
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.succeeded is True
+    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+
+
+def test_does_not_upgrade_to_cxx_on_plain_c_symbol(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        return_value=RunResult(
+            stdout="",
+            stderr="undefined reference to `some_c_function'",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.succeeded is False
+    assert (tmp_path / "harness_src" / "default_fuzzer.c").exists()
+    assert not (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+
+
+# explore_harness_compilation — default link flags
+
+
+def test_default_link_flags_include_pthread(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.transitive_link_flags == ["-lpthread"]
+    assert result.script_path is not None
+    assert "-lpthread" in result.script_path.read_text()
+
+
+def test_default_link_flags_not_duplicated_when_rediscovered(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    # -lpthread is already seeded as a default, so an undefined pthread_create reference
+    # (which _symbol_to_flag also maps to -lpthread) must not add a second copy of it.
+    with patch(
+        "harnessbuddy.library_builder.harness_explorer.run_command",
+        return_value=RunResult(
+            stdout="",
+            stderr="undefined reference to `pthread_create'",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+    ):
+        result = explore_harness_compilation(install_dir, tmp_path, Language.C)
+
+    assert result.succeeded is False
+    assert result.transitive_link_flags == ["-lpthread"]
+
+
 # explore_harness_compilation — script_path on success
 
 
@@ -143,6 +295,51 @@ def test_script_path_unset_on_failure(tmp_path: Path) -> None:
 
     assert result.succeeded is False
     assert result.script_path is None
+
+
+# explore_harness_compilation — oss-fuzz runs the `compile` entrypoint, not the bare script
+
+
+def test_oss_fuzz_command_runs_compile_entrypoint(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    seen_commands: list[list[str]] = []
+
+    def fake_runner(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
+        seen_commands.append(command)
+        return RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1)
+
+    result = explore_harness_compilation(
+        install_dir,
+        tmp_path,
+        Language.C,
+        environment=Environment.OSS_FUZZ,
+        run=fake_runner,
+    )
+
+    assert result.succeeded is True
+    assert seen_commands == [["bash", "-c", "compile"]]
+
+
+def test_local_command_runs_bare_script(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    seen_commands: list[list[str]] = []
+
+    def fake_runner(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
+        seen_commands.append(command)
+        return RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1)
+
+    result = explore_harness_compilation(install_dir, tmp_path, Language.C, run=fake_runner)
+
+    assert result.succeeded is True
+    assert seen_commands == [["bash", "compile_harnesses.sh"]]
 
 
 # explore_harness_compilation — extra_include_paths / extra_library_paths threading

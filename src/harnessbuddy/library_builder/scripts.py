@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 from harnessbuddy.library_builder.models import (
-    AnalysisResult,
     AutotoolsSetup,
     BuildPaths,
     BuildSystem,
@@ -13,7 +12,7 @@ from harnessbuddy.library_builder.models import (
 )
 
 _HOST_ENV_FALLBACKS = (
-    '\nCC="${CC:-cc}"\nCXX="${CXX:-c++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
+    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
 )
 
 
@@ -39,10 +38,31 @@ def build_library_script(
     )
     if host_fallbacks:
         header += _HOST_ENV_FALLBACKS
+    header += _skip_if_already_built(paths.install_dir)
     body = _build_body(
         build_system, paths.source_dir, paths.build_dir, paths.install_dir, autotools_setup
     )
     return header + body
+
+
+def _skip_if_already_built(install_dir: str) -> str:
+    """Exit early when install_dir already has real artifacts (*.a + non-empty include/).
+
+    Repeated invocations that don't first clear install_dir (as explore() does for the
+    authoritative library-build stage) — e.g. re-running build_library.sh as part of a
+    harness-discovery retry loop — would otherwise redo the full compile every time for
+    no reason. rm -rf install_dir forces a real rebuild.
+    """
+    return (
+        "\n"
+        f'if compgen -G "{install_dir}/lib/*.a" > /dev/null '
+        f'&& [ -d "{install_dir}/include" ] '
+        f'&& [ -n "$(ls -A "{install_dir}/include" 2>/dev/null)" ]; then\n'
+        f'  echo "Artifacts already present in {install_dir}; skipping build '
+        f'(rm -rf {install_dir} to force a rebuild)."\n'
+        "  exit 0\n"
+        "fi\n"
+    )
 
 
 def _build_body(
@@ -132,10 +152,10 @@ DEFAULT_FUZZER_CC = (
 )
 
 
-def write_default_fuzzer(harness_dir: Path, analysis: AnalysisResult) -> Path:
-    """Write a default LLVMFuzzer stub to harness_dir based on the detected language."""
-    ext = "c" if analysis.language == Language.C else "cc"
-    source = DEFAULT_FUZZER_C if analysis.language == Language.C else DEFAULT_FUZZER_CC
+def write_default_fuzzer(harness_dir: Path, language: Language) -> Path:
+    """Write a default LLVMFuzzer stub to harness_dir for the given language."""
+    ext = "c" if language == Language.C else "cc"
+    source = DEFAULT_FUZZER_C if language == Language.C else DEFAULT_FUZZER_CC
     path = harness_dir / f"default_fuzzer.{ext}"
     path.write_text(source)
     return path
@@ -152,7 +172,9 @@ def build_harness_script(
 
     Args:
         harness: exploration result providing static libs and link flags.
-        whole_archive: when True, link with --whole-archive (Linux) or -all_load (macOS).
+        whole_archive: when True, link with --whole-archive (Linux, or oss_fuzz — the
+            script always runs inside the Linux base-builder container regardless of
+            the host OS) or -all_load (macOS, local environment only).
         harness_dir_name: name of the directory containing harness source files.
         oss_fuzz: when True, generate an OSS-Fuzz-compatible script that uses
             CC/CXX/CFLAGS/CXXFLAGS/$OUT/$LIB_FUZZING_ENGINE from the base image
@@ -177,13 +199,13 @@ def build_harness_script(
     extra_include_flags = "".join(f' "-I{p}"' for p in harness.extra_include_paths)
 
     if whole_archive:
-        if sys.platform == "darwin":
+        if not oss_fuzz and sys.platform == "darwin":
             wa_before, wa_after = "-Wl,-all_load", ""
         else:
             wa_before, wa_after = "-Wl,--whole-archive", "-Wl,--no-whole-archive"
-        static_libs_str = f'{wa_before} "${{STATIC_LIBS[@]}}" {wa_after}'
+        static_libs_str = f'{wa_before} "${{STATIC_LIBS[@]-}}" {wa_after}'
     else:
-        static_libs_str = '"${STATIC_LIBS[@]}"'
+        static_libs_str = '"${STATIC_LIBS[@]-}"'
 
     engine_flag = ' "$LIB_FUZZING_ENGINE"' if oss_fuzz else ""
     out_ref = "$OUT" if oss_fuzz else "$OUT_DIR"
@@ -220,6 +242,7 @@ def build_harness_script(
         + 'for harness in "$HARNESS_DIR"/*; do\n'
         + '  [ -f "$harness" ] || continue\n'
         + '  name="$(basename "$harness")"\n'
+        + '  echo "Compiling harness $name"\n'
         + '  output="${name%.*}"\n'
         + '  case "$harness" in\n'
         + "    *.c)\n"

@@ -13,6 +13,11 @@ The build failure context will be appended below. It includes:
 - The complete stdout/stderr from the failed build
 - The expected install directory paths
 
+workdir (the directory build_library.sh lives in) is not a scratch directory — it is the
+real project directory that generation copies its final output from (for oss-fuzz, it's
+the same directory that becomes the shipped project). Edits you make here to
+build_library.sh, a Dockerfile, or other files persist into that output.
+
 ## What to do
 
 1. Read build_library.sh in the work directory to understand what was attempted.
@@ -39,10 +44,11 @@ The build failure context will be appended below. It includes:
    - Do not proceed further.
 7. Once any required packages are installed, run the verification command given in the
    failure context below (not build_library.sh directly) to confirm the fix works in the
-   selected target environment.
-8. Confirm that install/lib/*.a and install/include/* now exist.
+   selected target environment. It is the authoritative check — it also compiles a stub
+   harness against your install/ output — so trust its exit code over eyeballing
+   install/lib and install/include yourself.
 
-Stop as soon as the build succeeds and artifacts are in place.
+Stop as soon as the verification command exits 0.
 
 ## `agent_report.json`
 
@@ -81,9 +87,8 @@ on the reading side. This is the only machine-readable report file you should wr
 
 ## Stopping conditions
 
-**Success** — the verification command exits 0 and both install/lib/*.a and
-install/include/* exist. Print a short success summary and exit 0. Write
-`agent_report.json` first.
+**Success** — the verification command exits 0. Print a short success summary and exit 0.
+Write `agent_report.json` first.
 
 **Unresolvable failure** — if the verification command still fails after your fix
 attempt, or if you cannot determine a fix, stop immediately. Print to stdout:

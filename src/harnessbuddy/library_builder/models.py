@@ -23,7 +23,7 @@ class AutotoolsSetup(Enum):
 
 class Language(Enum):
     C = "c"
-    CPP = "cxx"
+    CPP = "c++"
     UNKNOWN = "unknown"
 
 

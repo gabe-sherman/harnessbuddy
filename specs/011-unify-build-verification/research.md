@@ -42,13 +42,14 @@ process too" the feature requires (User Story 2).
 **Decision**: The library-build stage's image (built via `docker build` against the real
 workspace `Dockerfile`, once apt packages/build system are known) is reused directly for
 `harness_explorer.py`'s internal retry loop (up to 5 attempts) via the existing
-`_docker_run_factory`-style direct `docker run --entrypoint bash <image> -c "bash
-compile_harnesses.sh"` mechanism — no `docker build`, no `compile` entrypoint, per attempt.
-Once a stage's script converges (or discovery exhausts its attempts), the pipeline's actual
-pass/fail signal for that stage comes from running the shared script
-(`agents/scripts/check_docker_build.sh <workspace> <project_name>` — `docker build` +
-`docker run --entrypoint bash <tag> -c "compile && ..."`) exactly once, via `subprocess`,
-from `OssFuzzExecutor`.
+`_docker_run_factory`-style direct `docker run --entrypoint bash <image> -c "compile"`
+mechanism — no `docker build` per attempt, but the base image's own `compile` entrypoint
+does run each attempt (see correction below), which itself runs `build.sh` ->
+`compile_harnesses.sh`. Once a stage's script
+converges (or discovery exhausts its attempts), the pipeline's actual pass/fail signal for
+that stage comes from running the shared script (`agents/scripts/check_docker_build.sh
+<workspace> <project_name>` — `docker build` + `docker run --entrypoint bash <tag> -c
+"compile && ..."`) exactly once, via `subprocess`, from `OssFuzzExecutor`.
 
 **Rationale**: The Clarifications session confirmed collapsing to one atomic check
 (build the container, run `compile`) as the target end state (per FR-002), but 5 rebuilds of
@@ -61,16 +62,29 @@ fast (only the last `COPY compile_harnesses.sh`/`COPY harness_source` layers reb
 the one atomic check that actually gates the pipeline is not the slow path.
 
 **Alternatives considered**:
-- *Route every discovery attempt through `check_docker_build.sh`/`compile`*: rejected —
-  the user's own Clarifications answer distinguishes "the pass/fail signal" (must be the
-  shared script) from "internal iteration" (may stay fast/direct), and forcing every retry
-  through a full rebuild would be a real performance regression with no observable benefit
-  (discovery output is never shown to the user as "the" result; only the final atomic
-  check's result is).
-- *Drop the discovery loop's granularity entirely, relying on `compile`'s combined output to
-  guess link flags*: rejected — `compile`'s output through the atomic entrypoint is exactly
-  the same linker-error text `harness_explorer.py` already parses; there's no information
-  gain from switching, only a much slower feedback loop per attempt.
+- *Route every discovery attempt through `check_docker_build.sh`* (a fresh `docker build`
+  per attempt): rejected — the user's own Clarifications answer distinguishes "the pass/fail
+  signal" (must be the shared script) from "internal iteration" (may stay fast/direct), and
+  forcing every retry through a full rebuild would be a real performance regression with no
+  observable benefit (discovery output is never shown to the user as "the" result; only the
+  final atomic check's result is).
+- *Drop the discovery loop's granularity entirely, relying on `check_docker_build.sh`'s
+  combined output to guess link flags*: rejected for the same reason — it would force a full
+  rebuild per attempt for no gain in the error text quality.
+
+**Correction (2026-07-13)**: The decision above originally had discovery skip the `compile`
+entrypoint entirely (`bash -c "bash compile_harnesses.sh"`, no `compile`). That was wrong:
+in the real base-builder image, `compile` is what populates `$LIB_FUZZING_ENGINE` (e.g.
+copying the sanitizer's fuzzer archive to `/usr/lib/libFuzzingEngine.a`) before running
+`build.sh`. Without it, every discovery attempt fails identically with a missing-file link
+error instead of the resolvable undefined-symbol errors `harness_explorer.py` parses, so
+harness-link discovery could never converge in the OSS-Fuzz environment. The fix keeps the
+"no `docker build` per attempt" property (still the expensive part) but does run `compile`
+per attempt: `docker run --entrypoint bash <image> -c "compile"` against the already-built
+image. `compile` itself runs `build.sh` -> `compile_harnesses.sh`, so no separate explicit
+invocation of the harness script is needed. This stays cheap because `build_library.sh`'s
+skip-if-already-built check (`scripts.py`) makes the `build.sh` step `compile` runs first a
+no-op once install artifacts exist.
 
 ## 3. Library-build stage verification during exploration
 
@@ -95,6 +109,20 @@ change.
   rejected — this is exactly the per-stage ad hoc mechanism the feature removes; keeping it
   around "just for this one stage" would preserve half the disjointedness this feature
   exists to close.
+
+**Correction (2026-07-13)**: The "second (Docker-layer-cached, thus fast) call" claim above
+was wrong. `check_docker_build.sh` never bind-mounts anything — each call is `docker build`
+(cacheable at the layer level, but that only covers `apt-get`/`git clone`/`COPY`) followed by
+a fresh, throwaway `docker run --rm -c "compile"`. `build_library.sh`'s skip-if-already-built
+check needs a persisted `install/` to short-circuit on, which a fresh `--rm` container never
+has — so the second call actually redoes the *entire* library rebuild from scratch, not just
+a fast recheck. Running the library-build stage's own atomic gate is now removed entirely
+(see the `OssFuzzExecutor.run_library_build` docstring); that stage's pass/fail comes from
+its bind-mounted probe alone, and the single remaining atomic gate (at the end of
+`run_harness_compile`) is the only place `compile` actually runs, validating both stages
+together in one pass — matching this feature's original "one atomic check" assumption
+(spec.md Assumptions) rather than the two-gate implementation this section originally
+described.
 
 ## 4. Docker layer caching keeps repeated atomic checks affordable
 

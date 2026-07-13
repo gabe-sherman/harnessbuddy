@@ -20,9 +20,11 @@ bool looksLikeCxx(llvm::StringRef path) {
 }
 
 std::string detectLanguage(const std::vector<std::string> &files) {
+  // Must match harnessbuddy.library_builder.models.Language's values ("c" | "c++"),
+  // consumed by extraction.py's Language parsing.
   for (const std::string &file : files) {
     if (looksLikeCxx(file)) {
-      return "cpp";
+      return "c++";
     }
   }
   return "c";
@@ -59,6 +61,20 @@ int main(int argc, char **argv) {
   feature_extractor::ProjectContext ctx{std::string(project_root)};
 
   clang::tooling::ClangTool tool(*db, files);
+  tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
+      "-resource-dir=" CLANG_RESOURCE_DIR,
+      clang::tooling::ArgumentInsertPosition::BEGIN));
+  // -resource-dir only covers clang's own builtin headers (stddef.h, stdarg.h, ...).
+  // Platform libc/SDK headers (inttypes.h, stdio.h, ...) still need an explicit
+  // -isysroot on macOS, since ClangTool's ad hoc driver invocation doesn't reliably
+  // auto-detect the Xcode SDK the way a plain `clang` invocation does. CLANG_SYSROOT
+  // is empty on non-Apple platforms, where the default system include paths apply.
+  const std::string clang_sysroot = CLANG_SYSROOT;
+  if (!clang_sysroot.empty()) {
+    tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
+        {"-isysroot", clang_sysroot},
+        clang::tooling::ArgumentInsertPosition::BEGIN));
+  }
   std::unique_ptr<clang::tooling::FrontendActionFactory> factory =
       feature_extractor::newExtractionActionFactory(collector, ctx);
   int run_result = tool.run(factory.get());

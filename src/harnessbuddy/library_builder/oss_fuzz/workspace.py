@@ -41,7 +41,16 @@ def write_dockerfile(output_path: Path, analysis: AnalysisResult, *, include_bea
     in final oss-fuzz/ output, which must not depend on a HarnessBuddy-only tool.
     """
     path = output_path / "Dockerfile"
-    lines = ["FROM gcr.io/oss-fuzz-base/base-builder\n"]
+    lines = [
+        # ubuntu-24-04, not the bare/Focal-based default tag: Focal's only apt-available
+        # bear (2.4.3) mishandles the `bear -- <command>` invocation exploration.py's
+        # _build_command() constructs (a known argparse REMAINDER quirk in Bear 2.x —
+        # `--` ends up passed to subprocess as if it were the command itself, raising
+        # "FileNotFoundError: [Errno 2] No such file or directory: '--'"). Ubuntu 24.04's
+        # bear (3.x, the modern rewrite) handles `--` correctly.
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n",
+        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n",
+    ]
 
     apt_packages: list[str] = []
     if include_bear:

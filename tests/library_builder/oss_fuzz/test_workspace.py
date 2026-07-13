@@ -70,10 +70,12 @@ def test_write_dockerfile_include_bear_false_omits_bear(tmp_path: Path) -> None:
 def test_write_dockerfile_include_bear_false_matches_no_ref_content(tmp_path: Path) -> None:
     """include_bear=False output is byte-identical to the pre-extraction Dockerfile
     writer's output (no bear, no other apt packages, no repo_ref)."""
-    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=False)
+    analysis = _analysis("cmake_repo")
+    write_dockerfile(tmp_path, analysis, include_bear=False)
     content = (tmp_path / "Dockerfile").read_text()
     expected = (
-        "FROM gcr.io/oss-fuzz-base/base-builder\n"
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
+        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
         f"RUN git clone {_FAKE_URL} $SRC/src\n"
         "COPY harness_source $SRC/harness_source\n"
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"

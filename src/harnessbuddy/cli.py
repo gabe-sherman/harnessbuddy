@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import shutil
 import sys
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     )
     from harnessbuddy.library_builder.stats import AgentPhaseStats, RunStatus
 
+logger = None
 
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
@@ -139,10 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global logger
     parser = build_parser()
     args = parser.parse_args(argv)
     level = getattr(logging, args.log_level.upper()) if args.log_level else logging.CRITICAL + 1
     logging.basicConfig(level=level)
+    logger = logging.getLogger(__name__)
     if args.command is None:
         parser.print_help()
         return 0
@@ -154,7 +158,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_generate_benchmark(args)
     else:
         raise ValueError("Unknown command")
-    return 0
 
 
 def build_library(
@@ -184,9 +187,42 @@ def build_library(
                 tool=agent,
                 environment=result.environment,
             )
+            if result.succeeded:
+                result = _sync_artifacts_after_agent_fix(
+                    analysis, workspace, executor, result, timeout
+                )
         else:
             print("Library build failed and --agent argument was not provided ...")
     return result
+
+
+def _sync_artifacts_after_agent_fix(
+    analysis: AnalysisResult,
+    workspace: Path,
+    executor: EnvironmentExecutor,
+    result: BuildExplorationResult,
+    timeout: int,
+) -> BuildExplorationResult:
+    """Re-run the repair agent's already-fixed build_library.sh once more to populate
+    host-side install/ and capture compile_commands.json — an out-of-band agent
+    verification (e.g. oss-fuzz's unmounted check_docker_build.sh) may not produce either
+    on its own, and the following harness-compilation stage needs real static libraries
+    on disk to link against. Best-effort: never regresses result.succeeded, since the
+    agent's own verification already proved the fix works.
+    """
+    sync_result = executor.sync_artifacts_after_agent_fix(analysis, workspace, timeout=timeout)
+    if not sync_result.succeeded:
+        print(
+            "Warning: could not re-populate install/ on the host after the agent's fix; "
+            "the harness-compilation stage may fail to find static libraries.",
+            file=sys.stderr,
+        )
+        return result
+    return dataclasses.replace(
+        result,
+        compile_commands_path=sync_result.compile_commands_path,
+        compile_commands_error=sync_result.compile_commands_error,
+    )
 
 
 def build_harness(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
@@ -214,7 +250,8 @@ def build_harness(  # noqa: PLR0913 -- public API; all 6 params are distinct req
     if not result.succeeded and agent is not None:
         from harnessbuddy.library_builder.agents import invoke_harness_builder_agent
         from harnessbuddy.library_builder.models import HarnessPaths
-
+        print("Deterministic harness build failed, invoking harness build agent")
+        print("=" * 25 + "Begin Agent Output" + "=" * 25)
         result = invoke_harness_builder_agent(
             analysis,
             result,
@@ -259,21 +296,37 @@ def _ingest_source(args: argparse.Namespace, state_dir: Path) -> RepoSource | in
         return 1
 
 
-def _resolve_output_paths(args: argparse.Namespace, analysis: AnalysisResult) -> tuple[Path, Path]:
-    """Determine local/oss-fuzz output paths, prompting to overwrite an existing directory."""
+def _confirm_and_clear(path: Path, label: str) -> bool:
+    """Remove path if it exists, prompting first when running interactively.
+
+    Returns False if the user declined to overwrite an existing path.
+    """
+    if not path.exists():
+        return True
+    if sys.stdin.isatty():
+        overwrite = input(f"{label} {path} already exists. Overwrite? (y/n)")
+        if overwrite != "y":
+            return False
+    else:
+        print(f"{label} {path} already exists, overwriting ...")
+    shutil.rmtree(path)
+    return True
+
+
+def _resolve_output_path(
+    args: argparse.Namespace, analysis: AnalysisResult, environment: Environment
+) -> Path:
+    """Determine the output path for environment, prompting to overwrite an existing directory."""
+    from harnessbuddy.library_builder.environments.base import Environment
+
     base_output = (
         Path(args.output) if args.output else Path.cwd() / "output" / analysis.project_name
     )
-    if base_output.exists():
-        if sys.stdin.isatty():
-            overwrite = input(f"Output directory {base_output} already exists. Overwrite? (y/n)")
-            if overwrite != "y":
-                print("Chose to not overwrite, exiting...")
-                exit(0)
-        else:
-            print(f"Output directory {base_output} already exists, overwriting ...")
-        shutil.rmtree(base_output)
-    return base_output / "local", base_output / "oss-fuzz"
+    if not _confirm_and_clear(base_output, "Output directory"):
+        print("Chose to not overwrite, exiting...")
+        exit(0)
+    subdir = "oss-fuzz" if environment is Environment.OSS_FUZZ else "local"
+    return base_output / subdir
 
 
 def _run_library_phase(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
@@ -295,7 +348,7 @@ def _run_library_phase(  # noqa: PLR0913 -- private helper; all 6 params are dis
     result = build_library(analysis, workspace, executor, agent=agent)
 
     if result.llm_used:
-        print("Agent finished.")
+        print("Library build agent finished.")
 
     if result.missing_apt_packages or result.missing_brew_packages:
         dependencies = dependency_resolution.from_agent_report(
@@ -411,35 +464,45 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 8 params are dis
     return harness_result, brew_packages
 
 
-def _generate_outputs(  # noqa: PLR0913 -- private helper; all 7 params are distinct required inputs
+def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are distinct required inputs
     analysis: AnalysisResult,
-    local_output_path: Path,
-    oss_output_path: Path,
+    output_path: Path,
     result: BuildExplorationResult,
     harness_result: HarnessExplorationResult,
     brew_packages: list[str],
     environment: Environment,
 ) -> int:
-    """Write the local dev scaffold and OSS-Fuzz project, reporting their output paths."""
+    """Write the output scaffold matching environment, reporting its output path."""
+    from harnessbuddy.library_builder.environments.base import Environment
     from harnessbuddy.library_builder.local.generation import generate_local
     from harnessbuddy.library_builder.models import OutputDirectoryExistsError
     from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
 
     try:
-        local_result = generate_local(
-            analysis, local_output_path, result, harness_result, brew_packages=brew_packages
-        )
-        oss_fuzz_result = generate_oss_fuzz(analysis, oss_output_path, result, harness_result)
+        if environment is Environment.OSS_FUZZ:
+            generation_result = generate_oss_fuzz(analysis, output_path, result, harness_result)
+        else:
+            generation_result = generate_local(
+                analysis, output_path, result, harness_result, brew_packages=brew_packages
+            )
     except OutputDirectoryExistsError as exc:
         print(f"Output directory already exists: {exc}", file=sys.stderr)
         return 1
 
     print(f"Environment:  {environment.value}")
-    print(f"Local build:  {local_result.output_path}")
-    print(f"OSS-Fuzz:     {oss_fuzz_result.output_path}")
+    print(f"Output:       {generation_result.output_path}")
     verification_command = _command_str(harness_result.command or result.command)
     if verification_command is not None:
         print(f"Verified with: {verification_command}")
+
+    if result.compile_commands_path is not None:
+        # Copied alongside output_path's environment subdirs (not into either one) —
+        # it's exploration-only workspace data, not part of the shipped project, but
+        # still useful to hand to extract-features without digging into
+        # .harnessbuddy/<project>/.
+        compile_commands_dest = output_path.parent / "compile_commands.json"
+        shutil.copy2(result.compile_commands_path, compile_commands_dest)
+        print(f"Compile commands: {compile_commands_dest}")
 
     return 0
 
@@ -505,6 +568,15 @@ def _merge_agent_error_dependencies(
     dependency_resolution.save_state(state_file, state)
 
 
+def _print_agent_stop_for_human(exc: BuildFailureError | LLMBudgetError, phase: str) -> None:
+    """Report an agent stop-for-human-action outcome without re-printing exc.output —
+    that's the agent's full transcript, which already streamed live to the terminal
+    during the agent run (run_agent_streaming)."""
+    print(f"Agent requires user action before the {phase} can proceed.", file=sys.stderr)
+    if exc.report and exc.report.summary:
+        print(exc.report.summary, file=sys.stderr)
+
+
 def _check_environment_availability(
     executor: EnvironmentExecutor, environment: Environment
 ) -> int | None:
@@ -539,10 +611,20 @@ def _handle_library_build_failure(
         not_invoked_agent_stats,
     )
 
-    print(
-        f"Failed to produce valid build ({environment.value}): {result.stdout}",
-        file=sys.stderr,
-    )
+    if result.llm_used:
+        # The agent's transcript (result.stdout) already streamed live to the terminal
+        # during run_agent_streaming — printing it again here would just duplicate it.
+        print(
+            f"Failed to produce valid build ({environment.value}) after agent repair.",
+            file=sys.stderr,
+        )
+        if result.agent_summary:
+            print(result.agent_summary, file=sys.stderr)
+    else:
+        print(
+            f"Failed to produce valid build ({environment.value}): {result.stdout}",
+            file=sys.stderr,
+        )
     if result.command:
         print(f"Reproduce with: {_command_str(result.command)}", file=sys.stderr)
     if not skip_validation:
@@ -620,7 +702,6 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         agent_phase_stats_from_harness,
         not_invoked_agent_stats,
     )
-
     start_time = time.monotonic()
     state_dir = default_state_dir()
     environment = Environment(args.environment)
@@ -640,8 +721,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         print("No C/C++ build signals found in this repository.", file=sys.stderr)
         return 1
 
-    local_output_path, oss_output_path = _resolve_output_paths(args, analysis)
-    base_output = local_output_path.parent
+    output_path = _resolve_output_path(args, analysis, environment)
+    base_output = output_path.parent
     base_output.mkdir(parents=True, exist_ok=True)
 
     workspace = project_dir(state_dir, analysis.project_name)
@@ -649,15 +730,11 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     state_file = project_state_file(state_dir, analysis.project_name)
     state = dependency_resolution.load_state(state_file)
     agent = None if args.no_agents else args.agent
-
     try:
         result = _run_library_phase(analysis, workspace, agent, state, state_file, executor)
     except (BuildFailureError, LLMBudgetError) as exc:
         _merge_agent_error_dependencies(exc, state, state_file, DependencySource.LIBRARY_AGENT)
-        print(
-            f"Agent requires user action before the build can proceed:\n{exc.output}",
-            file=sys.stderr,
-        )
+        _print_agent_stop_for_human(exc, "build")
         _write_run_stats(
             base_output,
             start_time,
@@ -691,10 +768,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
     except (BuildFailureError, LLMBudgetError) as exc:
         _merge_agent_error_dependencies(exc, state, state_file, DependencySource.HARNESS_AGENT)
-        print(
-            f"Agent requires user action before the harness build can proceed:\n{exc.output}",
-            file=sys.stderr,
-        )
+        _print_agent_stop_for_human(exc, "harness build")
         _write_run_stats(
             base_output,
             start_time,
@@ -709,8 +783,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 
     rc = _generate_outputs(
         analysis,
-        local_output_path,
-        oss_output_path,
+        output_path,
         result,
         harness_result,
         brew_packages,

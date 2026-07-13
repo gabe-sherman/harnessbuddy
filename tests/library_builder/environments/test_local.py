@@ -151,6 +151,35 @@ def test_run_library_build_verification_failure_fails_result(tmp_path: Path) -> 
     assert result.exit_code != 0
 
 
+def test_run_library_build_skips_verification_when_probe_fails(tmp_path: Path) -> None:
+    """A failing probe short-circuits — the shared script is not re-run to reconfirm a
+    failure it already reproduced (wasteful, especially for OssFuzzExecutor's Docker
+    equivalent, which would otherwise pay for a second full rebuild+recompile)."""
+    workdir = tmp_path / "work"
+    source = workdir / "src"
+    source.mkdir(parents=True)
+    explore_failed = RunResult(
+        stdout="CMake Error: something went wrong", stderr="", exit_code=1, duration_seconds=0.1
+    )
+    with (
+        patch(
+            "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=explore_failed,
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming"
+        ) as mock_verify,
+    ):
+        result = LocalExecutor().run_library_build(_analysis(source), workdir)
+
+    mock_verify.assert_not_called()
+    assert result.succeeded is False
+    assert result.command[1].endswith("check_local_build.sh")
+    # The stub compile_harnesses.sh must still be written — a later repair agent's own
+    # verification run still needs it to exist.
+    assert (workdir / "compile_harnesses.sh").exists()
+
+
 def test_run_library_build_skips_verification_for_unknown_build_system(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     source = workdir / "src"
@@ -221,3 +250,29 @@ def test_run_harness_compile_skips_verification_without_static_libs(tmp_path: Pa
         result = LocalExecutor().run_harness_compile(install_dir, tmp_path, Language.C)
     mock_verify.assert_not_called()
     assert result.succeeded is False
+
+
+def test_run_harness_compile_skips_verification_when_discovery_fails(tmp_path: Path) -> None:
+    """Discovery already exhausted its retry attempts against this install/ output — the
+    shared script would only reconfirm the same failure."""
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.harness_explorer.run_command",
+            return_value=RunResult(
+                stdout="", stderr="link failed", exit_code=1, duration_seconds=0.1
+            ),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming"
+        ) as mock_verify,
+    ):
+        result = LocalExecutor().run_harness_compile(install_dir, tmp_path, Language.C)
+
+    mock_verify.assert_not_called()
+    assert result.succeeded is False
+    assert result.command[1].endswith("check_local_build.sh")

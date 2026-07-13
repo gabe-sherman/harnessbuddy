@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import multiprocessing
 from pathlib import Path
 
@@ -17,21 +18,22 @@ class NativeBuildError(Exception):
 def build_native_tool(*, force_rebuild: bool = False) -> Path:
     """Build (or reuse a cached build of) the native feature_extractor binary.
 
-    Cached under .harnessbuddy/native-build/build/, keyed to the LLVM/Clang version
-    string reported by `clang --version` at build time (research.md §2) — if that
-    version changes, the cache is invalidated and the tool is rebuilt rather than
-    silently reused against a mismatched LibTooling ABI.
+    Cached under .harnessbuddy/native-build/build/, keyed to both the LLVM/Clang
+    version string reported by `clang --version` (research.md §2 — if that version
+    changes, the tool is rebuilt rather than silently reused against a mismatched
+    LibTooling ABI) and a hash of native/'s own sources (CMakeLists.txt, main.cpp,
+    ...), so an edit to the tool itself always invalidates a previously cached binary
+    too, rather than requiring callers to know to pass force_rebuild explicitly.
     """
     build_dir = default_state_dir() / "native-build" / "build"
     binary_path = build_dir / _BINARY_NAME
-    version_marker = build_dir / ".llvm_version"
-    current_version = _detect_llvm_version()
-
+    build_key_marker = build_dir / ".build_key"
+    current_build_key = f"{_detect_llvm_version()}:{_hash_native_sources()}"
     if (
         not force_rebuild
         and binary_path.exists()
-        and version_marker.exists()
-        and version_marker.read_text().strip() == current_version
+        and build_key_marker.exists()
+        and build_key_marker.read_text().strip() == current_build_key
     ):
         return binary_path
 
@@ -40,9 +42,23 @@ def build_native_tool(*, force_rebuild: bool = False) -> Path:
     _build(build_dir)
 
     if not binary_path.exists():
-        raise NativeBuildError(f"Native build reported success but {binary_path} was not produced.")
-    version_marker.write_text(current_version)
+        raise NativeBuildError(
+            f"Feature extraction build reported success but {binary_path} was not produced."
+        )
+    else:
+        print("Feature extraction tool successfully built!")
+    build_key_marker.write_text(current_build_key)
     return binary_path
+
+
+def _hash_native_sources() -> str:
+    """Hash every file under native/ (CMakeLists.txt, src/, include/) so any edit to
+    the tool's own sources invalidates a previously cached binary."""
+    hasher = hashlib.sha256()
+    for path in sorted(p for p in _NATIVE_SRC_DIR.rglob("*") if p.is_file()):
+        hasher.update(str(path.relative_to(_NATIVE_SRC_DIR)).encode())
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
 
 
 def _configure(build_dir: Path) -> None:
@@ -51,11 +67,7 @@ def _configure(build_dir: Path) -> None:
     )
     if result.exit_code != 0:
         raise NativeBuildError(
-            "Failed to configure the native feature_extractor tool (cmake). This "
-            "usually means LLVM/Clang development packages (headers plus the "
-            "LibTooling static libraries) are not installed, so "
-            "find_package(Clang)/find_package(LLVM) could not locate a usable "
-            f"installation:\n{result.stdout}"
+            "=" * 25 + "Feature Configuration Failed" + "=" * 25,
         )
 
 
@@ -68,7 +80,7 @@ def _build(build_dir: Path) -> None:
     )
     if result.exit_code != 0:
         raise NativeBuildError(
-            f"Failed to build the native feature_extractor tool:\n{result.stdout}"
+            "=" * 25 + "Feature Build Failed" + "=" * 25,
         )
 
 

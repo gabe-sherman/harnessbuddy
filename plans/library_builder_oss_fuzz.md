@@ -395,36 +395,48 @@ Acceptance criteria:
 
 ## Task 7: oss-fuzz Validation Driver
 
-Implement validation through an oss-fuzz checkout.
+Implement validation by building and running the generated project's own
+Dockerfile directly. This does not require an `oss-fuzz` checkout or
+`infra/helper.py` — the generated Dockerfile already `FROM
+gcr.io/oss-fuzz-base/base-builder`, and that base image ships the same
+`compile` entrypoint `infra/helper.py build_fuzzers` uses internally.
 
 Requirements:
 
-- Auto-clone or update `google/oss-fuzz` into HarnessBuddy state when validation
-  is enabled.
-- Sync the generated project into:
-  `oss-fuzz/projects/<project-name>`.
-- Run:
+- Build the image from the generated project directory:
   ```bash
-  python3 infra/helper.py build_image <project-name>
-  python3 infra/helper.py build_fuzzers --sanitizer address <project-name>
-  python3 infra/helper.py check_build <project-name>
+  docker build -t harnessbuddy/<project-name>-oss-fuzz <oss_fuzz_dir>
   ```
+- Run the base image's `compile` entrypoint to execute `build.sh` inside the
+  container, mounting an output directory for fuzzer binaries:
+  ```bash
+  docker run --rm \
+    -e FUZZING_ENGINE=libfuzzer -e SANITIZER=address -e ARCHITECTURE=x86_64 \
+    -v <out_dir>:/out \
+    harnessbuddy/<project-name>-oss-fuzz compile
+  ```
+- Check-build equivalent: for each expected fuzz target, confirm the binary
+  exists in `<out_dir>`, is executable, and does not crash immediately (e.g.
+  `<binary> -help=1`).
 - Capture command stdout and stderr into the run directory.
 - Return structured validation status containing:
-  - command
-  - exit code
-  - stdout log path
-  - stderr log path
+  - build command, exit code, stdout/stderr log paths
+  - compile command, exit code, stdout/stderr log paths
+  - per-binary check-build results
   - summary status
 - Missing Docker and missing network should return actionable validation
-  failures and should not trigger agent fallback.
+  failures and should not trigger agent fallback. Docker build/compile
+  failures should trigger agent fallback with the Docker-specific log
+  contents, since these often stem from Dockerfile/package differences the
+  host build never exercises.
 
 Acceptance criteria:
 
-- Mocked helper tests cover success.
-- Mocked helper tests cover build failure.
-- Mocked helper tests cover missing Docker.
-- Mocked helper tests cover missing network.
+- Mocked docker-subprocess tests cover build success + compile success.
+- Mocked tests cover docker build failure.
+- Mocked tests cover compile (build.sh inside container) failure.
+- Mocked tests cover missing Docker binary/daemon.
+- Mocked tests cover missing network (image pull failure).
 
 ## Task 8: Agent Fallback Orchestration
 

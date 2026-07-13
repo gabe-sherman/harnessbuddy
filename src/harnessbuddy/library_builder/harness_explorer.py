@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import stat
 from pathlib import Path
@@ -8,18 +9,16 @@ from pathlib import Path
 from harnessbuddy.core.subprocesses import Runner, run_command
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import HarnessExplorationResult, Language
-from harnessbuddy.library_builder.scripts import build_harness_script
+from harnessbuddy.library_builder.scripts import build_harness_script, write_default_fuzzer
+
+logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 5
 
-_PROBE_C = (
-    "#include <stddef.h>\n#include <stdint.h>\n"
-    "int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) { return 0; }\n"
-)
-_PROBE_CC = (
-    "#include <stddef.h>\n#include <stdint.h>\n"
-    'extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) { return 0; }\n'
-)
+# Always linked, not just discovered from undefined-symbol parsing: glibc's pthread_*
+# entry points are weak symbols, so a static link that omits -lpthread silently falls
+# back to no-op stubs instead of erroring, which _resolve_flags can never catch.
+_DEFAULT_LINK_FLAGS = ["-lpthread"]
 
 _PATTERNS_FILE = Path(__file__).parent / "symbol_patterns.json"
 
@@ -58,8 +57,10 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
 
     Uses --whole-archive (or macOS equivalent) to force all library symbols in, which
     surfaces every undefined transitive dependency. Retries up to _MAX_ATTEMPTS times,
-    accumulating resolved -l flags from linker errors. Returns the result regardless of
-    success; callers use HarnessExplorationResult.succeeded to decide behaviour.
+    accumulating resolved -l flags from linker errors, seeded with _DEFAULT_LINK_FLAGS
+    (flags needed regardless of whether linking surfaces them as undefined symbols).
+    Returns the result regardless of success; callers use HarnessExplorationResult.succeeded
+    to decide behaviour.
 
     extra_include_paths/extra_library_paths are fixed inputs (e.g. from a prior agent's
     AgentReport) threaded unchanged into every returned HarnessExplorationResult.
@@ -68,7 +69,9 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     image's own $OUT/$LIB_FUZZING_ENGINE instead of local defaults) and is recorded on the
     returned result. run defaults to running the command as a host subprocess; callers
     running this inside a container pass a run primitive that wraps the command in a
-    `docker run` invocation instead.
+    `docker run` invocation instead. For Environment.OSS_FUZZ, each attempt runs the base
+    image's own `compile` entrypoint (not just the generated script directly), since that's
+    what populates $LIB_FUZZING_ENGINE before compile_harnesses.sh links against it.
     """
     extra_include_paths = extra_include_paths or []
     extra_library_paths = extra_library_paths or []
@@ -76,6 +79,11 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     include_dir = install_dir / "include"
 
     static_libs = sorted(lib_dir.glob("*.a"))
+    logger.debug(
+        "Discovered static libraries [%s] from dir %s",
+        " ".join(str(p) for p in static_libs),
+        lib_dir,
+    )
     if not static_libs:
         return HarnessExplorationResult(
             succeeded=False,
@@ -99,13 +107,18 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     use_cpp = language == Language.CPP
     harness_src_dir = workdir / harness_dir_name
     harness_src_dir.mkdir(exist_ok=True)
-    probe_src = harness_src_dir / ("probe_harness.cc" if use_cpp else "probe_harness.c")
-    probe_src.write_text(_PROBE_CC if use_cpp else _PROBE_C)
+    # _materialize_workspace/LocalExecutor.run_library_build already wrote this stub (so the
+    # atomic gate's non-empty-/out check has something to find before discovery ever runs) —
+    # this call is idempotent when that already happened, and a fallback when discovery runs
+    # without it (e.g. called directly in tests). Discovery upgrades this same file's
+    # extension in place on a CXX finding, rather than probing with a separate throwaway
+    # file, so the discovered language can never desync from what final generation copies.
+    harness_path = write_default_fuzzer(harness_src_dir, language)
 
     script_path = workdir / "compile_harnesses.sh"
     runner = run if run is not None else run_command
-    extra_flags: list[str] = []
-    seen_flags: set[str] = set()
+    extra_flags: list[str] = list(_DEFAULT_LINK_FLAGS)
+    seen_flags: set[str] = set(_DEFAULT_LINK_FLAGS)
     last_stdout = ""
     last_stderr = ""
     last_exit = -1
@@ -132,11 +145,14 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
             )
         )
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        command = ["bash", str(script_path.name)]
+        command = ["bash", "-c", "compile"] if oss_fuzz else ["bash", str(script_path.name)]
         result = runner(command, workdir, 60)
         last_stdout = result.stdout
         last_stderr = result.stderr
         last_exit = result.exit_code
+        # Some Runner implementations (docker-streaming runners) merge stderr into stdout
+        # and never populate .stderr — scan both so detection isn't blind to those.
+        diagnostic = last_stdout + last_stderr
 
         if result.exit_code == 0:
             return HarnessExplorationResult(
@@ -155,14 +171,14 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
             )
 
         upgraded_to_cxx = False
-        if not use_cpp and _requires_cxx(last_stderr):
-            probe_src.unlink(missing_ok=True)
-            probe_src = harness_src_dir / "probe_harness.cc"
-            probe_src.write_text(_PROBE_CC)
+        if not use_cpp and _requires_cxx(diagnostic):
+            logger.debug("Upgrading harness build to use CXX instead of CC")
+            harness_path.unlink(missing_ok=True)
+            harness_path = write_default_fuzzer(harness_src_dir, Language.CPP)
             use_cpp = True
             upgraded_to_cxx = True
 
-        new_flags = _resolve_flags(last_stderr, seen_flags)
+        new_flags = _resolve_flags(diagnostic, seen_flags)
         if not new_flags and not upgraded_to_cxx:
             break
         extra_flags.extend(new_flags)
@@ -177,7 +193,7 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
         stdout=last_stdout,
         stderr=last_stderr,
         exit_code=last_exit,
-        missing_system_libs=_extract_missing_system_libs(last_stderr),
+        missing_system_libs=_extract_missing_system_libs(last_stdout + last_stderr),
         extra_include_paths=extra_include_paths,
         extra_library_paths=extra_library_paths,
         environment=environment,
@@ -209,7 +225,12 @@ def _extract_undefined_symbols(stderr: str) -> list[str]:
 
 
 def _requires_cxx(stderr: str) -> bool:
-    return bool(_CXX_ABI_RE.search(stderr))
+    if _CXX_ABI_RE.search(stderr):
+        return True
+    return any(
+        symbol.startswith("_Z") or "::" in symbol
+        for symbol in _extract_undefined_symbols(stderr)
+    )
 
 
 def _extract_missing_system_libs(stderr: str) -> list[str]:

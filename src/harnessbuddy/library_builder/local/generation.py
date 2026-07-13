@@ -46,11 +46,11 @@ _COMPILE_HARNESSES_SH_STUB = (
     '  case "$harness" in\n'
     "    *.c)\n"
     '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
+    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
     "      ;;\n"
     "    *.cc|*.cpp|*.cxx)\n"
     '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
+    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
     "      ;;\n"
     "  esac\n"
     "done\n"
@@ -76,14 +76,19 @@ def generate_local(
     (output_path / "harness_src").mkdir()
 
     validated_workspace = _validated_local_workspace(exploration)
+    harness_src_dir = output_path / "harness_src"
+    copied_harness_src = _copy_harness_src(output_path, validated_workspace)
 
     files: list[Path] = [
         _write_setup_sh(output_path, analysis, brew_packages=brew_packages or []),
         _write_build_library_sh(output_path, analysis, exploration, validated_workspace),
         _write_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
-        *_copy_harness_src(output_path, validated_workspace),
-        write_default_fuzzer(output_path / "harness_src", analysis),
+        *copied_harness_src,
     ]
+    if not any(harness_src_dir.glob("default_fuzzer.*")):
+        # No validated workspace to copy a discovered default_fuzzer.{c,cc} from (e.g.
+        # unknown build system, or exploration never ran) — synthesize a fresh stub.
+        files.append(write_default_fuzzer(harness_src_dir, analysis.language))
 
     return GenerationResult(
         project_name=analysis.project_name,
@@ -105,8 +110,8 @@ def _validated_local_workspace(exploration: BuildExplorationResult | None) -> Pa
 
 
 def _copy_harness_src(output_path: Path, validated_workspace: Path | None) -> list[Path]:
-    """Copy harness_src/* from the validated workspace, excluding the discovery-only
-    probe_harness.* — write_default_fuzzer supplies the real stub in its place."""
+    """Copy harness_src/* from the validated workspace verbatim, including its
+    default_fuzzer.{c,cc} — whichever extension harness-link discovery settled on."""
     if validated_workspace is None:
         return []
     src_dir = validated_workspace / "harness_src"
@@ -114,8 +119,6 @@ def _copy_harness_src(output_path: Path, validated_workspace: Path | None) -> li
         return []
     copied: list[Path] = []
     for entry in sorted(src_dir.iterdir()):
-        if entry.name.startswith("probe_harness."):
-            continue
         dest = output_path / "harness_src" / entry.name
         shutil.copy2(entry, dest)
         copied.append(dest)

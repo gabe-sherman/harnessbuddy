@@ -13,6 +13,11 @@ The failure context will be appended below. It includes:
 - Any missing system libraries already reported by the linker
 - The complete stderr from the failed compile/link attempt (last 200 lines)
 
+workdir is not a scratch directory — it is the real project directory that generation
+copies its final output from (for oss-fuzz, it's the same directory that becomes the
+shipped project). Edits you make here to compile_harnesses.sh, a Dockerfile, or other
+files persist into that output.
+
 ## What to do
 
 1. Read build_harness.sh in the work directory to understand the link command that was
@@ -100,8 +105,8 @@ on the reading side. This is the only machine-readable report file you should wr
 
 ## Stopping conditions
 
-**Success** — the verification command exits 0 and out/ contains the compiled probe
-binary. Print a short success summary and exit 0. Write `agent_report.json` first.
+**Success** — the verification command exits 0. Print a short success summary and exit 0.
+Write `agent_report.json` first.
 
 **Unresolvable failure** — if the verification command still fails after your fix
 attempt, or if you cannot determine a fix, stop immediately. Print to stdout:

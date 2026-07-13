@@ -110,10 +110,12 @@ def test_project_yaml_meson_language_cpp(tmp_path: Path) -> None:
 
 
 def test_dockerfile_no_ref(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
+    analysis = _analysis("cmake_repo")
+    result = generate_oss_fuzz(analysis, tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
-        "FROM gcr.io/oss-fuzz-base/base-builder\n"
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
+        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
         f"RUN git clone {_FAKE_URL} $SRC/src\n"
         "COPY harness_source $SRC/harness_source\n"
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
@@ -123,10 +125,12 @@ def test_dockerfile_no_ref(tmp_path: Path) -> None:
 
 
 def test_dockerfile_with_ref(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo", repo_ref="v1.3.2"), tmp_path / "out")
+    analysis = _analysis("cmake_repo", repo_ref="v1.3.2")
+    result = generate_oss_fuzz(analysis, tmp_path / "out")
     content = (result.output_path / "Dockerfile").read_text()
     expected = (
-        "FROM gcr.io/oss-fuzz-base/base-builder\n"
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
+        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
         f"RUN git clone {_FAKE_URL} $SRC/src\n"
         "RUN git -C $SRC/src checkout v1.3.2\n"
         "COPY harness_source $SRC/harness_source\n"
@@ -391,8 +395,8 @@ def _validated_workspace(tmp_path: Path) -> Path:
     (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
     harness_source = workspace / "harness_source"
     harness_source.mkdir()
-    (harness_source / "probe_harness.c").write_text("// discovery-only probe, never shipped\n")
-    (harness_source / "extra_helper.c").write_text("// non-probe harness_source content\n")
+    (harness_source / "default_fuzzer.cc").write_text("// discovered CXX is required\n")
+    (harness_source / "extra_helper.c").write_text("// other harness_source content\n")
     return workspace
 
 
@@ -435,14 +439,18 @@ def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_r
     assert content == (workspace / "compile_harnesses.sh").read_text()
 
 
-def test_workspace_copy_harness_source_excludes_probe_harness(tmp_path: Path) -> None:
+def test_workspace_copy_harness_source_includes_discovered_default_fuzzer(tmp_path: Path) -> None:
+    """The validated workspace's default_fuzzer.cc (discovery having upgraded it from .c to
+    .cc on a CXX finding) is copied verbatim, not clobbered by a fresh write_default_fuzzer
+    call derived from the (possibly stale) static analysis language."""
     workspace = _validated_workspace(tmp_path)
     exploration = _fake_exploration()
     exploration.script_path = workspace / "build_library.sh"
     result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
     output_names = {p.name for p in (result.output_path / "harness_source").iterdir()}
     assert "extra_helper.c" in output_names
-    assert "probe_harness.c" not in output_names
+    assert "default_fuzzer.cc" in output_names
+    assert "default_fuzzer.c" not in output_names
     assert (result.output_path / "harness_source" / "extra_helper.c").read_text() == (
         workspace / "harness_source" / "extra_helper.c"
     ).read_text()

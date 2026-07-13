@@ -23,10 +23,11 @@ dev = [
 testpaths = ["tests"]
 markers = [
     "agentic: invokes a live LLM agent subprocess (claude/codex); slow, requires agent CLI auth",
-    "build_matrix: clones and builds every library in the LIBS matrix; slow, network-heavy",
+    "build_matrix: clones and builds a real library from the LIBS matrix; slow, network-heavy, requires cmake/make/autotools/meson on PATH depending on the library. Only the 'smoke' subset of this runs by default; the rest is opt-in via `-m build_matrix`.",
+    "smoke: the small, fast, non-agentic subset of build_matrix that runs by default (pytest -q).",
     "docker: requires a running Docker daemon (OssFuzzExecutor); slow, network-heavy",
 ]
-addopts = ["-m", "not agentic and not build_matrix and not docker"]
+addopts = ["-m", "not agentic and not docker and not (build_matrix and not smoke)"]
 
 [tool.ruff]
 line-length = 100

@@ -110,6 +110,54 @@ def test_library_prompt_oss_fuzz_environment_references_check_docker_build(
     assert "check_local_build.sh" not in prompt
 
 
+# package installation policy (environment-conditioned)
+
+
+def test_library_prompt_local_environment_forbids_installing_packages(tmp_path: Path) -> None:
+    prompt = build_library_prompt(
+        _analysis(tmp_path),
+        _failed_cmake_exploration(tmp_path),
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    assert "Do not run apt-get/brew/dnf install yourself" in prompt
+    assert "you MAY add packages directly" not in prompt
+
+
+def test_library_prompt_oss_fuzz_environment_allows_editing_dockerfile(tmp_path: Path) -> None:
+    prompt = build_library_prompt(
+        _analysis(tmp_path),
+        _failed_cmake_exploration(tmp_path),
+        tmp_path / "work",
+        Environment.OSS_FUZZ,
+    )
+    assert "you MAY add packages directly" in prompt
+    assert "workdir/Dockerfile" in prompt
+    assert "Do not run apt-get/brew/dnf install yourself" not in prompt
+
+
+def test_harness_prompt_local_environment_forbids_installing_packages(tmp_path: Path) -> None:
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        _failed_harness(""),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    assert "Do not run apt-get/brew/dnf install yourself" in prompt
+
+
+def test_harness_prompt_oss_fuzz_environment_allows_editing_dockerfile(tmp_path: Path) -> None:
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        _failed_harness(""),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.OSS_FUZZ,
+    )
+    assert "you MAY add packages directly" in prompt
+
+
 def test_harness_prompt_local_environment_references_check_local_build(tmp_path: Path) -> None:
     prompt = build_harness_prompt(
         _analysis(tmp_path),
@@ -390,7 +438,7 @@ def test_library_agent_writes_report_file(tmp_path: Path) -> None:
 def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
     (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
@@ -416,7 +464,7 @@ def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
 def test_harness_agent_uses_report_paths_when_script_has_none(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
     (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
@@ -444,7 +492,7 @@ def test_harness_agent_uses_report_paths_when_script_has_none(tmp_path: Path) ->
 def test_harness_agent_uses_script_paths_when_report_has_none(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
     (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
@@ -464,7 +512,7 @@ def test_harness_agent_uses_script_paths_when_report_has_none(tmp_path: Path) ->
 def test_harness_agent_unions_report_and_script_paths(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
     (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
@@ -484,10 +532,98 @@ def test_harness_agent_unions_report_and_script_paths(tmp_path: Path) -> None:
     assert result.extra_library_paths == ["/opt/lib", "/usr/lib/x86_64-linux-gnu"]
 
 
+# post-agent validation is environment-conditioned: check_docker_build.sh's docker run
+# is deliberately unmounted, so install/out never land on the oss-fuzz host workdir.
+
+
+def test_library_agent_oss_fuzz_success_does_not_require_host_install_dir(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="...\nOK: docker build and in-container compile succeeded\n",
+            exit_code=0,
+            duration_seconds=1.0,
+        ),
+    ):
+        result = invoke_library_builder_agent(
+            _analysis(tmp_path),
+            _failed_cmake_exploration(tmp_path),
+            workdir,
+            environment=Environment.OSS_FUZZ,
+        )
+    assert result.succeeded is True
+
+
+def test_library_agent_oss_fuzz_rejects_false_success_claim(tmp_path: Path) -> None:
+    """Defense-in-depth: an agent that exits 0 without ever showing
+    check_docker_build.sh's own success marker in its transcript is not trusted."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="I believe this is fixed now.", exit_code=0, duration_seconds=1.0
+        ),
+    ):
+        result = invoke_library_builder_agent(
+            _analysis(tmp_path),
+            _failed_cmake_exploration(tmp_path),
+            workdir,
+            environment=Environment.OSS_FUZZ,
+        )
+    assert result.succeeded is False
+
+
+def test_harness_agent_oss_fuzz_success_does_not_require_host_out_dir(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "compile_harnesses.sh").write_text(
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+    )
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="...\nOK: docker build and in-container compile succeeded\n",
+            exit_code=0,
+            duration_seconds=1.0,
+        ),
+    ):
+        result = invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `ares_getaddrinfo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+            environment=Environment.OSS_FUZZ,
+        )
+    assert result.succeeded is True
+
+
+def test_harness_agent_oss_fuzz_rejects_false_success_claim(tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "compile_harnesses.sh").write_text(
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+    )
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="I believe this is fixed now.", exit_code=0, duration_seconds=1.0
+        ),
+    ):
+        result = invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `ares_getaddrinfo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+            environment=Environment.OSS_FUZZ,
+        )
+    assert result.succeeded is False
+
+
 def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
-    (workdir / "out" / "probe_harness").write_text("stub binary")
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
     (workdir / "compile_harnesses.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )

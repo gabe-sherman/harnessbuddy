@@ -5,9 +5,39 @@ from unittest.mock import patch
 
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.environments.verification import (
+    docker_verification_command,
+    local_verification_command,
     run_docker_verification,
     run_local_verification,
 )
+
+
+def test_local_verification_command_matches_what_run_local_verification_executes(
+    tmp_path: Path,
+) -> None:
+    """The pure command builder must stay in sync with what actually runs, since
+    callers use it to report a reproduce-it command without paying to run it."""
+    with patch(
+        "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+        return_value=RunResult(stdout="OK", stderr="", exit_code=0, duration_seconds=0.1),
+    ) as mock_run:
+        result = run_local_verification(tmp_path)
+
+    assert local_verification_command(tmp_path) == mock_run.call_args[0][0]
+    assert local_verification_command(tmp_path) == result.command
+
+
+def test_docker_verification_command_matches_what_run_docker_verification_executes(
+    tmp_path: Path,
+) -> None:
+    with patch(
+        "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+        return_value=RunResult(stdout="OK", stderr="", exit_code=0, duration_seconds=0.1),
+    ) as mock_run:
+        result = run_docker_verification(tmp_path, "mylib")
+
+    assert docker_verification_command(tmp_path, "mylib") == mock_run.call_args[0][0]
+    assert docker_verification_command(tmp_path, "mylib") == result.command
 
 
 def test_run_local_verification_argv(tmp_path: Path) -> None:

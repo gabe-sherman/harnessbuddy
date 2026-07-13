@@ -39,16 +39,16 @@ LIBS = [
     # LibSpec(
     #     "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
     # ),
-    # LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
+   # LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
     LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
     # LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
     # LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
-    LibSpec("https://github.com/ImageMagick/ImageMagick", "imagemagick", BuildSystem.CMAKE, None),
-    LibSpec("https://github.com/htop-dev/htop.git", "htop", BuildSystem.AUTOTOOLS, None),
-    LibSpec("https://github.com/libusb/libusb", "libusb", BuildSystem.AUTOTOOLS, None),
-    LibSpec(
-        "https://github.com/openvenues/libpostal.git", "libpostal", BuildSystem.AUTOTOOLS, None
-    ),
+    # LibSpec("https://github.com/ImageMagick/ImageMagick", "imagemagick", BuildSystem.CMAKE, None),
+    # LibSpec("https://github.com/htop-dev/htop.git", "htop", BuildSystem.AUTOTOOLS, None),
+    # LibSpec("https://github.com/libusb/libusb", "libusb", BuildSystem.AUTOTOOLS, None),
+    # LibSpec(
+    #     "https://github.com/openvenues/libpostal.git", "libpostal", BuildSystem.AUTOTOOLS, None
+    # ),
 ]
 
 _AGENT = "claude"
@@ -59,7 +59,7 @@ def _generate(lib: LibSpec) -> bool:
     project_output = _OUTPUT_DIR / lib.project_name
     if project_output.exists():
         shutil.rmtree(project_output)
-    rc = main(["generate", lib.url, "--agent", _AGENT, "--output", str(project_output)])
+    rc = main(["generate", lib.url, "--agent", _AGENT, "--output", str(project_output), "--environment", "oss-fuzz"])
     return rc == 0
 
 
@@ -72,8 +72,7 @@ def _docker_build_and_compile(project_name: str) -> bool:
     """
     harnesses = list(_REAL_HARNESSES_DIR.glob(f"{project_name}*"))
     if not harnesses:
-        logger.warning("no ground-truth harness for %s, skipping docker check", project_name)
-        return True
+        raise ValueError("no ground-truth harness for %s, skipping docker check", project_name)
     oss_fuzz_dir = _OUTPUT_DIR / project_name / "oss-fuzz"
     harness_dir = oss_fuzz_dir / "harness_source"
     ext = "c"

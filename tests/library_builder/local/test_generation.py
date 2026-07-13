@@ -264,8 +264,8 @@ def _validated_workspace(tmp_path: Path) -> Path:
     (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
     harness_src = workspace / "harness_src"
     harness_src.mkdir()
-    (harness_src / "probe_harness.c").write_text("// discovery-only probe, never shipped\n")
-    (harness_src / "extra_helper.c").write_text("// non-probe harness_src content\n")
+    (harness_src / "default_fuzzer.cc").write_text("// discovered CXX is required\n")
+    (harness_src / "extra_helper.c").write_text("// other harness_src content\n")
     return workspace
 
 
@@ -291,13 +291,17 @@ def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_r
     assert content == (workspace / "compile_harnesses.sh").read_text()
 
 
-def test_workspace_copy_harness_src_excludes_probe_harness(tmp_path: Path) -> None:
+def test_workspace_copy_harness_src_includes_discovered_default_fuzzer(tmp_path: Path) -> None:
+    """The validated workspace's default_fuzzer.cc (discovery having upgraded it from .c to
+    .cc on a CXX finding) is copied verbatim, not clobbered by a fresh write_default_fuzzer
+    call derived from the (possibly stale) static analysis language."""
     workspace = _validated_workspace(tmp_path)
     exploration = _exploration_with_script(workspace / "build_library.sh")
     result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
     output_names = {p.name for p in (result.output_path / "harness_src").iterdir()}
     assert "extra_helper.c" in output_names
-    assert "probe_harness.c" not in output_names
+    assert "default_fuzzer.cc" in output_names
+    assert "default_fuzzer.c" not in output_names
     assert (result.output_path / "harness_src" / "extra_helper.c").read_text() == (
         workspace / "harness_src" / "extra_helper.c"
     ).read_text()
