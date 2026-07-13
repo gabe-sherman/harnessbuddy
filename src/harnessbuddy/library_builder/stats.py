@@ -112,6 +112,9 @@ class RunStats:
     status: RunStatus
     environment: Environment = Environment.LOCAL
     compile_commands_path: str | None = None
+    # The literal command (FR-010) that the shared verification script was invoked with,
+    # so a person can reproduce the pass/fail result themselves.
+    verification_command: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -121,6 +124,7 @@ class RunStats:
             "status": self.status.value,
             "environment": self.environment.value,
             "compile_commands_path": self.compile_commands_path,
+            "verification_command": self.verification_command,
         }
 
 

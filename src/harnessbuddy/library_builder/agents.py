@@ -58,15 +58,19 @@ def _verification_command(
     *,
     workdir: Path,
     project_name: str,
-    oss_fuzz_project_dir: Path | None,
 ) -> str:
-    """The concrete command (FR-009) that proves a fix works in the selected environment."""
+    """The concrete command (FR-009) that proves a fix works in the selected environment.
+
+    workdir is the workspace, which during exploration is already the real oss-fuzz
+    project directory (research.md #1, #7) — there is no separate "eventual output"
+    path to reference.
+    """
     if environment is Environment.OSS_FUZZ:
-        project_dir = oss_fuzz_project_dir if oss_fuzz_project_dir is not None else workdir
         script = _AGENTS_SCRIPTS_DIR / "check_docker_build.sh"
-        return f"bash {script} {project_dir} {project_name}"
+        return f"bash {script} {workdir} {project_name}"
     script = _AGENTS_SCRIPTS_DIR / "check_local_build.sh"
     return f"bash {script} {workdir}"
+
 
 _ACTION_REQUIRED = "ACTION REQUIRED"
 
@@ -157,8 +161,6 @@ def build_library_prompt(
     exploration: BuildExplorationResult,
     workdir: Path,
     environment: Environment,
-    *,
-    oss_fuzz_project_dir: Path | None = None,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed library build."""
     instructions = _SKILL_PATH.read_text() if _SKILL_PATH.exists() else _INLINE_INSTRUCTIONS
@@ -167,7 +169,6 @@ def build_library_prompt(
         environment,
         workdir=workdir,
         project_name=analysis.project_name,
-        oss_fuzz_project_dir=oss_fuzz_project_dir,
     )
     return (
         f"{instructions}\n\n"
@@ -205,7 +206,7 @@ def construct_codex_command(prompt: str) -> list[str]:
     return cmd
 
 
-def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all params are distinct required inputs
+def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
     workdir: Path,
@@ -213,16 +214,13 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all params are
     tool: str = "claude",
     timeout: int = 600,
     environment: Environment = Environment.LOCAL,
-    oss_fuzz_project_dir: Path | None = None,
 ) -> BuildExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed build.
 
     Streams agent output to the terminal. CWD is set to workdir, where build_library.sh
     lives; the agent can still read and modify the repo's build files via source_dir.
     """
-    prompt = build_library_prompt(
-        analysis, exploration, workdir, environment, oss_fuzz_project_dir=oss_fuzz_project_dir
-    )
+    prompt = build_library_prompt(analysis, exploration, workdir, environment)
     if tool == "claude":
         cmd = construct_claude_command(prompt)
     elif tool == "codex":
@@ -268,14 +266,12 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all params are
     )
 
 
-def build_harness_prompt(  # noqa: PLR0913 -- public API; all params are distinct required inputs
+def build_harness_prompt(
     analysis: AnalysisResult,
     harness: HarnessExplorationResult,
     install_dir: Path,
     workdir: Path,
     environment: Environment,
-    *,
-    oss_fuzz_project_dir: Path | None = None,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed harness link probe."""
     instructions = (
@@ -289,7 +285,6 @@ def build_harness_prompt(  # noqa: PLR0913 -- public API; all params are distinc
         environment,
         workdir=workdir,
         project_name=analysis.project_name,
-        oss_fuzz_project_dir=oss_fuzz_project_dir,
     )
     return (
         f"{instructions}\n\n"
@@ -312,7 +307,7 @@ def build_harness_prompt(  # noqa: PLR0913 -- public API; all params are distinc
     )
 
 
-def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all params are distinct required inputs
+def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
     analysis: AnalysisResult,
     harness: HarnessExplorationResult,
     paths: HarnessPaths,
@@ -320,21 +315,13 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all params are
     tool: str = "claude",
     timeout: int = 600,
     environment: Environment = Environment.LOCAL,
-    oss_fuzz_project_dir: Path | None = None,
 ) -> HarnessExplorationResult:
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
     and modify compile_harnesses.sh and harness_src/ directly.
     """
-    prompt = build_harness_prompt(
-        analysis,
-        harness,
-        paths.install_dir,
-        paths.workdir,
-        environment,
-        oss_fuzz_project_dir=oss_fuzz_project_dir,
-    )
+    prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir, environment)
     if tool == "claude":
         cmd = construct_claude_command(prompt)
     elif tool == "codex":

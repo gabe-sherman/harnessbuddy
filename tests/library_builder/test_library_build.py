@@ -111,9 +111,7 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     )
     source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
-    result = build_library(
-        analyze(source), workdir, LocalExecutor(), workdir / "oss-fuzz", agent=_AGENT
-    )
+    result = build_library(analyze(source), workdir, LocalExecutor(), agent=_AGENT)
     return LibBuild(spec=lib, result=result, workdir=workdir, source=src)
 
 
@@ -138,7 +136,7 @@ def broken_cmake_build(
     (src / "stub.h").write_text("#pragma once\n")
     workdir = tmp_path_factory.mktemp("broken_cmake_work")
     analysis = analyze(RepoSource(src, "https://example.com", "broken", None))
-    result = build_library(analysis, workdir, LocalExecutor(), workdir / "oss-fuzz")
+    result = build_library(analysis, workdir, LocalExecutor())
     return result, workdir
 
 

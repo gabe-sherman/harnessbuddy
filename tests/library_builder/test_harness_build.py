@@ -92,7 +92,7 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
     analysis = analyze(source)
-    result = build_library(analysis, workdir, LocalExecutor(), workdir / "oss-fuzz", agent=_AGENT)
+    result = build_library(analysis, workdir, LocalExecutor(), agent=_AGENT)
     install_dir = workdir / "install"
     result = explore_harness_compilation(install_dir, workdir, analysis.language)
     return LibBuild(spec=lib, result=result, workdir=workdir, source=src)

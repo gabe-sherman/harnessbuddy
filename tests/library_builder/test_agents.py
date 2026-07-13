@@ -98,16 +98,14 @@ def test_library_prompt_oss_fuzz_environment_references_check_docker_build(
     tmp_path: Path,
 ) -> None:
     exploration = _failed_cmake_exploration(tmp_path)
-    oss_fuzz_dir = tmp_path / "output" / "oss-fuzz"
     prompt = build_library_prompt(
         _analysis(tmp_path),
         exploration,
         tmp_path / "work",
         Environment.OSS_FUZZ,
-        oss_fuzz_project_dir=oss_fuzz_dir,
     )
     assert "check_docker_build.sh" in prompt
-    assert str(oss_fuzz_dir) in prompt
+    assert str(tmp_path / "work") in prompt
     assert "testlib" in prompt
     assert "check_local_build.sh" not in prompt
 
@@ -128,17 +126,15 @@ def test_harness_prompt_local_environment_references_check_local_build(tmp_path:
 def test_harness_prompt_oss_fuzz_environment_references_check_docker_build(
     tmp_path: Path,
 ) -> None:
-    oss_fuzz_dir = tmp_path / "output" / "oss-fuzz"
     prompt = build_harness_prompt(
         _analysis(tmp_path),
         _failed_harness(""),
         tmp_path / "work" / "install",
         tmp_path / "work",
         Environment.OSS_FUZZ,
-        oss_fuzz_project_dir=oss_fuzz_dir,
     )
     assert "check_docker_build.sh" in prompt
-    assert str(oss_fuzz_dir) in prompt
+    assert str(tmp_path / "work") in prompt
     assert "harness_source" in prompt
 
 

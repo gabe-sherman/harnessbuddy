@@ -7,23 +7,16 @@ from pathlib import Path
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
-    AutotoolsSetup,
     BuildExplorationResult,
     BuildPaths,
     GenerationResult,
     HarnessExplorationResult,
-    Language,
 )
+from harnessbuddy.library_builder.oss_fuzz import workspace
 from harnessbuddy.library_builder.scripts import (
     build_harness_script,
     build_library_script,
     write_default_fuzzer,
-)
-
-_AUTOTOOLS_PACKAGES = ("autoconf", "automake", "libtool", "pkg-config")
-
-_BUILD_SH = (
-    '#!/bin/bash\nset -euo pipefail\n\n"$SRC/build_library.sh"\n"$SRC/compile_harnesses.sh"\n'
 )
 
 _COMPILE_HARNESSES_SH_STUB = (
@@ -63,16 +56,27 @@ def generate_oss_fuzz(
     exploration: BuildExplorationResult | None = None,
     harness_exploration: HarnessExplorationResult | None = None,
 ) -> GenerationResult:
-    """Generate a complete oss-fuzz project skeleton from a static analysis result."""
+    """Generate a complete oss-fuzz project skeleton from a static analysis result.
+
+    When exploration ran in the oss-fuzz environment, the workspace it validated
+    already contains project.yaml/build.sh/build_library.sh/compile_harnesses.sh/
+    harness_source/* — this copies those already-validated files verbatim (FR-005)
+    instead of re-deriving them, so the shipped project is exactly what was validated.
+    Only the Dockerfile is regenerated (via workspace.write_dockerfile), since the
+    shipped variant must omit bear (research.md #5).
+    """
     output_path.mkdir(parents=True)
     (output_path / "harness_source").mkdir()
 
+    validated_workspace = _validated_oss_fuzz_workspace(exploration)
+
     files: list[Path] = [
-        _write_project_yaml(output_path, analysis),
-        _write_dockerfile(output_path, analysis),
-        _write_build_sh(output_path),
-        _write_build_library_sh(output_path, analysis, exploration),
-        _write_compile_harnesses_sh(output_path, harness_exploration),
+        _write_project_yaml(output_path, analysis, validated_workspace),
+        workspace.write_dockerfile(output_path, analysis, include_bear=False),
+        _write_build_sh(output_path, validated_workspace),
+        _write_build_library_sh(output_path, analysis, exploration, validated_workspace),
+        _write_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
+        *_copy_harness_source(output_path, validated_workspace),
         write_default_fuzzer(output_path / "harness_source", analysis),
     ]
 
@@ -83,64 +87,53 @@ def generate_oss_fuzz(
     )
 
 
-def _write_project_yaml(output_path: Path, analysis: AnalysisResult) -> Path:
+def _validated_oss_fuzz_workspace(exploration: BuildExplorationResult | None) -> Path | None:
+    """The workspace directory validated during this run, if exploration ran in the
+    oss-fuzz environment — that workspace is itself a real, buildable OSS-Fuzz project
+    (User Story 2) and is the single source of truth for the files it already contains.
+    """
+    if (
+        exploration is None
+        or exploration.script_path is None
+        or exploration.environment is not Environment.OSS_FUZZ
+    ):
+        return None
+    return exploration.script_path.parent
+
+
+def _write_project_yaml(
+    output_path: Path, analysis: AnalysisResult, validated_workspace: Path | None
+) -> Path:
     path = output_path / "project.yaml"
-    language = "c" if analysis.language == Language.C else "c++"
-    path.write_text(
-        f"homepage: {analysis.clone_url}\n"
-        f"language: {language}\n"
-        "sanitizers:\n"
-        "  - address\n"
-        "  - undefined\n"
-        f"main_repo: {analysis.clone_url}\n"
-    )
-    return path
+    if validated_workspace is not None and (validated_workspace / "project.yaml").exists():
+        shutil.copy2(validated_workspace / "project.yaml", path)
+        return path
+    return workspace.write_project_yaml(output_path, analysis)
 
 
-def _write_dockerfile(output_path: Path, analysis: AnalysisResult) -> Path:
-    path = output_path / "Dockerfile"
-    lines = ["FROM gcr.io/oss-fuzz-base/base-builder\n"]
-
-    apt_packages: list[str] = []
-    if analysis.autotools_setup in {AutotoolsSetup.AUTOGEN, AutotoolsSetup.AUTORECONF}:
-        apt_packages.extend(_AUTOTOOLS_PACKAGES)
-    apt_packages.extend(analysis.system_packages)
-    if apt_packages:
-        pkgs = " ".join(apt_packages)
-        lines.append(f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n")
-
-    lines.append(f"RUN git clone {analysis.clone_url} $SRC/src\n")
-    if analysis.repo_ref is not None:
-        lines.append(f"RUN git -C $SRC/src checkout {analysis.repo_ref}\n")
-    lines += [
-        "COPY harness_source $SRC/harness_source\n",
-        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n",
-        "WORKDIR $SRC/src\n",
-    ]
-    path.write_text("".join(lines))
-    return path
-
-
-def _write_build_sh(output_path: Path) -> Path:
+def _write_build_sh(output_path: Path, validated_workspace: Path | None) -> Path:
     path = output_path / "build.sh"
-    path.write_text(_BUILD_SH)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+    if validated_workspace is not None and (validated_workspace / "build.sh").exists():
+        shutil.copy2(validated_workspace / "build.sh", path)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return path
+    return workspace.write_build_sh(output_path)
 
 
 def _write_build_library_sh(
-    output_path: Path, analysis: AnalysisResult, exploration: BuildExplorationResult | None
+    output_path: Path,
+    analysis: AnalysisResult,
+    exploration: BuildExplorationResult | None,
+    validated_workspace: Path | None,
 ) -> Path:
-    """Write build_library.sh, reusing the explored (possibly agent-fixed) script when available.
-
-    The Dockerfile clones the repo to $SRC/src, matching the $SCRIPT_DIR/src the explored
-    script uses, so copying it verbatim preserves any fixes an agent made during exploration.
-    Falls back to the static template when no exploration was run, its script isn't safe
-    to copy (e.g. a non-standard source layout), or it was validated in a different
-    environment than this output directory (Environment.OSS_FUZZ).
+    """Write build_library.sh, copying the explored (possibly agent-fixed) script from
+    the validated workspace when available. Falls back to the static template only when
+    no exploration was run in this environment at all.
     """
     path = output_path / "build_library.sh"
-    if (
+    if validated_workspace is not None and (validated_workspace / "build_library.sh").exists():
+        shutil.copy2(validated_workspace / "build_library.sh", path)
+    elif (
         exploration is not None
         and exploration.script_path is not None
         and exploration.environment is Environment.OSS_FUZZ
@@ -163,30 +156,47 @@ def _write_build_library_sh(
 
 
 def _write_compile_harnesses_sh(
-    output_path: Path, harness: HarnessExplorationResult | None
+    output_path: Path,
+    harness: HarnessExplorationResult | None,
+    validated_workspace: Path | None,
 ) -> Path:
-    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed)
-    script when it was validated in this project's environment (Environment.OSS_FUZZ).
-
-    The validated script was written with harness_dir_name="harness_source" for that
-    environment (matching this project's layout), so copying it verbatim preserves any
-    in-container fixes. Falls back to the regenerated template otherwise.
+    """Write compile_harnesses.sh, copying the validated (possibly agent-fixed, possibly
+    still a stub) script from the validated workspace when available. Falls back to the
+    regenerated template only when no exploration ran in this environment at all.
     """
     path = output_path / "compile_harnesses.sh"
-    if (
+    if validated_workspace is not None and (validated_workspace / "compile_harnesses.sh").exists():
+        shutil.copy2(validated_workspace / "compile_harnesses.sh", path)
+    elif (
         harness is not None
         and harness.script_path is not None
         and harness.environment is Environment.OSS_FUZZ
     ):
         shutil.copy2(harness.script_path, path)
-        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        return path
-
-    content = (
-        build_harness_script(harness, harness_dir_name="harness_source", oss_fuzz=True)
-        if harness is not None
-        else _COMPILE_HARNESSES_SH_STUB
-    )
-    path.write_text(content)
+    else:
+        content = (
+            build_harness_script(harness, harness_dir_name="harness_source", oss_fuzz=True)
+            if harness is not None
+            else _COMPILE_HARNESSES_SH_STUB
+        )
+        path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
+
+
+def _copy_harness_source(output_path: Path, validated_workspace: Path | None) -> list[Path]:
+    """Copy harness_source/* from the validated workspace, excluding the discovery-only
+    probe_harness.* — write_default_fuzzer supplies the real stub in its place."""
+    if validated_workspace is None:
+        return []
+    src_dir = validated_workspace / "harness_source"
+    if not src_dir.exists():
+        return []
+    copied: list[Path] = []
+    for entry in sorted(src_dir.iterdir()):
+        if entry.name.startswith("probe_harness."):
+            continue
+        dest = output_path / "harness_source" / entry.name
+        shutil.copy2(entry, dest)
+        copied.append(dest)
+    return copied

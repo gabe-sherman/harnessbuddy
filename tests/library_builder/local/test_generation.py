@@ -251,3 +251,53 @@ def test_compile_harnesses_sh_falls_back_to_template_without_script_path(tmp_pat
     content = (result.output_path / "compile_harnesses.sh").read_text()
     assert "libfoo.a" in content
     assert "-lresolv" in content
+
+
+# workspace copy — build_library.sh/compile_harnesses.sh/harness_src/* copied verbatim
+# from the validated workspace instead of re-derived (T017, T020, FR-005)
+
+
+def _validated_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
+    harness_src = workspace / "harness_src"
+    harness_src.mkdir()
+    (harness_src / "probe_harness.c").write_text("// discovery-only probe, never shipped\n")
+    (harness_src / "extra_helper.c").write_text("// non-probe harness_src content\n")
+    return workspace
+
+
+def test_workspace_copy_build_library_sh_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _exploration_with_script(workspace / "build_library.sh")
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert content == (workspace / "build_library.sh").read_text()
+
+
+def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_result(
+    tmp_path: Path,
+) -> None:
+    """compile_harnesses.sh is copied from the workspace whenever it exists there —
+    even a harness result with script_path=None (e.g. still a stub) — since the
+    workspace is the single source of truth for what was actually validated."""
+    workspace = _validated_workspace(tmp_path)
+    exploration = _exploration_with_script(workspace / "build_library.sh")
+    harness = _harness_with_script(None)
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration, harness)
+    content = (result.output_path / "compile_harnesses.sh").read_text()
+    assert content == (workspace / "compile_harnesses.sh").read_text()
+
+
+def test_workspace_copy_harness_src_excludes_probe_harness(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _exploration_with_script(workspace / "build_library.sh")
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    output_names = {p.name for p in (result.output_path / "harness_src").iterdir()}
+    assert "extra_helper.c" in output_names
+    assert "probe_harness.c" not in output_names
+    assert (result.output_path / "harness_src" / "extra_helper.c").read_text() == (
+        workspace / "harness_src" / "extra_helper.c"
+    ).read_text()

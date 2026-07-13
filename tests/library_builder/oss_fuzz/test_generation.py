@@ -375,3 +375,88 @@ def test_compile_harnesses_sh_falls_back_to_template_when_environment_mismatched
     content = (result.output_path / "compile_harnesses.sh").read_text()
     assert content != validated.read_text()
     assert "libfoo.a" in content
+
+
+# workspace copy — project.yaml/build.sh/build_library.sh/compile_harnesses.sh/
+# harness_source/* copied verbatim from the validated workspace instead of re-derived
+# (T016, T020, FR-005); only the Dockerfile is regenerated (bear must differ, research.md #5)
+
+
+def _validated_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "project.yaml").write_text("homepage: workspace-validated\n")
+    (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
+    (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
+    harness_source = workspace / "harness_source"
+    harness_source.mkdir()
+    (harness_source / "probe_harness.c").write_text("// discovery-only probe, never shipped\n")
+    (harness_source / "extra_helper.c").write_text("// non-probe harness_source content\n")
+    return workspace
+
+
+def test_workspace_copy_project_yaml_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "project.yaml").read_text()
+    assert content == (workspace / "project.yaml").read_text()
+
+
+def test_workspace_copy_build_sh_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build.sh").read_text()
+    assert content == (workspace / "build.sh").read_text()
+
+
+def test_workspace_copy_build_library_sh_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "build_library.sh").read_text()
+    assert content == (workspace / "build_library.sh").read_text()
+
+
+def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_result(
+    tmp_path: Path,
+) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    harness = _fake_harness(None)
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration, harness)
+    content = (result.output_path / "compile_harnesses.sh").read_text()
+    assert content == (workspace / "compile_harnesses.sh").read_text()
+
+
+def test_workspace_copy_harness_source_excludes_probe_harness(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    output_names = {p.name for p in (result.output_path / "harness_source").iterdir()}
+    assert "extra_helper.c" in output_names
+    assert "probe_harness.c" not in output_names
+    assert (result.output_path / "harness_source" / "extra_helper.c").read_text() == (
+        workspace / "harness_source" / "extra_helper.c"
+    ).read_text()
+
+
+def test_workspace_copy_dockerfile_still_regenerated_without_bear(tmp_path: Path) -> None:
+    """The Dockerfile is the one file never copied from the workspace verbatim — the
+    workspace's live copy always includes bear (research.md #5), which must never ship."""
+    workspace = _validated_workspace(tmp_path)
+    from harnessbuddy.library_builder.oss_fuzz import workspace as workspace_module
+
+    workspace_module.write_dockerfile(workspace, _analysis("cmake_repo"), include_bear=True)
+    exploration = _fake_exploration()
+    exploration.script_path = workspace / "build_library.sh"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    content = (result.output_path / "Dockerfile").read_text()
+    assert "bear" not in content

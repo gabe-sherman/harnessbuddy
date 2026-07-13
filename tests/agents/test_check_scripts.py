@@ -51,11 +51,46 @@ def test_check_local_build_exits_nonzero_on_broken_project(tmp_path: Path) -> No
 
 
 def test_check_local_build_wrong_arg_count_exits_nonzero() -> None:
-    result = subprocess.run(
-        ["bash", str(_CHECK_LOCAL_BUILD)], capture_output=True, text=True
-    )
+    result = subprocess.run(["bash", str(_CHECK_LOCAL_BUILD)], capture_output=True, text=True)
     assert result.returncode != 0
     assert "Usage" in result.stderr
+
+
+# stage markers — combined output attributes failure to the right stage (T023/T024,
+# User Story 3) even though verification is now a single atomic pass/fail result.
+
+
+def test_check_local_build_library_failure_output_identifies_stage_before_harness(
+    tmp_path: Path,
+) -> None:
+    _write_broken_project(tmp_path)
+    result = subprocess.run(
+        ["bash", str(_CHECK_LOCAL_BUILD), str(tmp_path)], capture_output=True, text=True
+    )
+    combined = result.stdout + result.stderr
+    assert "=== build_library.sh ===" in combined
+    # compile_harnesses.sh's own marker is never reached — build_library.sh failed first.
+    assert "=== compile_harnesses.sh ===" not in combined
+
+
+def test_check_local_build_harness_failure_output_shows_library_succeeded_first(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "build_library.sh").write_text(_GOOD_BUILD_LIBRARY_SH)
+    (tmp_path / "compile_harnesses.sh").write_text(
+        "#!/bin/bash\nset -euo pipefail\necho 'simulated harness failure' >&2\nexit 1\n"
+    )
+    result = subprocess.run(
+        ["bash", str(_CHECK_LOCAL_BUILD), str(tmp_path)], capture_output=True, text=True
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "=== build_library.sh ===" in combined
+    assert "=== compile_harnesses.sh ===" in combined
+    assert "simulated harness failure" in combined
+    assert combined.index("=== build_library.sh ===") < combined.index(
+        "=== compile_harnesses.sh ==="
+    )
 
 
 # check_docker_build.sh (T029) — requires a real Docker daemon

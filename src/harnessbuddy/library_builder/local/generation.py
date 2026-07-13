@@ -19,7 +19,42 @@ from harnessbuddy.library_builder.scripts import (
     write_default_fuzzer,
 )
 
-_COMPILE_HARNESSES_SH_STUB = "#!/bin/bash\nset -euo pipefail\n\n# TODO: compile harnesses\n"
+_COMPILE_HARNESSES_SH_STUB = (
+    "#!/bin/bash\n"
+    "set -euo pipefail\n"
+    "\n"
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    "\n"
+    'CC="${CC:-clang}"\n'
+    'CXX="${CXX:-clang++}"\n'
+    'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
+    'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
+    "\n"
+    'INSTALL_DIR="$SCRIPT_DIR/install"\n'
+    'HARNESS_DIR="$SCRIPT_DIR/harness_src"\n'
+    'OUT_DIR="$SCRIPT_DIR/out"\n'
+    'mkdir -p "$OUT_DIR"\n'
+    "\n"
+    "# TODO: add static library paths\n"
+    "STATIC_LIBS=()\n"
+    "EXTRA_LINK_FLAGS=\n"
+    "\n"
+    'for harness in "$HARNESS_DIR"/*; do\n'
+    '  [ -f "$harness" ] || continue\n'
+    '  name="$(basename "$harness")"\n'
+    '  output="${name%.*}"\n'
+    '  case "$harness" in\n'
+    "    *.c)\n"
+    '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
+    '        "${STATIC_LIBS[@]}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
+    "      ;;\n"
+    "    *.cc|*.cpp|*.cxx)\n"
+    '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
+    '        "${STATIC_LIBS[@]}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
+    "      ;;\n"
+    "  esac\n"
+    "done\n"
+)
 
 
 def generate_local(
@@ -29,14 +64,24 @@ def generate_local(
     harness_exploration: HarnessExplorationResult | None = None,
     brew_packages: list[str] | None = None,
 ) -> GenerationResult:
-    """Generate a local build skeleton for host-native development and testing."""
+    """Generate a local build skeleton for host-native development and testing.
+
+    When exploration ran in the local environment, the workspace it validated already
+    contains build_library.sh/compile_harnesses.sh/harness_src/* — this copies those
+    already-validated files verbatim (FR-005) instead of re-deriving them. setup.sh has
+    no workspace equivalent (exploration already operates on a pre-cloned repository), so
+    it is always written fresh.
+    """
     output_path.mkdir(parents=True)
     (output_path / "harness_src").mkdir()
 
+    validated_workspace = _validated_local_workspace(exploration)
+
     files: list[Path] = [
         _write_setup_sh(output_path, analysis, brew_packages=brew_packages or []),
-        _write_build_library_sh(output_path, analysis, exploration),
-        _write_compile_harnesses_sh(output_path, harness_exploration),
+        _write_build_library_sh(output_path, analysis, exploration, validated_workspace),
+        _write_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
+        *_copy_harness_src(output_path, validated_workspace),
         write_default_fuzzer(output_path / "harness_src", analysis),
     ]
 
@@ -45,6 +90,36 @@ def generate_local(
         output_path=output_path,
         files=files,
     )
+
+
+def _validated_local_workspace(exploration: BuildExplorationResult | None) -> Path | None:
+    """The workspace directory validated during this run, if exploration ran in the
+    local environment — the single source of truth for the files it already contains."""
+    if (
+        exploration is None
+        or exploration.script_path is None
+        or exploration.environment is not Environment.LOCAL
+    ):
+        return None
+    return exploration.script_path.parent
+
+
+def _copy_harness_src(output_path: Path, validated_workspace: Path | None) -> list[Path]:
+    """Copy harness_src/* from the validated workspace, excluding the discovery-only
+    probe_harness.* — write_default_fuzzer supplies the real stub in its place."""
+    if validated_workspace is None:
+        return []
+    src_dir = validated_workspace / "harness_src"
+    if not src_dir.exists():
+        return []
+    copied: list[Path] = []
+    for entry in sorted(src_dir.iterdir()):
+        if entry.name.startswith("probe_harness."):
+            continue
+        dest = output_path / "harness_src" / entry.name
+        shutil.copy2(entry, dest)
+        copied.append(dest)
+    return copied
 
 
 def _write_setup_sh(
@@ -76,19 +151,19 @@ def _write_setup_sh(
 
 
 def _write_build_library_sh(
-    output_path: Path, analysis: AnalysisResult, exploration: BuildExplorationResult | None
+    output_path: Path,
+    analysis: AnalysisResult,
+    exploration: BuildExplorationResult | None,
+    validated_workspace: Path | None,
 ) -> Path:
-    """Write build_library.sh, reusing the explored (possibly agent-fixed) script when available.
-
-    The explored script already uses $SCRIPT_DIR-relative paths matching this output
-    layout (src/, build/, install/), so copying it verbatim preserves any fixes an
-    agent made during exploration. Falls back to the static template when no
-    exploration was run, its script isn't safe to copy (e.g. a non-standard source
-    layout), or it was validated in a different environment than this output directory
-    (Environment.LOCAL).
+    """Write build_library.sh, copying the explored (possibly agent-fixed) script from
+    the validated workspace when available. Falls back to the static template only when
+    no exploration was run in this environment at all.
     """
     path = output_path / "build_library.sh"
-    if (
+    if validated_workspace is not None and (validated_workspace / "build_library.sh").exists():
+        shutil.copy2(validated_workspace / "build_library.sh", path)
+    elif (
         exploration is not None
         and exploration.script_path is not None
         and exploration.environment is Environment.LOCAL
@@ -112,19 +187,18 @@ def _write_build_library_sh(
 
 
 def _write_compile_harnesses_sh(
-    output_path: Path, harness: HarnessExplorationResult | None
+    output_path: Path,
+    harness: HarnessExplorationResult | None,
+    validated_workspace: Path | None,
 ) -> Path:
-    """Write compile_harnesses.sh, reusing the validated (possibly agent-fixed)
-    script when available.
-
-    The validated script already uses $SCRIPT_DIR-relative paths matching this output
-    layout (install/, harness_src/, out/), so copying it verbatim preserves any fixes
-    made while resolving transitive link flags. Falls back to the static template
-    (regenerated from static_libs/transitive_link_flags) when no exploration was run, or
-    it was validated in a different environment than this output directory (Environment.LOCAL).
+    """Write compile_harnesses.sh, copying the validated (possibly agent-fixed, possibly
+    still a stub) script from the validated workspace when available. Falls back to the
+    regenerated template only when no exploration ran in this environment at all.
     """
     path = output_path / "compile_harnesses.sh"
-    if (
+    if validated_workspace is not None and (validated_workspace / "compile_harnesses.sh").exists():
+        shutil.copy2(validated_workspace / "compile_harnesses.sh", path)
+    elif (
         harness is not None
         and harness.script_path is not None
         and harness.environment is Environment.LOCAL

@@ -31,6 +31,12 @@ def mock_host_build() -> Generator[MagicMock]:
             "harnessbuddy.library_builder.exploration._validate_install_artifacts",
             return_value=[],
         ),
+        # LocalExecutor now also gates on the shared check_local_build.sh script
+        # (T006/T007) — stub that boundary too so tests don't invoke a real build.
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+            return_value=RunResult(stdout="OK", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
     ):
         yield m
 
@@ -250,6 +256,10 @@ def test_no_agents_skips_agent_when_build_fails(
     with (
         patch(
             "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
             return_value=failed_result,
         ),
         patch(
@@ -587,6 +597,10 @@ def test_generate_agent_report_summary_reaches_stats_on_library_success(
             return_value=failed_result,
         ),
         patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
             "harnessbuddy.library_builder.agents.run_agent_streaming",
             side_effect=fake_run_agent_streaming,
         ),
@@ -635,6 +649,10 @@ def test_generate_agent_report_summary_reaches_stats_on_library_action_required(
     with (
         patch(
             "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
             return_value=failed_result,
         ),
         patch(
@@ -798,6 +816,10 @@ def test_generate_agent_report_extra_library_path_reaches_both_harness_scripts(
             return_value=failed_result,
         ),
         patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
             "harnessbuddy.library_builder.agents.run_agent_streaming",
             side_effect=fake_run_agent_streaming,
         ),
@@ -854,6 +876,10 @@ def test_generate_library_missing_package_reaches_output_on_success(
             return_value=failed_result,
         ),
         patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
             "harnessbuddy.library_builder.agents.run_agent_streaming",
             side_effect=fake_run_agent_streaming,
         ),
@@ -905,6 +931,10 @@ def test_generate_library_missing_package_reaches_state_then_next_run_output(
     with (
         patch(
             "harnessbuddy.library_builder.exploration.run_command_streaming",
+            return_value=failed_result,
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
             return_value=failed_result,
         ),
         patch(

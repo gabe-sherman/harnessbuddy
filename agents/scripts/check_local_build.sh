@@ -10,11 +10,13 @@ work_dir=$1
 
 cd "$work_dir"
 
+echo "=== build_library.sh ==="
 if ! bash build_library.sh; then
   echo "FAILED: build_library.sh did not succeed" >&2
   exit 1
 fi
 
+echo "=== compile_harnesses.sh ==="
 if ! bash compile_harnesses.sh; then
   echo "FAILED: compile_harnesses.sh did not succeed" >&2
   exit 1

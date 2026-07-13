@@ -33,9 +33,21 @@ src/harnessbuddy/
     scripts.py                  # per-build-system build_library.sh templates
     agents.py                   # LLM agent fallback orchestration
     harness_explorer.py         # harness compilation probe (--whole-archive dep discovery)
+    environments/
+      verification.py           # VerificationResult + run_local_verification/run_docker_verification
+                                 # wrappers around agents/scripts/check_*_build.sh
     local/generation.py         # local output scaffold generation
-    oss_fuzz/generation.py      # OSS-Fuzz project generation
+    oss_fuzz/
+      workspace.py               # shared Dockerfile/build.sh/project.yaml writers, used both
+                                  # during exploration (workspace materialization) and by
+                                  # oss_fuzz/generation.py (final output)
+      generation.py               # OSS-Fuzz project generation
 ```
+
+`agents/scripts/check_local_build.sh` and `check_docker_build.sh` are invoked both by the
+repair agent and directly by `LocalExecutor`/`OssFuzzExecutor` (via
+`library_builder/environments/verification.py`) — they are the single definition of "the
+build passed" for each environment, not agent-only helper scripts.
 
 ## Key Commands
 
