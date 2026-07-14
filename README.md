@@ -88,4 +88,20 @@ uv run harnessbuddy extract-features <BUILD_PATH>   # -> features.json (Must run
 uv run harnessbuddy generate-yaml <BUILD_PATH>       # -> benchmark YAML
 ```
 
+`extract-features` runs a Clang LibTooling-based parser over every header/source file in
+`compile_commands.json` and writes `<BUILD_PATH>/features.json`, a structured inventory of
+the library's C/C++ declarations:
+
+- `functions` — name, return type, parameters, full signature, declaring header, and
+  whether it's public API (declared in a header, not `static`)
+- `typedefs` — name, underlying type, declaring header
+- `macros` — name, object- vs. function-like, parameters (if function-like), value,
+  declaring header
+- `enums` — name (if any), enumerators with their values, declaring header
+- `records` — structs/unions: name (if any), `kind`, fields, declaring header
+- `warnings` — non-fatal issues hit while parsing
+
+`generate-yaml` reads `features.json` and keeps only `is_public_api: true` functions to
+build an OSS-Fuzz-Gen compatible benchmark YAML.
+
 Run `uv run harnessbuddy --help` for details.
