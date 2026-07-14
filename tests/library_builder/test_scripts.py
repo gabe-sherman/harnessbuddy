@@ -85,9 +85,10 @@ def test_empty_extra_paths_local_script_is_pinned() -> None:
     script = build_harness_script(_harness())
     assert script == (
         '#!/bin/bash\nset -euo pipefail\n\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"'
-        ' && pwd)"\n\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\n'
-        'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
-        'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n\nINSTALL_DIR="$SCRIPT_DIR/install"\n'
+        ' && pwd)"\nBUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n\nCC="${CC:-clang}"\n'
+        'CXX="${CXX:-clang++}"\n'
+        'CFLAGS="${CFLAGS:-}"\n'
+        'CXXFLAGS="${CXXFLAGS:-}"\n\nINSTALL_DIR="$BUILD_PREFIX/install"\n'
         'HARNESS_DIR="$SCRIPT_DIR/harness_src"\nOUT_DIR="$SCRIPT_DIR/out"\nmkdir -p "$OUT_DIR"\n'
         '\nSTATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         'EXTRA_LIB_PATHS=\n\nfor harness in "$HARNESS_DIR"/*; do\n  [ -f "$harness" ] ||'
@@ -105,7 +106,8 @@ def test_empty_extra_paths_oss_fuzz_script_is_pinned() -> None:
     script = build_harness_script(_harness(), oss_fuzz=True)
     assert script == (
         '#!/bin/bash\nset -euo pipefail\n\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"'
-        ' && pwd)"\n\nINSTALL_DIR="$SCRIPT_DIR/install"\nHARNESS_DIR="$SCRIPT_DIR/harness_src"\n'
+        ' && pwd)"\nBUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n\n'
+        'INSTALL_DIR="$BUILD_PREFIX/install"\nHARNESS_DIR="$SCRIPT_DIR/harness_src"\n'
         '\nSTATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         'EXTRA_LIB_PATHS=\n\nfor harness in "$HARNESS_DIR"/*; do\n  [ -f "$harness" ] ||'
         ' continue\n  name="$(basename "$harness")"\n  echo "Compiling harness $name"\n'

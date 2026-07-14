@@ -61,8 +61,8 @@ def write_build_library_script(
         analysis.build_system,
         BuildPaths(
             source_dir=source_dir,
-            build_dir="$SCRIPT_DIR/build",
-            install_dir="$SCRIPT_DIR/install",
+            build_dir="$BUILD_PREFIX/build",
+            install_dir="$BUILD_PREFIX/install",
         ),
         host_fallbacks=environment is Environment.LOCAL,
         autotools_setup=analysis.autotools_setup,

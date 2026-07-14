@@ -86,8 +86,8 @@ def test_standard_layout_script_uses_relative_paths(tmp_path: Path) -> None:
     _run_explore(workdir, source)
     content = (workdir / "build_library.sh").read_text()
     assert "$SCRIPT_DIR/src" in content
-    assert "$SCRIPT_DIR/build" in content
-    assert "$SCRIPT_DIR/install" in content
+    assert "$BUILD_PREFIX/build" in content
+    assert "$BUILD_PREFIX/install" in content
     assert str(workdir.resolve()) not in content
 
 

@@ -35,6 +35,7 @@ def build_library_script(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
     )
     if host_fallbacks:
         header += _HOST_ENV_FALLBACKS
@@ -215,17 +216,20 @@ def build_harness_script(
         "set -euo pipefail\n"
         "\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
         "\n"
     )
     if not oss_fuzz:
         preamble += (
             'CC="${CC:-clang}"\n'
             'CXX="${CXX:-clang++}"\n'
-            'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
-            'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
+            'CFLAGS="${CFLAGS:-}"\n'
+            'CXXFLAGS="${CXXFLAGS:-}"\n'
             "\n"
         )
-    preamble += f'INSTALL_DIR="$SCRIPT_DIR/install"\nHARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'
+    preamble += (
+        f'INSTALL_DIR="$BUILD_PREFIX/install"\nHARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'
+    )
     if not oss_fuzz:
         preamble += 'OUT_DIR="$SCRIPT_DIR/out"\nmkdir -p "$OUT_DIR"\n'
     preamble += "\n"

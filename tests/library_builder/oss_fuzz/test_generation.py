@@ -146,7 +146,7 @@ def test_dockerfile_with_ref(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("fixture_name", "expected_cmd"),
     [
-        ("cmake_repo", "cmake -B $SCRIPT_DIR/build"),
+        ("cmake_repo", "cmake -B $BUILD_PREFIX/build"),
         ("meson_repo", "meson setup"),
         ("autotools_repo", "$SCRIPT_DIR/src/configure"),
         ("autotools_configure_repo", "$SCRIPT_DIR/src/configure"),

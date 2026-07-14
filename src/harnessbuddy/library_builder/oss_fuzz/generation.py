@@ -24,8 +24,9 @@ _COMPILE_HARNESSES_SH_STUB = (
     "set -euo pipefail\n"
     "\n"
     'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
     "\n"
-    'INSTALL_DIR="$SCRIPT_DIR/install"\n'
+    'INSTALL_DIR="$BUILD_PREFIX/install"\n'
     'HARNESS_DIR="$SCRIPT_DIR/harness_source"\n'
     "\n"
     "# TODO: add static library paths\n"
@@ -150,8 +151,8 @@ def _write_build_library_sh(
                 analysis.build_system,
                 BuildPaths(
                     source_dir="$SCRIPT_DIR/src",
-                    build_dir="$SCRIPT_DIR/build",
-                    install_dir="$SCRIPT_DIR/install",
+                    build_dir="$BUILD_PREFIX/build",
+                    install_dir="$BUILD_PREFIX/install",
                 ),
                 autotools_setup=analysis.autotools_setup,
             )
