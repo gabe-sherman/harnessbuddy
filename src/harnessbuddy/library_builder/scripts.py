@@ -12,7 +12,7 @@ from harnessbuddy.library_builder.models import (
 )
 
 _HOST_ENV_FALLBACKS = (
-    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
+    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:--fsanitize=fuzzer}"\nCXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
 )
 
 
@@ -223,8 +223,8 @@ def build_harness_script(
         preamble += (
             'CC="${CC:-clang}"\n'
             'CXX="${CXX:-clang++}"\n'
-            'CFLAGS="${CFLAGS:-}"\n'
-            'CXXFLAGS="${CXXFLAGS:-}"\n'
+            'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
+            'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
             "\n"
         )
     preamble += (

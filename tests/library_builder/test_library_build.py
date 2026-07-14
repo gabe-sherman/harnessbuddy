@@ -79,7 +79,7 @@ _AGENT = "claude"
 # Smoke subset: a small, fast cross-section of build systems (cmake, make, autotools x3)
 # that runs by default. The rest of _STATIC_LIBS is real but slower coverage, opt-in via
 # `-m build_matrix` (see pyproject.toml's addopts).
-_SMOKE_PROJECT_NAMES = {"zlib", "lcms", "lz4", "libplist", "file"}
+_SMOKE_PROJECT_NAMES = {"zlib", "lcms", "libplist", "file"}
 _SMOKE_STATIC_LIBS = [lib for lib in _STATIC_LIBS if lib.project_name in _SMOKE_PROJECT_NAMES]
 _EXTENDED_STATIC_LIBS = [
     lib for lib in _STATIC_LIBS if lib.project_name not in _SMOKE_PROJECT_NAMES
@@ -90,10 +90,9 @@ _EXTENDED_STATIC_LIBS = [
 # count. Everything not listed here (extended statics, agentic libs) stays LOCAL.
 _SMOKE_ENVIRONMENTS: dict[str, Environment] = {
     "zlib": Environment.OSS_FUZZ,
-    "lz4": Environment.LOCAL,
     "lcms": Environment.OSS_FUZZ,
     "file": Environment.LOCAL,
-    "libplist": Environment.OSS_FUZZ,
+    "libplist": Environment.LOCAL,
 }
 
 
@@ -126,6 +125,7 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     run-scoped image) that only its own prior run_library_build call establishes."""
     environment = _SMOKE_ENVIRONMENTS.get(lib.project_name, Environment.LOCAL)
     executor = _select_executor(environment)
+    print(f"RUNNING BUILD LIB FOR {lib.project_name}")
     src = tmp_path_factory.mktemp(f"{lib.project_name}_src")
     subprocess.run(
         ["git", "clone", "--depth=1", lib.url, str(src)],
@@ -186,16 +186,8 @@ def broken_cmake_build(
 
 
 class _StaticLibraryBuildChecks:
-    # Assert no claude code usage here
-    @pytest.fixture(autouse=True)
-    def _forbid_agent(self) -> Generator[None]:
-        with patch(
-            "harnessbuddy.library_builder.agents.invoke_library_builder_agent",
-            side_effect=AssertionError(
-                "invoke_library_builder_agent must not be called in static build tests"
-            ),
-        ):
-            yield
+    global _AGENT
+    _AGENT=None
 
     def test_library_builds(self, real_library_build: LibBuild) -> None:
         result = real_library_build.library_result

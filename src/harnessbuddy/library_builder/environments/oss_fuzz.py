@@ -59,6 +59,30 @@ def _is_within(path: Path, base: Path) -> bool:
 _CONTAINER_SRC_DIR = "/src"
 
 
+def _ensure_source_symlink(workdir: Path, analysis: AnalysisResult) -> None:
+    """Symlink workdir/src to the real source directory when it lives elsewhere, so
+    is_standard_source_layout's resolve()-equality check (exploration.py) treats this as
+    a standard layout and write_build_library_script emits the portable $SCRIPT_DIR/src
+    path instead of a host-only absolute path.
+
+    $SCRIPT_DIR/src then resolves correctly in both contexts build_library.sh runs in:
+    the bind-mounted exploration probe below (this symlink's target is reachable there
+    via run_library_build's identity extra_mounts bind) and check_docker_build.sh's
+    from-scratch container (where $SCRIPT_DIR/src is the Dockerfile's own fresh git
+    clone, unrelated to any host symlink). Without this, a non-standard-layout source
+    (e.g. ingest_local pointed at an arbitrary path) only builds in the bind-mounted
+    probe — check_docker_build.sh's unmounted container has no way to see the host path
+    baked into build_library.sh and fails with a missing-source-directory error.
+    """
+    link = workdir / "src"
+    source = analysis.source_path.resolve()
+    if link.resolve() == source:
+        return
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(source)
+
+
 def _docker_run_factory(image_tag: str, extra_mounts: list[Path]) -> Runner:
     """Build a Runner that executes command inside image_tag via `docker run --entrypoint bash`.
 
@@ -241,6 +265,7 @@ class OssFuzzExecutor:
         workdir = workdir.resolve()
         self._project_name = analysis.project_name
         self._materialize_workspace(workdir, analysis)
+        _ensure_source_symlink(workdir, analysis)
         # Written before _ensure_image: the workspace Dockerfile's COPY of
         # build_library.sh (workspace.write_dockerfile) requires it to already exist.
         write_build_library_script(analysis, workdir, environment=Environment.OSS_FUZZ)

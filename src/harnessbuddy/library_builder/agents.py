@@ -76,7 +76,12 @@ _LOCAL_PACKAGE_POLICY = (
     "install yourself here, even for a package you're fully confident about — that would "
     "make an irreversible change to the user's system. Follow the missing-package steps "
     "above: disable the optional feature if possible, otherwise report it in "
-    "agent_report.json and stop."
+    "agent_report.json and stop. This isn't specific to package managers: don't make any "
+    "other global change to this host either (editing ~/.bashrc or another shell rc "
+    "file, a global `pip install`/`npm install -g`, writing outside workdir) even if it "
+    "would fix the build faster — nothing outside workdir is reflected in this "
+    "project's output, so the fix wouldn't reproduce on a different machine. If the fix "
+    "requires it, put it in a script inside workdir instead."
 )
 
 _OSS_FUZZ_PACKAGE_POLICY = (

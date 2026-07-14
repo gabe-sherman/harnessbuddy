@@ -18,6 +18,34 @@ real project directory that generation copies its final output from (for oss-fuz
 the same directory that becomes the shipped project). Edits you make here to
 build_library.sh, a Dockerfile, or other files persist into that output.
 
+## Reproducibility
+
+The verification command — and every future rebuild of this project, on any machine,
+months from now — only ever sees the files saved in workdir plus a fresh `git clone` of
+the library's source. Two rules follow from that:
+
+- **Persist every fix to disk, and only to disk.** Nothing outside what's saved in
+  `build_library.sh` (or a Dockerfile/patch file it invokes) survives to the next run —
+  not a command typed directly in this shell, not an exported env var, not a file
+  edited by hand outside what the script itself does. The script must succeed
+  standalone against a freshly cloned source tree, with no leftover state from this or
+  any prior attempt (a partially-built `build/` directory, a file created by hand). If
+  a fix needs an env var, a package, or a symlink, encode it into build_library.sh (or
+  the Dockerfile) so a fresh checkout reproduces it identically.
+- **Hand-edits to the source tree do not persist.** Both the local `setup.sh` and the
+  shipped oss-fuzz `Dockerfile` re-clone the library from git at build time — the copy
+  of the source sitting in workdir right now is discarded the moment you exit. If a fix
+  genuinely requires changing a source file (a broken CMakeLists.txt, a workaround for a
+  compiler-version bug in a `.c` file), encode that change as a step build_library.sh
+  performs itself — e.g. a `sed -i` invocation, or `patch < "$SCRIPT_DIR/some.patch"`
+  where the patch file lives next to build_library.sh — not a one-off edit to the file
+  in the source directory.
+
+Also: use the script's own `$SCRIPT_DIR`/`$BUILD_PREFIX`/`$INSTALL_DIR` variables
+(already defined near the top of build_library.sh) instead of baking in this session's
+actual filesystem paths (e.g. `/home/user/.harnessbuddy/...`) — those paths won't exist
+on a different machine or in a fresh container.
+
 ## What to do
 
 1. Read build_library.sh in the work directory to understand what was attempted.
@@ -35,7 +63,8 @@ build_library.sh, a Dockerfile, or other files persist into that output.
      Homebrew (`brew`) from your own knowledge. These are frequently different from each
      other and from the library name itself — e.g. OpenLDAP is `libldap2-dev` on apt but
      `openldap` on brew. Do not guess a single name and reuse it for both; work out each
-     independently. Do not install anything yourself.
+     independently. If uncertain of the exact package name, say so in `summary` rather
+     than asserting it confidently. Do not install anything yourself.
    - Print a clear message to stdout explaining what is needed:
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
@@ -47,8 +76,6 @@ build_library.sh, a Dockerfile, or other files persist into that output.
    selected target environment. It is the authoritative check — it also compiles a stub
    harness against your install/ output — so trust its exit code over eyeballing
    install/lib and install/include yourself.
-
-Stop as soon as the verification command exits 0.
 
 ## `agent_report.json`
 
@@ -70,7 +97,7 @@ Before exiting — on **every** outcome, success or stop-for-human-action — wr
   include this, on both success and failure.
 - `missing_apt_packages` (array of strings): Debian/Ubuntu `apt-get install` package
   names still needed (e.g. `"libssl-dev"`). Empty array if none. Correctness is of
-  utmost importance, do not write a package instalation unless you are sure it exists.s
+  utmost importance — do not list a package unless you are sure it exists.
 - `missing_brew_packages` (array of strings): Homebrew `brew install` formula names for
   the same dependencies (e.g. `"openssl"`). Often a different string than the apt
   package — work out both independently rather than reusing one for the other. Empty
@@ -87,8 +114,8 @@ on the reading side. This is the only machine-readable report file you should wr
 
 ## Stopping conditions
 
-**Success** — the verification command exits 0. Print a short success summary and exit 0.
-Write `agent_report.json` first.
+**Success** — the verification command exits 0. Write `agent_report.json` first, then
+print a short success summary and exit 0.
 
 **Unresolvable failure** — if the verification command still fails after your fix
 attempt, or if you cannot determine a fix, stop immediately. Print to stdout:
