@@ -7,13 +7,9 @@ import pytest
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.environments.base import Environment
-from harnessbuddy.library_builder.models import (
-    AutotoolsSetup,
-    BuildExplorationResult,
-    BuildSystem,
-    HarnessExplorationResult,
-)
+from harnessbuddy.library_builder.models import AutotoolsSetup, BuildExplorationResult, BuildSystem
 from harnessbuddy.library_builder.oss_fuzz.generation import generate_oss_fuzz
+from harnessbuddy.library_builder.oss_fuzz.workspace import write_dockerfile
 
 _FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "repos"
 _FAKE_URL = "https://github.com/example/mylib.git"
@@ -48,137 +44,6 @@ def _analysis(fixture_name: str, *, repo_ref: str | None = None):  # type: ignor
     return analyze(source)
 
 
-# all files generated for each build system
-
-
-@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
-def test_all_files_generated(fixture_name: str, tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
-    for name in _EXPECTED_TOP_LEVEL_FILES:
-        assert (result.output_path / name).exists(), f"missing: {name}"
-    assert any((result.output_path / "harness_source").glob("default_fuzzer.*"))
-
-
-def test_generation_result_output_path(tmp_path: Path) -> None:
-    out = tmp_path / "out"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), out)
-    assert result.output_path == out
-
-
-def test_generation_result_project_name(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    assert result.project_name == "mylib"
-
-
-def test_generation_result_all_files_exist(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    assert all(f.is_file() for f in result.files)
-
-
-# project.yaml — full content assertions verify language mapping
-
-
-def test_project_yaml_cmake_language_cpp(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
-    content = (result.output_path / "project.yaml").read_text()
-    expected = (
-        f"homepage: {_FAKE_URL}\n"
-        "language: c++\n"
-        "sanitizers:\n"
-        "  - address\n"
-        "  - undefined\n"
-        f"main_repo: {_FAKE_URL}\n"
-    )
-    assert content == expected
-
-
-def test_project_yaml_meson_language_cpp(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("meson_repo"), tmp_path / "out")
-    content = (result.output_path / "project.yaml").read_text()
-    expected = (
-        f"homepage: {_FAKE_URL}\n"
-        "language: c++\n"
-        "sanitizers:\n"
-        "  - address\n"
-        "  - undefined\n"
-        f"main_repo: {_FAKE_URL}\n"
-    )
-    assert content == expected
-
-
-# Dockerfile — full content assertions verify conditional checkout line
-
-
-def test_dockerfile_no_ref(tmp_path: Path) -> None:
-    analysis = _analysis("cmake_repo")
-    result = generate_oss_fuzz(analysis, tmp_path / "out")
-    content = (result.output_path / "Dockerfile").read_text()
-    expected = (
-        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
-        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
-        f"RUN git clone {_FAKE_URL} $SRC/src\n"
-        "COPY harness_source $SRC/harness_source\n"
-        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-        "WORKDIR $SRC/src\n"
-    )
-    assert content == expected
-
-
-def test_dockerfile_with_ref(tmp_path: Path) -> None:
-    analysis = _analysis("cmake_repo", repo_ref="v1.3.2")
-    result = generate_oss_fuzz(analysis, tmp_path / "out")
-    content = (result.output_path / "Dockerfile").read_text()
-    expected = (
-        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
-        f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
-        f"RUN git clone {_FAKE_URL} $SRC/src\n"
-        "RUN git -C $SRC/src checkout v1.3.2\n"
-        "COPY harness_source $SRC/harness_source\n"
-        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
-        "WORKDIR $SRC/src\n"
-    )
-    assert content == expected
-
-
-# build_library.sh — build command includes correct project name substitution
-
-
-@pytest.mark.parametrize(
-    ("fixture_name", "expected_cmd"),
-    [
-        ("cmake_repo", "cmake -B $BUILD_PREFIX/build"),
-        ("meson_repo", "meson setup"),
-        ("autotools_repo", "$SCRIPT_DIR/src/configure"),
-        ("autotools_configure_repo", "$SCRIPT_DIR/src/configure"),
-        ("autotools_autogen_repo", "$SCRIPT_DIR/src/configure"),
-        ("makefile_repo", "make -C $SCRIPT_DIR/src"),
-    ],
-)
-def test_build_library_sh_build_command(
-    fixture_name: str, expected_cmd: str, tmp_path: Path
-) -> None:
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
-    content = (result.output_path / "build_library.sh").read_text()
-    assert expected_cmd in content
-
-
-# determinism
-
-
-def test_build_sh_deterministic(tmp_path: Path) -> None:
-    path_a = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "a").output_path
-    path_b = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "b").output_path
-    assert (path_a / "build.sh").read_text() == (path_b / "build.sh").read_text()
-
-
-def test_compile_harnesses_sh_deterministic(tmp_path: Path) -> None:
-    path_a = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "a").output_path
-    path_b = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "b").output_path
-    assert (path_a / "compile_harnesses.sh").read_text() == (
-        path_b / "compile_harnesses.sh"
-    ).read_text()
-
-
 def _fake_exploration(
     succeeded: bool = True, *, environment: Environment = Environment.OSS_FUZZ
 ) -> BuildExplorationResult:
@@ -194,7 +59,80 @@ def _fake_exploration(
     )
 
 
-# autotools setup detection
+def _validated_workspace(tmp_path: Path) -> Path:
+    """A minimal stand-in for the workspace OssFuzzExecutor._materialize_workspace and
+    explore() leave behind — every file generate_oss_fuzz now requires to exist (FR-005),
+    since there's no template-rendering fallback for a missing/incomplete workspace."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "project.yaml").write_text("homepage: workspace-validated\n")
+    (workspace / "Dockerfile").write_text(
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n# validated Dockerfile\n"
+    )
+    (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
+    (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
+    harness_source = workspace / "harness_source"
+    harness_source.mkdir()
+    (harness_source / "default_fuzzer.cc").write_text("// discovered CXX is required\n")
+    (harness_source / "extra_helper.c").write_text("// other harness_source content\n")
+    return workspace
+
+
+def _exploration_for(
+    workspace: Path, *, environment: Environment = Environment.OSS_FUZZ
+) -> BuildExplorationResult:
+    exploration = _fake_exploration(environment=environment)
+    exploration.script_path = workspace / "build_library.sh"
+    return exploration
+
+
+# generate_oss_fuzz smoke tests — happy path against a fully validated workspace
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
+def test_all_files_generated(fixture_name: str, tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    result = generate_oss_fuzz(
+        _analysis(fixture_name), tmp_path / "out", _exploration_for(workspace)
+    )
+    for name in _EXPECTED_TOP_LEVEL_FILES:
+        assert (result.output_path / name).exists(), f"missing: {name}"
+    assert any((result.output_path / "harness_source").glob("default_fuzzer.*"))
+
+
+def test_generation_result_output_path(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    out = tmp_path / "out"
+    result = generate_oss_fuzz(_analysis("cmake_repo"), out, _exploration_for(workspace))
+    assert result.output_path == out
+
+
+def test_generation_result_project_name(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
+    assert result.project_name == "mylib"
+
+
+def test_generation_result_all_files_exist(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
+    assert all(f.is_file() for f in result.files)
+
+
+def test_existing_output_dir_raises(tmp_path: Path) -> None:
+    output_path = tmp_path / "out"
+    output_path.mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        generate_oss_fuzz(_analysis("cmake_repo"), output_path)
+
+
+# autotools setup detection — a property of analyze(), exercised here since these
+# fixtures live under this package's fixtures/repos
 
 
 def test_autotools_setup_configure(tmp_path: Path) -> None:  # noqa: ARG001
@@ -217,224 +155,80 @@ def test_non_autotools_setup_is_none(tmp_path: Path) -> None:  # noqa: ARG001
     assert result.autotools_setup is None
 
 
-# autotools build_library.sh — conditional setup steps
+# generate_oss_fuzz fails loudly without a fully validated oss-fuzz workspace — reachable
+# in practice via --skip-validation after a Docker image build failure (the workspace
+# never gets materialized that far) or a mismatched/absent exploration result; there is
+# no template-rendering fallback to fall back to (FR-005 removed it).
 
 
-def test_build_library_sh_autotools_configure_no_setup_step(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path / "out")
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "autoreconf" not in content
-    assert "autogen.sh" not in content
+def test_generate_oss_fuzz_raises_without_exploration(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match=r"project\.yaml"):
+        generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out")
 
 
-def test_build_library_sh_autotools_autogen_runs_autogen(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path / "out")
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "./autogen.sh" in content
-
-
-def test_build_library_sh_autotools_autoreconf_runs_autoreconf(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path / "out")
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "autoreconf -fiv" in content
-
-
-# autotools Dockerfile apt deps — conditional on setup type
-
-
-def test_dockerfile_autotools_configure_no_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_configure_repo"), tmp_path / "out")
-    content = (result.output_path / "Dockerfile").read_text()
-    assert "apt-get" not in content
-
-
-def test_dockerfile_autotools_autogen_has_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_autogen_repo"), tmp_path / "out")
-    content = (result.output_path / "Dockerfile").read_text()
-    assert "apt-get install" in content
-    assert "autoconf" in content
-    assert "automake" in content
-    assert "libtool" in content
-
-
-def test_dockerfile_autotools_autoreconf_has_apt_deps(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("autotools_repo"), tmp_path / "out")
-    content = (result.output_path / "Dockerfile").read_text()
-    assert "apt-get install" in content
-    assert "autoconf" in content
-
-
-def test_existing_output_dir_raises(tmp_path: Path) -> None:
-    output_path = tmp_path / "out"
-    output_path.mkdir(parents=True)
-    with pytest.raises(FileExistsError):
-        generate_oss_fuzz(_analysis("cmake_repo"), output_path)
-
-
-# build_library.sh — reuse of the explored (possibly agent-fixed) script
-
-
-def test_build_library_sh_copies_explored_script_verbatim(tmp_path: Path) -> None:
-    explored = tmp_path / "explored_build_library.sh"
-    explored.write_text("#!/bin/bash\n# agent fix: -DCARES_STATIC=ON\n")
-    exploration = _fake_exploration()
-    exploration.script_path = explored
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
-    content = (result.output_path / "build_library.sh").read_text()
-    assert content == explored.read_text()
-
-
-def test_build_library_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _fake_exploration())
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "$SCRIPT_DIR/src" in content
-
-
-def test_build_library_sh_falls_back_to_template_when_environment_mismatched(
-    tmp_path: Path,
-) -> None:
+def test_generate_oss_fuzz_raises_when_exploration_environment_mismatched(tmp_path: Path) -> None:
     """A local-environment result is never copied verbatim into oss-fuzz output (FR-008) —
-    it wasn't validated against the container this project targets."""
-    explored = tmp_path / "explored_build_library.sh"
-    explored.write_text("#!/bin/bash\n# agent fix: -DCARES_STATIC=ON\n")
-    exploration = _fake_exploration(environment=Environment.LOCAL)
-    exploration.script_path = explored
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
-    content = (result.output_path / "build_library.sh").read_text()
-    assert content != explored.read_text()
-    assert "$SCRIPT_DIR/src" in content
+    it wasn't validated against the container this project targets, even though its
+    directory happens to contain every expected file."""
+    workspace = _validated_workspace(tmp_path)
+    exploration = _exploration_for(workspace, environment=Environment.LOCAL)
+    with pytest.raises(FileNotFoundError):
+        generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
 
 
-# build_library.sh — never carries compile-commands capture instrumentation (T011)
-
-
-@pytest.mark.parametrize("fixture_name", _ALL_BUILD_SYSTEMS)
-def test_build_library_sh_has_no_capture_instrumentation_template_fallback(
-    fixture_name: str, tmp_path: Path
-) -> None:
-    """The regenerated template must never carry CMake/bear capture-only flags —
-    capture is applied at the orchestration level (explore()), never baked into
-    build_library_script()'s output, so the shipped oss-fuzz script is structurally
-    unaffected (spec 010 User Story 2)."""
-    result = generate_oss_fuzz(_analysis(fixture_name), tmp_path / "out")
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in content
-    assert "bear" not in content
-
-
-def test_build_library_sh_has_no_capture_instrumentation_copied_verbatim(
-    tmp_path: Path,
-) -> None:
-    """The copy-verbatim path also never leaks capture instrumentation, since
-    explore() never writes it into the script text it hands off as script_path."""
-    explored = tmp_path / "explored_build_library.sh"
-    explored.write_text("#!/bin/bash\nset -euo pipefail\ncmake -B build -S src\n")
+def test_generate_oss_fuzz_raises_when_script_path_unset(tmp_path: Path) -> None:
     exploration = _fake_exploration()
-    exploration.script_path = explored
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
-    content = (result.output_path / "build_library.sh").read_text()
-    assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in content
-    assert "bear" not in content
+    with pytest.raises(FileNotFoundError):
+        generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
 
 
-# compile_harnesses.sh — reuse of the validated (possibly agent-fixed) script
-
-
-def _fake_harness(
-    script_path: Path | None = None, *, environment: Environment = Environment.OSS_FUZZ
-) -> HarnessExplorationResult:
-    return HarnessExplorationResult(
-        succeeded=True,
-        command=["bash", "compile_harnesses.sh"],
-        static_libs=[Path("libfoo.a")],
-        include_dir=Path("/tmp/install/include"),
-        transitive_link_flags=["-lresolv"],
-        stdout="",
-        stderr="",
-        exit_code=0,
-        script_path=script_path,
-        environment=environment,
-    )
-
-
-def test_compile_harnesses_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
-    validated = tmp_path / "validated_compile_harnesses.sh"
-    validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
-    result = generate_oss_fuzz(
-        _analysis("cmake_repo"), tmp_path / "out", harness_exploration=_fake_harness(validated)
-    )
-    content = (result.output_path / "compile_harnesses.sh").read_text()
-    assert content == validated.read_text()
-
-
-def test_compile_harnesses_sh_falls_back_to_template_when_environment_mismatched(
-    tmp_path: Path,
-) -> None:
-    validated = tmp_path / "validated_compile_harnesses.sh"
-    validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
-    harness = _fake_harness(validated, environment=Environment.LOCAL)
-    result = generate_oss_fuzz(
-        _analysis("cmake_repo"), tmp_path / "out", harness_exploration=harness
-    )
-    content = (result.output_path / "compile_harnesses.sh").read_text()
-    assert content != validated.read_text()
-    assert "libfoo.a" in content
+def test_generate_oss_fuzz_error_names_the_missing_file(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    (workspace / "compile_harnesses.sh").unlink()
+    with pytest.raises(FileNotFoundError, match=r"compile_harnesses\.sh"):
+        generate_oss_fuzz(
+            _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+        )
 
 
 # workspace copy — project.yaml/build.sh/build_library.sh/compile_harnesses.sh/
-# harness_source/* copied verbatim from the validated workspace instead of re-derived
-# (T016, T020, FR-005); only the Dockerfile is regenerated (bear must differ, research.md #5)
-
-
-def _validated_workspace(tmp_path: Path) -> Path:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "project.yaml").write_text("homepage: workspace-validated\n")
-    (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
-    (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
-    (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
-    harness_source = workspace / "harness_source"
-    harness_source.mkdir()
-    (harness_source / "default_fuzzer.cc").write_text("// discovered CXX is required\n")
-    (harness_source / "extra_helper.c").write_text("// other harness_source content\n")
-    return workspace
+# harness_source/* copied verbatim from the validated workspace (T016, T020, FR-005);
+# the Dockerfile is copied too, but with its exploration-only "bear" apt dependency
+# stripped (research.md #5).
 
 
 def test_workspace_copy_project_yaml_byte_identical(tmp_path: Path) -> None:
     workspace = _validated_workspace(tmp_path)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
     content = (result.output_path / "project.yaml").read_text()
     assert content == (workspace / "project.yaml").read_text()
 
 
 def test_workspace_copy_build_sh_byte_identical(tmp_path: Path) -> None:
     workspace = _validated_workspace(tmp_path)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
     content = (result.output_path / "build.sh").read_text()
     assert content == (workspace / "build.sh").read_text()
 
 
 def test_workspace_copy_build_library_sh_byte_identical(tmp_path: Path) -> None:
     workspace = _validated_workspace(tmp_path)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
     content = (result.output_path / "build_library.sh").read_text()
     assert content == (workspace / "build_library.sh").read_text()
 
 
-def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_result(
-    tmp_path: Path,
-) -> None:
+def test_workspace_copy_compile_harnesses_sh_byte_identical(tmp_path: Path) -> None:
     workspace = _validated_workspace(tmp_path)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    harness = _fake_harness(None)
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration, harness)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
     content = (result.output_path / "compile_harnesses.sh").read_text()
     assert content == (workspace / "compile_harnesses.sh").read_text()
 
@@ -444,9 +238,9 @@ def test_workspace_copy_harness_source_includes_discovered_default_fuzzer(tmp_pa
     .cc on a CXX finding) is copied verbatim, not clobbered by a fresh write_default_fuzzer
     call derived from the (possibly stale) static analysis language."""
     workspace = _validated_workspace(tmp_path)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
     output_names = {p.name for p in (result.output_path / "harness_source").iterdir()}
     assert "extra_helper.c" in output_names
     assert "default_fuzzer.cc" in output_names
@@ -456,15 +250,50 @@ def test_workspace_copy_harness_source_includes_discovered_default_fuzzer(tmp_pa
     ).read_text()
 
 
-def test_workspace_copy_dockerfile_still_regenerated_without_bear(tmp_path: Path) -> None:
-    """The Dockerfile is the one file never copied from the workspace verbatim — the
-    workspace's live copy always includes bear (research.md #5), which must never ship."""
+def test_default_fuzzer_synthesized_when_workspace_harness_source_is_empty(tmp_path: Path) -> None:
+    """generate_oss_fuzz's harness_source copy is the one lenient exception to "the
+    workspace must have everything" — an empty (or missing) harness_source falls back to
+    a synthesized stub rather than raising, since default_fuzzer.* is always producible
+    from analysis alone."""
     workspace = _validated_workspace(tmp_path)
-    from harnessbuddy.library_builder.oss_fuzz import workspace as workspace_module
+    for entry in (workspace / "harness_source").iterdir():
+        entry.unlink()
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
+    assert any((result.output_path / "harness_source").glob("default_fuzzer.*"))
 
-    workspace_module.write_dockerfile(workspace, _analysis("cmake_repo"), include_bear=True)
-    exploration = _fake_exploration()
-    exploration.script_path = workspace / "build_library.sh"
-    result = generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", exploration)
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["cmake_repo", "autotools_autogen_repo"],
+    ids=["bear_is_only_package", "bear_alongside_autotools_packages"],
+)
+def test_workspace_copy_dockerfile_strips_bear_dependency(
+    fixture_name: str, tmp_path: Path
+) -> None:
+    """The Dockerfile's live workspace copy always includes bear (research.md #5),
+    which must never ship — covering both the case where bear is the sole apt package
+    (immediately followed by a newline, not a space) and where it shares the
+    install line with other packages, since a naive "bear " string replace only
+    catches the latter."""
+    workspace = _validated_workspace(tmp_path)
+    analysis = _analysis(fixture_name)
+    write_dockerfile(workspace, analysis, include_bear=True)
+    result = generate_oss_fuzz(analysis, tmp_path / "out", _exploration_for(workspace))
     content = (result.output_path / "Dockerfile").read_text()
     assert "bear" not in content
+
+
+def test_workspace_copy_dockerfile_preserves_agent_edits_elsewhere(tmp_path: Path) -> None:
+    """Stripping bear must not clobber unrelated agent-applied fixes to the rest of the
+    Dockerfile — the copy, not a regeneration from analysis, is the source of truth."""
+    workspace = _validated_workspace(tmp_path)
+    analysis = _analysis("cmake_repo")
+    write_dockerfile(workspace, analysis, include_bear=True)
+    (workspace / "Dockerfile").write_text(
+        (workspace / "Dockerfile").read_text() + "# agent fix: added -DFOO=1\n"
+    )
+    result = generate_oss_fuzz(analysis, tmp_path / "out", _exploration_for(workspace))
+    content = (result.output_path / "Dockerfile").read_text()
+    assert "# agent fix: added -DFOO=1" in content

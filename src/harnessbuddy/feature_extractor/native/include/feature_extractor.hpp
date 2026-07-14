@@ -78,10 +78,12 @@ struct FeatureArtifact {
   std::vector<std::string> warnings;
 };
 
-// Identifies the project source root (the directory containing
-// compile_commands.json), used to compute header_path values relative to it and
-// to decide whether a declaration's location is "library-owned" for
-// is_public_api (research.md section 5) rather than third-party/system.
+// Identifies the project source root (the common ancestor of every
+// translation unit's file path in compile_commands.json — not necessarily the
+// directory compile_commands.json itself lives in, for out-of-tree builds),
+// used to compute header_path values relative to it and to decide whether a
+// declaration's location is "library-owned" for is_public_api (research.md
+// section 5) rather than third-party/system.
 struct ProjectContext {
   std::string project_root;
 };

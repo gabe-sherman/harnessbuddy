@@ -8,63 +8,26 @@ from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildExplorationResult,
-    BuildPaths,
     GenerationResult,
-    HarnessExplorationResult,
 )
-from harnessbuddy.library_builder.oss_fuzz import workspace
-from harnessbuddy.library_builder.scripts import (
-    build_harness_script,
-    build_library_script,
-    write_default_fuzzer,
-)
-
-_COMPILE_HARNESSES_SH_STUB = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-    'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
-    "\n"
-    'INSTALL_DIR="$BUILD_PREFIX/install"\n'
-    'HARNESS_DIR="$SCRIPT_DIR/harness_source"\n'
-    "\n"
-    "# TODO: add static library paths\n"
-    "STATIC_LIBS=()\n"
-    "EXTRA_LINK_FLAGS=\n"
-    "\n"
-    'for harness in "$HARNESS_DIR"/*; do\n'
-    '  [ -f "$harness" ] || continue\n'
-    '  name="$(basename "$harness")"\n'
-    '  output="${name%.*}"\n'
-    '  case "$harness" in\n'
-    "    *.c)\n"
-    '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS "$LIB_FUZZING_ENGINE" -o "$OUT/$output"\n'
-    "      ;;\n"
-    "    *.cc|*.cpp|*.cxx)\n"
-    '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS "$LIB_FUZZING_ENGINE" -o "$OUT/$output"\n'
-    "      ;;\n"
-    "  esac\n"
-    "done\n"
-)
+from harnessbuddy.library_builder.oss_fuzz.workspace import APT_INSTALL_PREFIX
+from harnessbuddy.library_builder.scripts import write_default_fuzzer
 
 
 def generate_oss_fuzz(
     analysis: AnalysisResult,
     output_path: Path,
     exploration: BuildExplorationResult | None = None,
-    harness_exploration: HarnessExplorationResult | None = None,
 ) -> GenerationResult:
     """Generate a complete oss-fuzz project skeleton from a static analysis result.
 
     When exploration ran in the oss-fuzz environment, the workspace it validated
-    already contains project.yaml/build.sh/build_library.sh/compile_harnesses.sh/
-    harness_source/* — this copies those already-validated files verbatim (FR-005)
-    instead of re-deriving them, so the shipped project is exactly what was validated.
-    Only the Dockerfile is regenerated (via workspace.write_dockerfile), since the
-    shipped variant must omit bear (research.md #5).
+    already contains project.yaml/Dockerfile/build.sh/build_library.sh/
+    compile_harnesses.sh/harness_source/* — this copies those already-validated
+    files verbatim (FR-005) instead of re-deriving them, so the shipped project is
+    exactly what was validated (including any agent-applied fixes). The Dockerfile
+    additionally has its exploration-only "bear" apt dependency stripped, since the
+    shipped variant must not depend on a HarnessBuddy-only tool (research.md #5).
     """
     output_path.mkdir(parents=True)
     (output_path / "harness_source").mkdir()
@@ -74,16 +37,16 @@ def generate_oss_fuzz(
     copied_harness_source = _copy_harness_source(output_path, validated_workspace)
 
     files: list[Path] = [
-        _copy_project_yaml(output_path, analysis, validated_workspace),
+        _copy_project_yaml(output_path, validated_workspace),
         _copy_dockerfile(output_path, validated_workspace),
         _copy_build_sh(output_path, validated_workspace),
-        _copy_build_library_sh(output_path, analysis, exploration, validated_workspace),
-        _copy_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
+        _copy_build_library_sh(output_path, validated_workspace),
+        _copy_compile_harnesses_sh(output_path, validated_workspace),
         *copied_harness_source,
     ]
     if not any(harness_source_dir.glob("default_fuzzer.*")):
-        # No validated workspace to copy a discovered default_fuzzer.{c,cc} from (e.g.
-        # unknown build system, or exploration never ran) — synthesize a fresh stub.
+        # Validated workspace's harness_source had no discovered default_fuzzer.{c,cc}
+        # (e.g. empty harness_source) — synthesize a fresh stub.
         files.append(write_default_fuzzer(harness_source_dir, analysis.language))
 
     return GenerationResult(
@@ -107,69 +70,67 @@ def _validated_oss_fuzz_workspace(exploration: BuildExplorationResult | None) ->
     return exploration.script_path.parent
 
 
-def _copy_project_yaml(
-    output_path: Path, analysis: AnalysisResult, validated_workspace: Path | None
-) -> Path:
+def _require_workspace_file(validated_workspace: Path | None, name: str) -> Path:
+    """The validated workspace directory, having confirmed it (and `name` within it)
+    exists — every _copy_* helper below needs a fully materialized workspace to copy
+    from, since no template-rendering fallback exists anymore (FR-005)."""
+    if validated_workspace is None or not (validated_workspace / name).exists():
+        raise FileNotFoundError(f"expected to find {name} in workspace {validated_workspace}")
+    return validated_workspace / name
+
+
+def _copy_project_yaml(output_path: Path, validated_workspace: Path | None) -> Path:
     path = output_path / "project.yaml"
-    if validated_workspace is not None and (validated_workspace / "project.yaml").exists():
-        shutil.copy2(validated_workspace / "project.yaml", path)
-    else:
-        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    shutil.copy2(_require_workspace_file(validated_workspace, "project.yaml"), path)
     return path
+
 
 def _copy_dockerfile(output_path: Path, validated_workspace: Path | None) -> Path:
     path = output_path / "Dockerfile"
-    if validated_workspace is not None and (validated_workspace / "Dockerfile").exists():
-        shutil.copy2(validated_workspace / "Dockerfile", path)
-        # replace apt dependency on bear since this is only needed during exploration
-        path.write_text(path.read_text().replace("bear ", " "))
-    else:
-        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    shutil.copy2(_require_workspace_file(validated_workspace, "Dockerfile"), path)
+    path.write_text(_strip_bear_dependency(path.read_text()))
     return path
+
+
+def _strip_bear_dependency(dockerfile_content: str) -> str:
+    """Drop the "bear" apt package the live workspace Dockerfile depends on for
+    compile_commands.json capture during exploration (research.md #5) — bear is never
+    needed by the shipped image. Operates on package tokens rather than a fixed string
+    replace, since "bear" isn't always followed by a space (e.g. when it's the only or
+    last package in the list, immediately followed by a newline)."""
+    lines = []
+    for line in dockerfile_content.splitlines(keepends=True):
+        if not line.startswith(APT_INSTALL_PREFIX):
+            lines.append(line)
+            continue
+        packages = [pkg for pkg in line[len(APT_INSTALL_PREFIX) :].split() if pkg != "bear"]
+        if packages:
+            lines.append(f"{APT_INSTALL_PREFIX} {' '.join(packages)}\n")
+        # else: bear was the only dependency — drop the now-empty install line entirely.
+    return "".join(lines)
+
 
 def _copy_build_sh(output_path: Path, validated_workspace: Path | None) -> Path:
     path = output_path / "build.sh"
-    if validated_workspace is not None and (validated_workspace / "build.sh").exists():
-        shutil.copy2(validated_workspace / "build.sh", path)
-    else:
-        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    shutil.copy2(_require_workspace_file(validated_workspace, "build.sh"), path)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
-def _copy_build_library_sh(
-    output_path: Path,
-    analysis: AnalysisResult,
-    exploration: BuildExplorationResult | None,
-    validated_workspace: Path | None,
-) -> Path:
-    """Write build_library.sh, copying the explored (possibly agent-fixed) script from
-    the validated workspace when available. Falls back to the static template only when
-    no exploration was run in this environment at all.
-    """
+def _copy_build_library_sh(output_path: Path, validated_workspace: Path | None) -> Path:
+    """Copy the explored (possibly agent-fixed) build_library.sh from the validated
+    workspace verbatim."""
     path = output_path / "build_library.sh"
-    if validated_workspace is not None and (validated_workspace / "build_library.sh").exists():
-        shutil.copy2(validated_workspace / "build_library.sh", path)
-    else:
-        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    shutil.copy2(_require_workspace_file(validated_workspace, "build_library.sh"), path)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
-def _copy_compile_harnesses_sh(
-    output_path: Path,
-    harness: HarnessExplorationResult | None,
-    validated_workspace: Path | None,
-) -> Path:
-    """Write compile_harnesses.sh, copying the validated (possibly agent-fixed, possibly
-    still a stub) script from the validated workspace when available. Falls back to the
-    regenerated template only when no exploration ran in this environment at all.
-    """
+def _copy_compile_harnesses_sh(output_path: Path, validated_workspace: Path | None) -> Path:
+    """Copy the validated (possibly agent-fixed, possibly still a stub)
+    compile_harnesses.sh from the validated workspace verbatim."""
     path = output_path / "compile_harnesses.sh"
-    if validated_workspace is not None and (validated_workspace / "compile_harnesses.sh").exists():
-        shutil.copy2(validated_workspace / "compile_harnesses.sh", path)
-    else:
-        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    shutil.copy2(_require_workspace_file(validated_workspace, "compile_harnesses.sh"), path)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 

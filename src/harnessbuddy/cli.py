@@ -86,11 +86,17 @@ def _configure_extract_features_parser(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _configure_generate_benchmark_parser(p: argparse.ArgumentParser) -> None:
+def _configure_generate_yaml_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "build_path",
         metavar="BUILD_PATH",
         help="Directory containing features.json from a prior extract-features run.",
+    )
+    p.add_argument(
+        "headers",
+        metavar="HEADER_NAMES",
+        nargs="*",
+        help="List of header file names to include in analysis"
     )
     p.add_argument(
         "--target-name",
@@ -130,13 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
         "compile_commands.json into features.json.",
     )
     _configure_extract_features_parser(extract_features)
-    generate_benchmark = subparsers.add_parser(
+    generate_yaml = subparsers.add_parser(
         "generate-yaml",
         help="Convert an extracted feature artifact into an oss-fuzz-gen benchmark YAML.",
         description="Convert features.json into a curated, oss-fuzz-gen-compatible "
         "benchmark YAML file.",
     )
-    _configure_generate_benchmark_parser(generate_benchmark)
+    _configure_generate_yaml_parser(generate_yaml)
     return parser
 
 
@@ -444,6 +450,16 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all 8 params are dis
     analysis.system_packages = state.apt_packages
     brew_packages: list[str] = state.brew_packages
 
+    # local/generation.py's setup.sh always renders analysis.system_packages fresh at
+    # final generation time, but the oss-fuzz workspace's Dockerfile was already written
+    # once, early, by OssFuzzExecutor._materialize_workspace — before this phase's own
+    # discoveries existed — and generate_oss_fuzz only ever copies it verbatim. Merge the
+    # newly-discovered packages into that file now so they aren't silently dropped.
+    if (workspace / "Dockerfile").exists():
+        from harnessbuddy.library_builder.oss_fuzz.workspace import inject_apt_packages
+
+        inject_apt_packages(workspace, state.apt_packages)
+
     if not harness_result.succeeded:
         apt_hint_list = list(
             dict.fromkeys(
@@ -480,7 +496,7 @@ def _generate_outputs(  # noqa: PLR0913 -- private helper; all 6 params are dist
 
     try:
         if environment is Environment.OSS_FUZZ:
-            generation_result = generate_oss_fuzz(analysis, output_path, result, harness_result)
+            generation_result = generate_oss_fuzz(analysis, output_path, result)
         else:
             generation_result = generate_local(
                 analysis, output_path, result, harness_result, brew_packages=brew_packages
@@ -1046,7 +1062,7 @@ def _cmd_generate_benchmark(args: argparse.Namespace) -> int:
     build_path = Path(args.build_path)
     try:
         benchmark = generate_benchmark(
-            build_path, target_name=args.target_name, target_path=args.target_path
+            build_path, headers=args.headers, target_name=args.target_name, target_path=args.target_path
         )
     except (MissingFeatureArtifactError, FeatureArtifactError) as exc:
         print(str(exc), file=sys.stderr)

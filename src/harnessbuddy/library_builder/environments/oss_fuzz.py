@@ -453,17 +453,13 @@ class OssFuzzExecutor:
 
         compile_harnesses_path = workdir / "compile_harnesses.sh"
         if not compile_harnesses_path.exists():
-            from harnessbuddy.library_builder.oss_fuzz.generation import (
-                _COMPILE_HARNESSES_SH_STUB,
-            )
             from harnessbuddy.library_builder.scripts import write_default_fuzzer
 
             # The stub compiles whatever's in harness_source/ (research.md #3) — write
             # the real default fuzzer stub now so check_docker_build.sh's /out non-empty
             # check has something to find even before harness-link discovery ever runs.
             write_default_fuzzer(harness_source_dir, analysis.language)
-            compile_harnesses_path.write_text(_COMPILE_HARNESSES_SH_STUB)
-            compile_harnesses_path.chmod(compile_harnesses_path.stat().st_mode | 0o111)
+            workspace.write_compile_harnesses_stub(workdir)
 
     def _ensure_image(self, workdir: Path, analysis: AnalysisResult) -> None:
         """Build a run-scoped image from the workspace's real Dockerfile — used for

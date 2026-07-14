@@ -862,7 +862,7 @@ def test_run_library_build_workspace_dockerfile_has_no_git_clone_bind_mount_quir
         OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
 
     content = (workdir / "Dockerfile").read_text()
-    assert f"RUN git clone {_FAKE_URL} $SRC/src" in content
+    assert f"RUN git clone --recursive {_FAKE_URL} $SRC/src" in content
     assert "COPY build.sh build_library.sh compile_harnesses.sh $SRC/" in content
 
 

@@ -8,15 +8,22 @@ from harnessbuddy.feature_extractor.extraction import (
     MissingFeatureArtifactError,
     load_feature_artifact,
 )
-from harnessbuddy.feature_extractor.models import BenchmarkFunction, BenchmarkYaml
+from harnessbuddy.feature_extractor.models import BenchmarkFunction, BenchmarkYaml, FunctionSignature
 from harnessbuddy.library_builder.models import Language
 
 _DEFAULT_TARGET_NAME = "default_fuzzer"
+_INCLUDE_HEADERS = []
 _EXT_BY_LANGUAGE = {Language.C: "c", Language.CPP: "cc"}
+
+def select_public(f: FunctionSignature) -> bool:
+    return f.is_public_api
+
+def select_by_header(f: FunctionSignature) -> bool:
+    return Path(f.header_path).name in _INCLUDE_HEADERS
 
 
 def generate_benchmark(
-    output_dir: Path, target_name: str | None = None, target_path: str | None = None
+    output_dir: Path, headers: list[str], target_name: str | None = None, target_path: str | None = None
 ) -> BenchmarkYaml:
     """Convert <output_dir>/features.json into an oss-fuzz-gen-compatible YAML benchmark.
 
@@ -24,6 +31,11 @@ def generate_benchmark(
     target_path per FR-013/FR-014 unless overridden, and overwrites
     <output_dir>/<project_name>.yaml (FR-015).
     """
+    check_include_func = select_public
+    if len(headers) > 0:
+        global _INCLUDE_HEADERS
+        _INCLUDE_HEADERS = headers
+        check_include_func = select_by_header
     features_json = output_dir / "features.json"
     if not features_json.is_file():
         raise MissingFeatureArtifactError(
@@ -45,7 +57,7 @@ def generate_benchmark(
                 name=f.name, signature=f.signature, return_type=f.return_type, params=f.params
             )
             for f in artifact.functions
-            if f.is_public_api
+            if check_include_func(f)
         ],
     )
 

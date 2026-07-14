@@ -8,6 +8,7 @@ from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
 from harnessbuddy.library_builder.models import AnalysisResult
 from harnessbuddy.library_builder.oss_fuzz.workspace import (
+    inject_apt_packages,
     write_build_sh,
     write_dockerfile,
     write_project_yaml,
@@ -76,7 +77,7 @@ def test_write_dockerfile_include_bear_false_matches_no_ref_content(tmp_path: Pa
     expected = (
         "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
         f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
-        f"RUN git clone {_FAKE_URL} $SRC/src\n"
+        f"RUN git clone --recursive {_FAKE_URL} $SRC/src\n"
         "COPY harness_source $SRC/harness_source\n"
         "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
         "WORKDIR $SRC/src\n"
@@ -156,3 +157,62 @@ def test_write_dockerfile_is_deterministic(tmp_path: Path, include_bear: bool) -
     assert (tmp_path / "a" / "Dockerfile").read_text() == (
         tmp_path / "b" / "Dockerfile"
     ).read_text()
+
+
+# inject_apt_packages — merges newly-discovered apt packages into an already-written
+# Dockerfile in place, since the workspace's Dockerfile is written once, early, before
+# the harness phase's own linker-dependency discovery knows what else is needed.
+
+
+def test_inject_apt_packages_appends_to_existing_install_line(tmp_path: Path) -> None:
+    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=True)
+    inject_apt_packages(tmp_path, ["libzstd-dev"])
+    content = (tmp_path / "Dockerfile").read_text()
+    assert "bear libzstd-dev" in content
+
+
+def test_inject_apt_packages_dedupes_against_existing_packages(tmp_path: Path) -> None:
+    """The build phase may report a package (e.g. via missing_apt_packages) that the
+    harness phase's linker-dependency discovery later reports again under the same apt
+    name — the merge must not duplicate it."""
+    analysis = _analysis("cmake_repo")
+    analysis.system_packages = ["libzstd-dev"]
+    write_dockerfile(tmp_path, analysis, include_bear=True)
+    inject_apt_packages(tmp_path, ["libzstd-dev"])
+    content = (tmp_path / "Dockerfile").read_text()
+    assert content.count("libzstd-dev") == 1
+
+
+def test_inject_apt_packages_preserves_content_around_the_install_line(tmp_path: Path) -> None:
+    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=True)
+    before = (tmp_path / "Dockerfile").read_text()
+    inject_apt_packages(tmp_path, ["libzstd-dev"])
+    after = (tmp_path / "Dockerfile").read_text()
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    assert len(before_lines) == len(after_lines)
+    for before_line, after_line in zip(before_lines, after_lines, strict=True):
+        if before_line.startswith("RUN apt-get"):
+            continue
+        assert before_line == after_line
+
+
+def test_inject_apt_packages_is_a_noop_without_new_packages(tmp_path: Path) -> None:
+    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=True)
+    before = (tmp_path / "Dockerfile").read_text()
+    inject_apt_packages(tmp_path, [])
+    assert (tmp_path / "Dockerfile").read_text() == before
+
+
+def test_inject_apt_packages_inserts_a_line_when_none_exists(tmp_path: Path) -> None:
+    """A Dockerfile with no apt-get install line at all (e.g. include_bear=False and no
+    system_packages) still needs one added, right after ENV FUZZING_LANGUAGE."""
+    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=False)
+    assert "RUN apt-get" not in (tmp_path / "Dockerfile").read_text()
+    inject_apt_packages(tmp_path, ["libzstd-dev"])
+    content = (tmp_path / "Dockerfile").read_text()
+    lines = content.splitlines()
+    apt_index = next(i for i, line in enumerate(lines) if line.startswith("RUN apt-get"))
+    env_index = next(i for i, line in enumerate(lines) if line.startswith("ENV FUZZING_LANGUAGE"))
+    assert apt_index == env_index + 1
+    assert "libzstd-dev" in lines[apt_index]

@@ -30,6 +30,38 @@ std::string detectLanguage(const std::vector<std::string> &files) {
   return "c";
 }
 
+// The compile-commands directory (argv[1]) is often a separate build directory
+// (e.g. CMake's -B), not the source checkout, so it can't be used as the
+// project root for isWithinProject() checks. Recover the real source root as
+// the common ancestor of every translation unit's absolute file path instead.
+std::string computeProjectRoot(const std::vector<std::string> &files) {
+  std::vector<llvm::StringRef> common;
+  bool first = true;
+  for (const std::string &file : files) {
+    llvm::SmallString<256> dir(file);
+    llvm::sys::path::remove_filename(dir);
+    llvm::sys::path::remove_dots(dir, /*remove_dot_dot=*/true);
+    std::vector<llvm::StringRef> components(llvm::sys::path::begin(dir),
+                                             llvm::sys::path::end(dir));
+    if (first) {
+      common = std::move(components);
+      first = false;
+      continue;
+    }
+    size_t limit = std::min(common.size(), components.size());
+    size_t matched = 0;
+    while (matched < limit && common[matched] == components[matched]) {
+      ++matched;
+    }
+    common.resize(matched);
+  }
+  llvm::SmallString<256> root;
+  for (llvm::StringRef component : common) {
+    llvm::sys::path::append(root, component);
+  }
+  return std::string(root);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -40,25 +72,25 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  llvm::SmallString<256> project_root(argv[1]);
-  llvm::sys::fs::make_absolute(project_root);
-  llvm::sys::path::remove_dots(project_root, /*remove_dot_dot=*/true);
+  llvm::SmallString<256> compile_commands_dir(argv[1]);
+  llvm::sys::fs::make_absolute(compile_commands_dir);
+  llvm::sys::path::remove_dots(compile_commands_dir, /*remove_dot_dot=*/true);
   const std::string output_json_path = argv[2];
   const std::string project_name = argv[3];
 
   std::string error_message;
   std::unique_ptr<clang::tooling::CompilationDatabase> db =
       clang::tooling::CompilationDatabase::autoDetectFromDirectory(
-          project_root, error_message);
+          compile_commands_dir, error_message);
   if (db == nullptr) {
-    llvm::errs() << "error loading compile_commands.json from " << project_root
-                 << ": " << error_message << "\n";
+    llvm::errs() << "error loading compile_commands.json from "
+                 << compile_commands_dir << ": " << error_message << "\n";
     return 1;
   }
 
   std::vector<std::string> files = db->getAllFiles();
   feature_extractor::FeatureCollector collector;
-  feature_extractor::ProjectContext ctx{std::string(project_root)};
+  feature_extractor::ProjectContext ctx{computeProjectRoot(files)};
 
   clang::tooling::ClangTool tool(*db, files);
   tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(

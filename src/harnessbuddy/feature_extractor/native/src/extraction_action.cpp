@@ -131,7 +131,7 @@ public:
       return true;
     }
     llvm::StringRef filename = sm_.getFilename(loc);
-    if (filename.empty()) {
+    if (filename.empty() || !isWithinProject(ctx_, filename)) {
       return true;
     }
 

@@ -296,6 +296,40 @@ def _stats_json_path(output_dir: Path) -> Path:
     return output_dir / "stats.json"
 
 
+def _oss_fuzz_workspace(project_name: str = "mylib") -> Path:
+    """A minimal stand-in for the workspace OssFuzzExecutor._materialize_workspace and
+    explore() leave behind, for tests that mock harnessbuddy.cli.build_library directly
+    (so no real workspace is ever written to disk) but still exercise the oss-fuzz
+    generation path — generate_oss_fuzz requires every one of these files to exist in
+    the exploration result's script_path's directory (no template-rendering fallback).
+
+    Written into the real .harnessbuddy/<project_name>/ state directory (matching
+    project_dir()), not tmp_path — that's where the real pipeline's own `workspace`
+    variable points, and generate_oss_fuzz's Dockerfile-merge step (inject_apt_packages)
+    writes there too, so a script_path pointing anywhere else would silently diverge
+    from what generate_oss_fuzz actually copies.
+    """
+    import shutil
+
+    from harnessbuddy.core.paths import default_state_dir, project_dir
+
+    workspace = project_dir(default_state_dir(), project_name)
+    shutil.rmtree(workspace, ignore_errors=True)
+    workspace.mkdir(parents=True)
+    (workspace / "project.yaml").write_text("homepage: workspace-validated\n")
+    (workspace / "Dockerfile").write_text(
+        "FROM gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04\n"
+        "ENV FUZZING_LANGUAGE=c\n"
+        "RUN apt-get update && apt-get install -y --no-install-recommends bear\n"
+    )
+    (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
+    (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
+    (workspace / "harness_source").mkdir()
+    (workspace / "harness_source" / "default_fuzzer.c").write_text("// stub\n")
+    return workspace
+
+
 def test_generate_writes_stats_json_clean_success(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
@@ -1237,6 +1271,7 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    workspace = _oss_fuzz_workspace()
     fake_build_result = BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=True,
@@ -1247,6 +1282,8 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
         duration_seconds=1.0,
         llm_used=True,
         missing_apt_packages=["libzstd-dev"],
+        environment=Environment.OSS_FUZZ,
+        script_path=workspace / "build_library.sh",
     )
     fake_harness_result = HarnessExplorationResult(
         succeeded=True,
@@ -1522,6 +1559,7 @@ def test_generate_oss_fuzz_copies_compile_commands_alongside_output(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
+    workspace = _oss_fuzz_workspace()
     workspace_compile_commands = tmp_path / "workspace_compile_commands.json"
     workspace_compile_commands.write_text("[]")
     fake_build_result = BuildExplorationResult(
@@ -1533,6 +1571,7 @@ def test_generate_oss_fuzz_copies_compile_commands_alongside_output(
         exit_code=0,
         duration_seconds=1.0,
         environment=Environment.OSS_FUZZ,
+        script_path=workspace / "build_library.sh",
         compile_commands_path=workspace_compile_commands,
     )
     run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()

@@ -71,7 +71,7 @@ def test_generation_result_all_files_exist(tmp_path: Path) -> None:
 def test_setup_sh_git_clone_url(tmp_path: Path) -> None:
     result = generate_local(_analysis("cmake_repo"), tmp_path / "out")
     content = (result.output_path / "setup.sh").read_text()
-    assert f"git clone {_FAKE_URL}" in content
+    assert f"git clone --recursive {_FAKE_URL}" in content
 
 
 def test_setup_sh_no_checkout_without_ref(tmp_path: Path) -> None:

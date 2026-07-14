@@ -4,8 +4,33 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from harnessbuddy.library_builder.models import BuildPaths, BuildSystem, HarnessExplorationResult
+import pytest
+
+from harnessbuddy.library_builder.models import (
+    AutotoolsSetup,
+    BuildPaths,
+    BuildSystem,
+    HarnessExplorationResult,
+)
 from harnessbuddy.library_builder.scripts import build_harness_script, build_library_script
+
+# The paths generate_oss_fuzz's workspace materialization uses (oss_fuzz/generation.py),
+# shared by every build_library.sh content test below since the command text these
+# tests assert on is driven entirely by build_system/autotools_setup, not by paths.
+_OSS_FUZZ_PATHS = BuildPaths(
+    source_dir="$SCRIPT_DIR/src",
+    build_dir="$BUILD_PREFIX/build",
+    install_dir="$BUILD_PREFIX/install",
+)
+
+_ALL_BUILD_SYSTEM_VARIANTS = [
+    (BuildSystem.CMAKE, None),
+    (BuildSystem.MESON, None),
+    (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTORECONF),
+    (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE),
+    (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTOGEN),
+    (BuildSystem.MAKEFILE, None),
+]
 
 
 def test_build_library_script_skips_when_artifacts_already_present(tmp_path: Path) -> None:
@@ -198,3 +223,61 @@ def test_linux_host_whole_archive_uses_linux_flags_for_local_environment() -> No
     assert "-Wl,--whole-archive" in script
     assert "-Wl,--no-whole-archive" in script
     assert "-all_load" not in script
+
+
+# build_library.sh content for the oss-fuzz workspace's SCRIPT_DIR/BUILD_PREFIX layout —
+# build command per build system, autotools setup variants, and the guarantee that
+# capture-only instrumentation (spec 010 US2) never leaks into the shipped script.
+
+
+@pytest.mark.parametrize(
+    ("build_system", "autotools_setup", "expected_cmd"),
+    [
+        (BuildSystem.CMAKE, None, "cmake -B $BUILD_PREFIX/build"),
+        (BuildSystem.MESON, None, "meson setup"),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTORECONF, "$SCRIPT_DIR/src/configure"),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE, "$SCRIPT_DIR/src/configure"),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTOGEN, "$SCRIPT_DIR/src/configure"),
+        (BuildSystem.MAKEFILE, None, "make -C $SCRIPT_DIR/src"),
+    ],
+)
+def test_build_library_script_oss_fuzz_build_command(
+    build_system: BuildSystem, autotools_setup: AutotoolsSetup | None, expected_cmd: str
+) -> None:
+    script = build_library_script(build_system, _OSS_FUZZ_PATHS, autotools_setup=autotools_setup)
+    assert expected_cmd in script
+
+
+def test_build_library_script_autotools_configure_has_no_setup_step() -> None:
+    script = build_library_script(
+        BuildSystem.AUTOTOOLS, _OSS_FUZZ_PATHS, autotools_setup=AutotoolsSetup.CONFIGURE
+    )
+    assert "autoreconf" not in script
+    assert "autogen.sh" not in script
+
+
+def test_build_library_script_autotools_autogen_runs_autogen() -> None:
+    script = build_library_script(
+        BuildSystem.AUTOTOOLS, _OSS_FUZZ_PATHS, autotools_setup=AutotoolsSetup.AUTOGEN
+    )
+    assert "./autogen.sh" in script
+
+
+def test_build_library_script_autotools_autoreconf_runs_autoreconf() -> None:
+    script = build_library_script(
+        BuildSystem.AUTOTOOLS, _OSS_FUZZ_PATHS, autotools_setup=AutotoolsSetup.AUTORECONF
+    )
+    assert "autoreconf -fiv" in script
+
+
+@pytest.mark.parametrize(("build_system", "autotools_setup"), _ALL_BUILD_SYSTEM_VARIANTS)
+def test_build_library_script_has_no_capture_instrumentation(
+    build_system: BuildSystem, autotools_setup: AutotoolsSetup | None
+) -> None:
+    """build_library_script's output must never carry CMake/bear capture-only flags —
+    capture is applied at the orchestration level (explore()), never baked into the
+    template itself (spec 010 User Story 2), so the shipped oss-fuzz script is
+    structurally unaffected regardless of build system."""
+    script = build_library_script(build_system, _OSS_FUZZ_PATHS, autotools_setup=autotools_setup)
+    assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in script
+    assert "bear" not in script
