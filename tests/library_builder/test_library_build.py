@@ -38,6 +38,7 @@ class LibBuild:
     harness_result: HarnessExplorationResult
     workdir: Path
     source: Path
+    logs_dir: Path
 
 
 LIBS = [
@@ -132,11 +133,12 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
     )
     source = RepoSource(source_path=src, clone_url=lib.url, project_name=lib.project_name)
     workdir = tmp_path_factory.mktemp(f"{lib.project_name}_work")
+    logs_dir = workdir / "logs"
     analysis = analyze(source)
-    library_result = build_library(analysis, workdir, executor, agent=_AGENT)
+    library_result = build_library(analysis, workdir, executor, agent=_AGENT, logs_dir=logs_dir)
     install_dir = workdir / "install"
     harness_result = build_harness(
-        analysis, install_dir, workdir, library_result, executor, agent=_AGENT
+        analysis, install_dir, workdir, library_result, executor, agent=_AGENT, logs_dir=logs_dir
     )
     return LibBuild(
         spec=lib,
@@ -145,6 +147,7 @@ def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBui
         harness_result=harness_result,
         workdir=workdir,
         source=src,
+        logs_dir=logs_dir,
     )
 
 
@@ -216,6 +219,13 @@ class _StaticLibraryBuildChecks:
             else "check_local_build.sh"
         )
         assert Path(cmd[1]).name == expected_script
+
+    def test_static_library_build_phase_log_written(self, real_library_build: LibBuild) -> None:
+        """FR-004: a real build's full raw output must be retrievable via a per-phase
+        log file, regardless of whether it also streamed live to the console."""
+        log_path = real_library_build.logs_dir / "static_library_build.log"
+        assert log_path.exists()
+        assert log_path.stat().st_size > 0
 
 
 @pytest.mark.smoke

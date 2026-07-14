@@ -26,6 +26,9 @@ src/harnessbuddy/
     repos.py                    # repo ingestion (URL clone, local path)
     subprocesses.py             # streaming subprocess runner
     paths.py                    # state dir and workspace paths
+    reporting.py                 # Phase/PhaseReporter/FailureDiagnostic — phase start/end
+                                  # banners and failure diagnostics for generate's console
+                                  # output (specs/012-clear-build-logging)
   library_builder/
     models.py                   # shared dataclasses (AnalysisResult, BuildExplorationResult, ...)
     analysis.py                 # static build-system and language detection

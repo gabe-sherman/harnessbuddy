@@ -1,4 +1,5 @@
 import json
+import logging
 import subprocess
 import sys
 from collections.abc import Generator
@@ -1320,6 +1321,197 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
 
     dockerfile = (output_dir / "oss-fuzz" / "Dockerfile").read_text()
     assert dockerfile.count("libzstd-dev") == 1
+
+
+# phase banners and failure diagnostics (spec 012)
+
+
+def test_generate_success_prints_phase_banners_in_order(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # build_harness is mocked wholesale here (matching this file's usual pattern), so its
+    # own Harness compile probe banner never runs — only the phases whose PhaseReporter
+    # actually executes in this test are asserted.
+    expected_labels = [
+        "Repository ingestion",
+        "Static analysis",
+        "Static library build",
+        "Output generation",
+    ]
+    positions = [out.index(label) for label in expected_labels]
+    assert positions == sorted(positions)
+    # No agent-assisted phase ran, since nothing failed and no --agent was passed.
+    assert "Agent-assisted" not in out
+
+
+def test_generate_quiet_still_prints_phase_banners(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--quiet"]
+        )
+    assert rc == 0
+    out = capsys.readouterr().out
+    for label in ("Repository ingestion", "Static library build", "Output generation"):
+        assert label in out
+
+
+def test_generate_quiet_flag_parses() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", _REPO, "--quiet"])
+    assert args.quiet is True
+
+
+def test_generate_default_quiet_is_false() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["generate", _REPO])
+    assert args.quiet is False
+
+
+def test_generate_failed_library_build_prints_diagnostic(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="configure error: missing libfoo",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "FAILURE" in err
+    assert "Static library build" in err
+    assert "configure error: missing libfoo" in err
+    assert "deterministic" in err.lower() or "build step failed" in err.lower()
+
+
+def test_generate_failed_library_build_debug_mode_includes_raw_output(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="THE_FULL_RAW_BUILD_TRANSCRIPT",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(
+            [
+                "--log-level",
+                "debug",
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+            ]
+        )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "THE_FULL_RAW_BUILD_TRANSCRIPT" in err
+
+
+def test_generate_failed_library_build_no_debug_omits_raw_output_repeat(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="THE_FULL_RAW_BUILD_TRANSCRIPT",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "--- Full raw output" not in err
+
+
+def test_generate_agent_repaired_but_still_failed_library_build_diagnostic_is_agent_origin(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="agent attempt output",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+        llm_used=True,
+        agent_summary="Tried adding a CMake flag but the build still failed.",
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "Agent-assisted library repair" in err
+    assert "Tried adding a CMake flag but the build still failed." in err
+    # Exactly one diagnostic block for this failure — not the pre-existing duplicate
+    # print of the same agent summary (research.md addendum).
+    assert err.count("Tried adding a CMake flag but the build still failed.") == 1
+
+
+def test_check_environment_availability_failure_uses_startup_failure_format(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch(
+        "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+        return_value=RunResult(
+            stdout="",
+            stderr="Cannot connect to the Docker daemon",
+            exit_code=1,
+            duration_seconds=0.1,
+        ),
+    ):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "STARTUP FAILURE" in err
+    assert "unavailable" in err.lower()
+
+
+def test_log_level_debug_sets_internal_logging_level() -> None:
+    main(["--log-level", "debug"])
+    assert logging.getLogger("harnessbuddy.cli").getEffectiveLevel() == logging.DEBUG
 
 
 # extract-features
