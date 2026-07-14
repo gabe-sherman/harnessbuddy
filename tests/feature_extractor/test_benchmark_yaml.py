@@ -10,7 +10,7 @@ from harnessbuddy.feature_extractor.extraction import extract_features
 
 def test_generate_benchmark_filters_and_defaults(zlib_feature_test_dir: Path) -> None:
     extracted = extract_features(zlib_feature_test_dir)
-    benchmark = generate_benchmark(zlib_feature_test_dir)
+    benchmark = generate_benchmark(zlib_feature_test_dir, headers=[])
 
     assert benchmark.target_name == "default_fuzzer"
     assert benchmark.target_path == "/src/harness_source/default_fuzzer.c"
@@ -35,7 +35,10 @@ def test_generate_benchmark_filters_and_defaults(zlib_feature_test_dir: Path) ->
 def test_generate_benchmark_respects_overrides(zlib_feature_test_dir: Path) -> None:
     extract_features(zlib_feature_test_dir)
     benchmark = generate_benchmark(
-        zlib_feature_test_dir, target_name="my_fuzzer", target_path="/src/custom/my_fuzzer.cc"
+        zlib_feature_test_dir,
+        headers=[],
+        target_name="my_fuzzer",
+        target_path="/src/custom/my_fuzzer.cc",
     )
     assert benchmark.target_name == "my_fuzzer"
     assert benchmark.target_path == "/src/custom/my_fuzzer.cc"

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -187,7 +185,7 @@ def broken_cmake_build(
 
 class _StaticLibraryBuildChecks:
     global _AGENT
-    _AGENT=None
+    _AGENT = None
 
     def test_library_builds(self, real_library_build: LibBuild) -> None:
         result = real_library_build.library_result
@@ -290,6 +288,7 @@ class TestAgenticLibraryBuilds:
 
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()
+
 
 @pytest.mark.agentic
 @pytest.mark.build_matrix

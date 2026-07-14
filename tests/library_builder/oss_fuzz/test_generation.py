@@ -186,9 +186,7 @@ def test_generate_oss_fuzz_error_names_the_missing_file(tmp_path: Path) -> None:
     workspace = _validated_workspace(tmp_path)
     (workspace / "compile_harnesses.sh").unlink()
     with pytest.raises(FileNotFoundError, match=r"compile_harnesses\.sh"):
-        generate_oss_fuzz(
-            _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
-        )
+        generate_oss_fuzz(_analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace))
 
 
 # workspace copy — project.yaml/build.sh/build_library.sh/compile_harnesses.sh/

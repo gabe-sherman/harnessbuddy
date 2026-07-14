@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 logger = None
 
+
 def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "repo_url",
@@ -96,7 +97,7 @@ def _configure_generate_yaml_parser(p: argparse.ArgumentParser) -> None:
         "headers",
         metavar="HEADER_NAMES",
         nargs="*",
-        help="List of header file names to include in analysis"
+        help="List of header file names to include in analysis",
     )
     p.add_argument(
         "--target-name",
@@ -256,6 +257,7 @@ def build_harness(  # noqa: PLR0913 -- public API; all 6 params are distinct req
     if not result.succeeded and agent is not None:
         from harnessbuddy.library_builder.agents import invoke_harness_builder_agent
         from harnessbuddy.library_builder.models import HarnessPaths
+
         print("Deterministic harness build failed, invoking harness build agent")
         print("=" * 25 + "Begin Agent Output" + "=" * 25)
         result = invoke_harness_builder_agent(
@@ -936,6 +938,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         agent_phase_stats_from_build,
         agent_phase_stats_from_harness,
     )
+
     start_time = time.monotonic()
     state_dir = default_state_dir()
     environment = Environment(args.environment)
@@ -1062,7 +1065,10 @@ def _cmd_generate_benchmark(args: argparse.Namespace) -> int:
     build_path = Path(args.build_path)
     try:
         benchmark = generate_benchmark(
-            build_path, headers=args.headers, target_name=args.target_name, target_path=args.target_path
+            build_path,
+            headers=args.headers,
+            target_name=args.target_name,
+            target_path=args.target_path,
         )
     except (MissingFeatureArtifactError, FeatureArtifactError) as exc:
         print(str(exc), file=sys.stderr)

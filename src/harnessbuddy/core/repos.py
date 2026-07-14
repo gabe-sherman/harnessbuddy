@@ -34,6 +34,16 @@ def name_from_url(url: str) -> str:
         name = name[:-4]
     return name or "project"
 
+def clean_project_dir(project_dir: Path, keep: set[Path]) -> None:
+    keep_resolved = {p.resolve() for p in keep}
+    for child in project_dir.iterdir():
+        if child.resolve() in keep_resolved:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
 
 def ingest_url(
     url: str,
@@ -52,18 +62,17 @@ def ingest_url(
     project_dir = state_dir / name
     dest = project_dir / "src"
     repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
-
     state_file = project_state_file(state_dir, name)
-    preserved_state = state_file.read_bytes() if state_file.exists() else None
 
-    if project_dir.exists():
-        shutil.rmtree(project_dir)  # clear stale workspace state for new runs
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    if preserved_state is not None:
-        state_file.write_bytes(preserved_state)
-
-    subprocess.run(["git", "clone", "--recursive", url, str(dest)], check=True)
+    clean_project_dir(project_dir, keep={dest, state_file})
+    if not dest.exists():
+        subprocess.run(["git", "clone", "--recursive", url, str(dest)], check=True)
+    else:
+        # Reset src state across runs
+        subprocess.run(["git", "reset", "--hard"], cwd=dest, check=True)
+        subprocess.run(["git", "clean", "-fdx"], cwd=dest, check=True)
+        if repo_ref:
+            subprocess.run(["git", "checkout", repo_ref], cwd=dest, check=True)
     return repo_source
 
 

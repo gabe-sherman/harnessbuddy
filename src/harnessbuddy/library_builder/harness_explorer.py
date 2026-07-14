@@ -228,8 +228,7 @@ def _requires_cxx(stderr: str) -> bool:
     if _CXX_ABI_RE.search(stderr):
         return True
     return any(
-        symbol.startswith("_Z") or "::" in symbol
-        for symbol in _extract_undefined_symbols(stderr)
+        symbol.startswith("_Z") or "::" in symbol for symbol in _extract_undefined_symbols(stderr)
     )
 
 
