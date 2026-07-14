@@ -123,21 +123,28 @@ class LocalExecutor:
         )
 
     def sync_artifacts_after_agent_fix(
-        self,
-        analysis: AnalysisResult,
-        workdir: Path,  # noqa: ARG002 -- unused; signature must match the shared protocol
-        *,
-        timeout: int = 300,  # noqa: ARG002 -- unused; signature must match the shared protocol
+        self, analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
     ) -> BuildExplorationResult:
-        """No-op: Environment.LOCAL's repair-agent verification (check_local_build.sh)
-        already ran build_library.sh directly on the host, so workdir/install is already
-        correct — unlike Environment.OSS_FUZZ's unmounted docker equivalent, there's
-        nothing to hydrate. Re-running the build here would only be a redundant rebuild,
-        and a risky one: anything that made it behave differently from the agent's own
-        verified run would overwrite already-correct artifacts with worse ones.
+        """Environment.LOCAL's repair-agent verification (check_local_build.sh) already
+        ran build_library.sh directly on the host, so workdir/install is already correct
+        — unlike Environment.OSS_FUZZ's unmounted docker equivalent, there's nothing to
+        hydrate there. compile_commands.json is a different story: check_local_build.sh
+        runs the script unwrapped (no bear), so it's never produced as a side effect of
+        the agent's own verification. Recapture it via a scratch-BUILD_PREFIX rebuild
+        that never touches the already-verified install/ (see
+        exploration.recapture_compile_commands_after_agent_fix) — always succeeded=True
+        here, since a failed recapture doesn't affect install/'s correctness, only
+        whether compile_commands.json ends up available.
         """
+        from harnessbuddy.library_builder.exploration import (
+            recapture_compile_commands_after_agent_fix,
+        )
         from harnessbuddy.library_builder.models import BuildExplorationResult
 
+        workdir = workdir.resolve()
+        compile_commands_path, compile_commands_error = recapture_compile_commands_after_agent_fix(
+            analysis, workdir, timeout=timeout
+        )
         return BuildExplorationResult(
             build_system=analysis.build_system,
             succeeded=True,
@@ -147,4 +154,6 @@ class LocalExecutor:
             exit_code=0,
             duration_seconds=0.0,
             environment=Environment.LOCAL,
+            compile_commands_path=compile_commands_path,
+            compile_commands_error=compile_commands_error,
         )

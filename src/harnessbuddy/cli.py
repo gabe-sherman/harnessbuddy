@@ -577,6 +577,68 @@ def _print_agent_stop_for_human(exc: BuildFailureError | LLMBudgetError, phase: 
         print(exc.report.summary, file=sys.stderr)
 
 
+def _build_result_from_agent_error(
+    exc: BuildFailureError | LLMBudgetError, analysis: AnalysisResult, environment: Environment
+) -> BuildExplorationResult:
+    """Synthesize a failed BuildExplorationResult from a stop-for-human/budget-limited
+    library-build agent error, so --skip-validation can still continue the pipeline to
+    the harness phase and generation instead of aborting with no output at all.
+    """
+    from harnessbuddy.library_builder.models import BuildExplorationResult
+
+    return BuildExplorationResult(
+        build_system=analysis.build_system,
+        succeeded=False,
+        command=[],
+        stdout=exc.output,
+        stderr="",
+        exit_code=-1,
+        duration_seconds=exc.summary.duration_seconds,
+        llm_used=True,
+        cost_usd=exc.summary.cost_usd,
+        input_tokens=exc.summary.input_tokens,
+        output_tokens=exc.summary.output_tokens,
+        agent_summary=exc.report.summary if exc.report else None,
+        missing_apt_packages=exc.report.missing_apt_packages if exc.report else [],
+        missing_brew_packages=exc.report.missing_brew_packages if exc.report else [],
+        extra_include_paths=exc.report.extra_include_paths if exc.report else [],
+        extra_library_paths=exc.report.extra_library_paths if exc.report else [],
+        environment=environment,
+    )
+
+
+def _harness_result_from_agent_error(
+    exc: BuildFailureError | LLMBudgetError, install_dir: Path, environment: Environment
+) -> HarnessExplorationResult:
+    """Synthesize a failed HarnessExplorationResult from a stop-for-human/budget-limited
+    harness-build agent error, so --skip-validation can still continue to generation
+    instead of aborting with no output at all.
+    """
+    from harnessbuddy.library_builder.models import HarnessExplorationResult
+
+    return HarnessExplorationResult(
+        succeeded=False,
+        command=[],
+        static_libs=sorted((install_dir / "lib").glob("*.a")),
+        include_dir=install_dir / "include",
+        transitive_link_flags=[],
+        stdout=exc.output,
+        stderr="",
+        exit_code=-1,
+        llm_used=True,
+        duration_seconds=exc.summary.duration_seconds,
+        cost_usd=exc.summary.cost_usd,
+        input_tokens=exc.summary.input_tokens,
+        output_tokens=exc.summary.output_tokens,
+        agent_summary=exc.report.summary if exc.report else None,
+        missing_apt_packages=exc.report.missing_apt_packages if exc.report else [],
+        missing_brew_packages=exc.report.missing_brew_packages if exc.report else [],
+        extra_include_paths=exc.report.extra_include_paths if exc.report else [],
+        extra_library_paths=exc.report.extra_library_paths if exc.report else [],
+        environment=environment,
+    )
+
+
 def _check_environment_availability(
     executor: EnvironmentExecutor, environment: Environment
 ) -> int | None:
@@ -688,19 +750,175 @@ def _final_run_status(
     return RunStatus.SUCCESS
 
 
-def _cmd_generate(args: argparse.Namespace) -> int:
-    from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
-    from harnessbuddy.library_builder import dependency_resolution
-    from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
-    from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+def _handle_library_agent_error(  # noqa: PLR0913 -- private helper; all params are distinct required inputs
+    exc: BuildFailureError | LLMBudgetError,
+    analysis: AnalysisResult,
+    environment: Environment,
+    state: DependencyState,
+    state_file: Path,
+    *,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> BuildExplorationResult | int:
+    """Handle a library-build agent's stop-for-human/budget-limited error: merge any
+    reported packages, report the outcome, and either stop the pipeline (returning an
+    exit code) or hand back a synthetic failed result to continue with under
+    --skip-validation (both stages still run to produce the artifacts generation
+    needs, matching the deterministic-failure path in _handle_library_build_failure).
+    """
     from harnessbuddy.library_builder.dependency_resolution import DependencySource
-    from harnessbuddy.library_builder.environments.base import Environment
+    from harnessbuddy.library_builder.stats import (
+        RunStatus,
+        agent_phase_stats_from_agent_error,
+        not_invoked_agent_stats,
+    )
+
+    _merge_agent_error_dependencies(exc, state, state_file, DependencySource.LIBRARY_AGENT)
+    _print_agent_stop_for_human(exc, "build")
+    if not skip_validation:
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_agent_error(exc.summary, exc.report),
+            not_invoked_agent_stats(),
+            RunStatus.FAILED_LIBRARY_BUILD,
+            environment,
+        )
+        return 1
+    return _build_result_from_agent_error(exc, analysis, environment)
+
+
+def _handle_harness_agent_error(  # noqa: PLR0913 -- private helper; all params are distinct required inputs
+    exc: BuildFailureError | LLMBudgetError,
+    analysis: AnalysisResult,
+    environment: Environment,
+    state: DependencyState,
+    state_file: Path,
+    install_dir: Path,
+    result: BuildExplorationResult,
+    *,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> tuple[HarnessExplorationResult, list[str]] | int:
+    """Handle a harness-build agent's stop-for-human/budget-limited error: merge any
+    reported packages, report the outcome, and either stop the pipeline (returning an
+    exit code) or hand back a synthetic failed result plus brew packages to continue
+    with under --skip-validation, so the library build's own artifacts still reach
+    generation.
+    """
+    from harnessbuddy.library_builder.dependency_resolution import DependencySource
     from harnessbuddy.library_builder.stats import (
         RunStatus,
         agent_phase_stats_from_agent_error,
         agent_phase_stats_from_build,
+    )
+
+    _merge_agent_error_dependencies(exc, state, state_file, DependencySource.HARNESS_AGENT)
+    _print_agent_stop_for_human(exc, "harness build")
+    if not skip_validation:
+        _write_run_stats(
+            base_output,
+            start_time,
+            agent_phase_stats_from_build(result),
+            agent_phase_stats_from_agent_error(exc.summary, exc.report),
+            RunStatus.FAILED_HARNESS_BUILD,
+            environment,
+            result.compile_commands_path,
+            result.command,
+        )
+        return 1
+    print(
+        "--skip-validation set: continuing to generation despite the harness build "
+        "agent stopping for human action.",
+        file=sys.stderr,
+    )
+    analysis.system_packages = state.apt_packages
+    harness_result = _harness_result_from_agent_error(exc, install_dir, environment)
+    return harness_result, state.brew_packages
+
+
+def _run_library_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all params are distinct required inputs
+    analysis: AnalysisResult,
+    workspace: Path,
+    agent: str | None,
+    state: DependencyState,
+    state_file: Path,
+    executor: EnvironmentExecutor,
+    *,
+    environment: Environment,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> BuildExplorationResult | int:
+    """Run the library-build phase, converting a stop-for-human/budget-limited agent
+    error into either an exit code (pipeline stops) or a synthetic failed result to
+    continue with (--skip-validation)."""
+    from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
+
+    try:
+        return _run_library_phase(analysis, workspace, agent, state, state_file, executor)
+    except (BuildFailureError, LLMBudgetError) as exc:
+        return _handle_library_agent_error(
+            exc,
+            analysis,
+            environment,
+            state,
+            state_file,
+            skip_validation=skip_validation,
+            base_output=base_output,
+            start_time=start_time,
+        )
+
+
+def _run_harness_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all params are distinct required inputs
+    analysis: AnalysisResult,
+    install_dir: Path,
+    workspace: Path,
+    result: BuildExplorationResult,
+    agent: str | None,
+    state: DependencyState,
+    state_file: Path,
+    executor: EnvironmentExecutor,
+    *,
+    environment: Environment,
+    skip_validation: bool,
+    base_output: Path,
+    start_time: float,
+) -> tuple[HarnessExplorationResult, list[str]] | int:
+    """Run the harness-build phase, converting a stop-for-human/budget-limited agent
+    error into either an exit code (pipeline stops) or a synthetic failed result plus
+    brew packages to continue with (--skip-validation)."""
+    from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
+
+    try:
+        return _run_harness_phase(
+            analysis, install_dir, workspace, result, agent, state, state_file, executor
+        )
+    except (BuildFailureError, LLMBudgetError) as exc:
+        return _handle_harness_agent_error(
+            exc,
+            analysis,
+            environment,
+            state,
+            state_file,
+            install_dir,
+            result,
+            skip_validation=skip_validation,
+            base_output=base_output,
+            start_time=start_time,
+        )
+
+
+def _cmd_generate(args: argparse.Namespace) -> int:
+    from harnessbuddy.core.paths import default_state_dir, project_dir, project_state_file
+    from harnessbuddy.library_builder import dependency_resolution
+    from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.environments.base import Environment
+    from harnessbuddy.library_builder.stats import (
+        agent_phase_stats_from_build,
         agent_phase_stats_from_harness,
-        not_invoked_agent_stats,
     )
     start_time = time.monotonic()
     state_dir = default_state_dir()
@@ -730,20 +948,21 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     state_file = project_state_file(state_dir, analysis.project_name)
     state = dependency_resolution.load_state(state_file)
     agent = None if args.no_agents else args.agent
-    try:
-        result = _run_library_phase(analysis, workspace, agent, state, state_file, executor)
-    except (BuildFailureError, LLMBudgetError) as exc:
-        _merge_agent_error_dependencies(exc, state, state_file, DependencySource.LIBRARY_AGENT)
-        _print_agent_stop_for_human(exc, "build")
-        _write_run_stats(
-            base_output,
-            start_time,
-            agent_phase_stats_from_agent_error(exc.summary, exc.report),
-            not_invoked_agent_stats(),
-            RunStatus.FAILED_LIBRARY_BUILD,
-            environment,
-        )
-        return 1
+    outcome = _run_library_phase_or_agent_error(
+        analysis,
+        workspace,
+        agent,
+        state,
+        state_file,
+        executor,
+        environment=environment,
+        skip_validation=args.skip_validation,
+        base_output=base_output,
+        start_time=start_time,
+    )
+    if isinstance(outcome, int):
+        return outcome
+    result = outcome
     rc = _report_library_build_result(
         result,
         environment,
@@ -755,31 +974,23 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         return rc
 
     install_dir = workspace / "install"
-    try:
-        harness_result, brew_packages = _run_harness_phase(
-            analysis,
-            install_dir,
-            workspace,
-            result,
-            agent,
-            state,
-            state_file,
-            executor,
-        )
-    except (BuildFailureError, LLMBudgetError) as exc:
-        _merge_agent_error_dependencies(exc, state, state_file, DependencySource.HARNESS_AGENT)
-        _print_agent_stop_for_human(exc, "harness build")
-        _write_run_stats(
-            base_output,
-            start_time,
-            agent_phase_stats_from_build(result),
-            agent_phase_stats_from_agent_error(exc.summary, exc.report),
-            RunStatus.FAILED_HARNESS_BUILD,
-            environment,
-            result.compile_commands_path,
-            result.command,
-        )
-        return 1
+    outcome = _run_harness_phase_or_agent_error(
+        analysis,
+        install_dir,
+        workspace,
+        result,
+        agent,
+        state,
+        state_file,
+        executor,
+        environment=environment,
+        skip_validation=args.skip_validation,
+        base_output=base_output,
+        start_time=start_time,
+    )
+    if isinstance(outcome, int):
+        return outcome
+    harness_result, brew_packages = outcome
 
     rc = _generate_outputs(
         analysis,

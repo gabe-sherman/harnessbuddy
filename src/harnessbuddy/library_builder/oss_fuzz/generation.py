@@ -74,11 +74,11 @@ def generate_oss_fuzz(
     copied_harness_source = _copy_harness_source(output_path, validated_workspace)
 
     files: list[Path] = [
-        _write_project_yaml(output_path, analysis, validated_workspace),
-        workspace.write_dockerfile(output_path, analysis, include_bear=False),
-        _write_build_sh(output_path, validated_workspace),
-        _write_build_library_sh(output_path, analysis, exploration, validated_workspace),
-        _write_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
+        _copy_project_yaml(output_path, analysis, validated_workspace),
+        _copy_dockerfile(output_path, validated_workspace),
+        _copy_build_sh(output_path, validated_workspace),
+        _copy_build_library_sh(output_path, analysis, exploration, validated_workspace),
+        _copy_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
         *copied_harness_source,
     ]
     if not any(harness_source_dir.glob("default_fuzzer.*")):
@@ -107,26 +107,37 @@ def _validated_oss_fuzz_workspace(exploration: BuildExplorationResult | None) ->
     return exploration.script_path.parent
 
 
-def _write_project_yaml(
+def _copy_project_yaml(
     output_path: Path, analysis: AnalysisResult, validated_workspace: Path | None
 ) -> Path:
     path = output_path / "project.yaml"
     if validated_workspace is not None and (validated_workspace / "project.yaml").exists():
         shutil.copy2(validated_workspace / "project.yaml", path)
-        return path
-    return workspace.write_project_yaml(output_path, analysis)
+    else:
+        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    return path
 
+def _copy_dockerfile(output_path: Path, validated_workspace: Path | None) -> Path:
+    path = output_path / "Dockerfile"
+    if validated_workspace is not None and (validated_workspace / "Dockerfile").exists():
+        shutil.copy2(validated_workspace / "Dockerfile", path)
+        # replace apt dependency on bear since this is only needed during exploration
+        path.write_text(path.read_text().replace("bear ", " "))
+    else:
+        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    return path
 
-def _write_build_sh(output_path: Path, validated_workspace: Path | None) -> Path:
+def _copy_build_sh(output_path: Path, validated_workspace: Path | None) -> Path:
     path = output_path / "build.sh"
     if validated_workspace is not None and (validated_workspace / "build.sh").exists():
         shutil.copy2(validated_workspace / "build.sh", path)
-        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        return path
-    return workspace.write_build_sh(output_path)
+    else:
+        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
 
 
-def _write_build_library_sh(
+def _copy_build_library_sh(
     output_path: Path,
     analysis: AnalysisResult,
     exploration: BuildExplorationResult | None,
@@ -139,29 +150,13 @@ def _write_build_library_sh(
     path = output_path / "build_library.sh"
     if validated_workspace is not None and (validated_workspace / "build_library.sh").exists():
         shutil.copy2(validated_workspace / "build_library.sh", path)
-    elif (
-        exploration is not None
-        and exploration.script_path is not None
-        and exploration.environment is Environment.OSS_FUZZ
-    ):
-        shutil.copy2(exploration.script_path, path)
     else:
-        path.write_text(
-            build_library_script(
-                analysis.build_system,
-                BuildPaths(
-                    source_dir="$SCRIPT_DIR/src",
-                    build_dir="$BUILD_PREFIX/build",
-                    install_dir="$BUILD_PREFIX/install",
-                ),
-                autotools_setup=analysis.autotools_setup,
-            )
-        )
+        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
 
-def _write_compile_harnesses_sh(
+def _copy_compile_harnesses_sh(
     output_path: Path,
     harness: HarnessExplorationResult | None,
     validated_workspace: Path | None,
@@ -173,19 +168,8 @@ def _write_compile_harnesses_sh(
     path = output_path / "compile_harnesses.sh"
     if validated_workspace is not None and (validated_workspace / "compile_harnesses.sh").exists():
         shutil.copy2(validated_workspace / "compile_harnesses.sh", path)
-    elif (
-        harness is not None
-        and harness.script_path is not None
-        and harness.environment is Environment.OSS_FUZZ
-    ):
-        shutil.copy2(harness.script_path, path)
     else:
-        content = (
-            build_harness_script(harness, harness_dir_name="harness_source", oss_fuzz=True)
-            if harness is not None
-            else _COMPILE_HARNESSES_SH_STUB
-        )
-        path.write_text(content)
+        raise FileNotFoundError(f"An error occurred: expected to find build_library.sh in workspace {validated_workspace}")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 

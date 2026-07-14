@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import stat
+import tempfile
 from pathlib import Path
-import logging
 
 from harnessbuddy.core.subprocesses import Runner, run_command_streaming
 from harnessbuddy.library_builder.environments.base import Environment
@@ -183,7 +184,7 @@ def _build_command(
     return plain, _BEAR_NOT_FOUND_ERROR
 
 
-def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-only, independently meaningful
+def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout/build_dir are keyword-only, independently meaningful
     analysis: AnalysisResult,
     workdir: Path,
     runner: Runner,
@@ -191,6 +192,7 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-on
     bear_missing_error: str | None,
     *,
     standard_layout: bool,
+    build_dir: Path | None = None,
 ) -> tuple[Path | None, str | None]:
     """Capture compile_commands.json as a byproduct of the build that just succeeded.
 
@@ -201,14 +203,23 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-on
     bear_missing_error is set) to the canonical build command above.
 
     The CMake configure command below runs with cwd=workdir (runner(..., workdir, ...)),
-    so it must reference build/source by paths relative to that cwd — not absolute host
-    paths — since Environment.OSS_FUZZ's runner bind-mounts workdir at /src inside the
+    so it must reference the source by a path relative to that cwd — not an absolute host
+    path — since Environment.OSS_FUZZ's runner bind-mounts workdir at /src inside the
     container (not at its own host path), where an absolute host path wouldn't resolve to
     anything. standard_layout=True means the source lives at workdir/src, referenceable
     the same "src"-relative way; the non-standard-layout case keeps the absolute host path
     since that's mounted separately, at its own path, regardless of workdir's mount target.
+
+    build_dir defaults to workdir/build (the build the caller just ran) — overridden by
+    recapture_compile_commands_after_agent_fix to point at a scratch directory instead,
+    so a supplemental capture command never touches the real workdir/build or install/.
+    That override only ever runs on the host directly (Environment.LOCAL), so it's safe
+    to pass as an absolute path — unlike the default case's "-B build", which must stay
+    cwd-relative for the same bind-mount reason -S does (see above).
     """
-    build_dir = workdir / "build"
+    build_dir_override = build_dir
+    build_dir = build_dir_override if build_dir_override is not None else workdir / "build"
+    build_arg = str(build_dir_override) if build_dir_override is not None else "build"
     target = workdir / "compile_commands.json"
 
     if analysis.build_system == BuildSystem.CMAKE:
@@ -216,7 +227,7 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-on
         configure_command = [
             "cmake",
             "-B",
-            "build",
+            build_arg,
             "-S",
             source_arg,
             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
@@ -243,6 +254,58 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-on
         return target, None
 
     return None, None
+
+
+def recapture_compile_commands_after_agent_fix(
+    analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
+) -> tuple[Path | None, str | None]:
+    """Capture compile_commands.json for a build_library.sh that already succeeded via
+    an out-of-band verification (an agent's own check_local_build.sh run), without
+    touching the already-verified workdir/install or workdir/build.
+
+    Runs the same, unmodified script again with BUILD_PREFIX overridden to a scratch
+    directory: build_library.sh's skip-if-already-built guard (scripts.py) only
+    inspects BUILD_PREFIX's install dir, so this reproduces a full build in complete
+    isolation from workdir/install rather than short-circuiting against it. A failure
+    here can never regress the already-verified install/, since it never touches it —
+    the scratch directory (and everything built into it) is discarded once compile
+    commands are extracted from it.
+    """
+    if analysis.build_system == BuildSystem.UNKNOWN:
+        return None, None
+
+    workdir = workdir.resolve()
+    script_path = workdir / "build_library.sh"
+    if not script_path.exists():
+        return None, "build_library.sh not found"
+
+    standard_layout = is_standard_source_layout(analysis, workdir)
+    command, bear_missing_error = _build_command(
+        analysis.build_system, Environment.LOCAL, script_path
+    )
+    if bear_missing_error is not None and analysis.build_system in _MAKE_LIKE_SYSTEMS:
+        # Nothing to gain from paying for a rebuild bear can't capture.
+        return None, bear_missing_error
+
+    with tempfile.TemporaryDirectory(prefix="harnessbuddy-recapture-") as scratch:
+        scratch_dir = Path(scratch)
+        env_command = ["env", f"BUILD_PREFIX={scratch_dir}", *command]
+        result = run_command_streaming(env_command, workdir, timeout)
+        if result.exit_code != 0:
+            return None, (
+                "recapture build (scratch BUILD_PREFIX, to capture compile_commands.json "
+                "without touching the already-verified install/) failed"
+            )
+
+        return _capture_compile_commands(
+            analysis,
+            workdir,
+            run_command_streaming,
+            timeout,
+            bear_missing_error,
+            standard_layout=standard_layout,
+            build_dir=scratch_dir / "build",
+        )
 
 
 def _string_list(value: object) -> list[str]:

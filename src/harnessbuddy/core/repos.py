@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
+
+from harnessbuddy.core.paths import project_state_file
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +42,28 @@ def ingest_url(
     repo_ref: str | None = None,
     state_dir: Path,
 ) -> RepoSource:
-    """Clone a remote repository into state_dir and return a RepoSource."""
+    """Clone a remote repository into state_dir and return a RepoSource.
+
+    Preserves state.json (dependency-resolution state learned across prior runs, e.g.
+    apt/brew packages an agent reported missing) across the workspace wipe below —
+    without this, every re-run for the same project would silently discard it.
+    """
     name = project_name or name_from_url(url)
-    dest = state_dir / name / "src"
+    project_dir = state_dir / name
+    dest = project_dir / "src"
     repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
-    if dest.parent.exists():
-        shutil.rmtree(dest.parent) # clear the working state for new runs
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "clone", url, str(dest)], check=True)
+
+    state_file = project_state_file(state_dir, name)
+    preserved_state = state_file.read_bytes() if state_file.exists() else None
+
+    if project_dir.exists():
+        shutil.rmtree(project_dir)  # clear stale workspace state for new runs
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    if preserved_state is not None:
+        state_file.write_bytes(preserved_state)
+
+    subprocess.run(["git", "clone", "--recursive", url, str(dest)], check=True)
     return repo_source
 
 
