@@ -62,7 +62,7 @@ def write_dockerfile(output_path: Path, analysis: AnalysisResult, *, include_bea
         pkgs = " ".join(apt_packages)
         lines.append(f"RUN apt-get update && apt-get install -y --no-install-recommends {pkgs}\n")
 
-    lines.append(f"RUN git clone {analysis.clone_url} $SRC/src\n")
+    lines.append(f"RUN git clone --recursive {analysis.clone_url} $SRC/src\n")
     if analysis.repo_ref is not None:
         lines.append(f"RUN git -C $SRC/src checkout {analysis.repo_ref}\n")
     lines += [

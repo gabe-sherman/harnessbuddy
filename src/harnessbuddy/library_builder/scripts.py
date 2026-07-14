@@ -12,7 +12,7 @@ from harnessbuddy.library_builder.models import (
 )
 
 _HOST_ENV_FALLBACKS = (
-    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:--fsanitize=fuzzer}"\nCXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
+    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
 )
 
 

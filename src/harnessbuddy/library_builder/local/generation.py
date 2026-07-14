@@ -136,7 +136,7 @@ def _write_setup_sh(
         "\n",
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n',
         "\n",
-        f'git clone {analysis.clone_url} "$SCRIPT_DIR/src"\n',
+        f'git clone --recursive {analysis.clone_url} "$SCRIPT_DIR/src"\n',
     ]
     if analysis.repo_ref is not None:
         lines.append(f'git -C "$SCRIPT_DIR/src" checkout {analysis.repo_ref}\n')
