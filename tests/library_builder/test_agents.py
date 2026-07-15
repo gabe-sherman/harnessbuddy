@@ -289,6 +289,31 @@ def test_harness_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
     assert preamble_line not in prompt
 
 
+def test_harness_prompt_falls_back_to_stdout_when_stderr_empty(tmp_path: Path) -> None:
+    """The oss-fuzz docker-streaming Runner merges stderr into stdout and always
+    reports an empty .stderr (core/subprocesses.py's run_command_streaming never
+    populates it) -- the prompt must still surface the real diagnostic text from
+    .stdout in that case, not render an empty code block."""
+    harness = HarnessExplorationResult(
+        succeeded=False,
+        command=[],
+        static_libs=[],
+        include_dir=Path("/tmp/install/include"),
+        transitive_link_flags=[],
+        stdout="ld: undefined reference to `foo_init'",
+        stderr="",
+        exit_code=1,
+    )
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        harness,
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.OSS_FUZZ,
+    )
+    assert "undefined reference to `foo_init'" in prompt
+
+
 def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> None:
     action_required_text = "ACTION REQUIRED: install libfoo-dev"
     workdir = tmp_path / "work"

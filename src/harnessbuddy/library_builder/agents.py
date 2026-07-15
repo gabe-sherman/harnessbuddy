@@ -350,7 +350,11 @@ def build_harness_prompt(
         if _HARNESS_SKILL_PATH.exists()
         else _HARNESS_INLINE_INSTRUCTIONS
     )
-    stderr_tail = "\n".join(harness.stderr.splitlines()[-200:])
+    # Some Runners (the oss-fuzz docker-streaming one) merge stderr into stdout and never
+    # populate .stderr, so harness.stderr alone can be empty even when the failure's real
+    # diagnostic text is sitting in .stdout — concatenate both, matching the same
+    # combined-stream handling harness_explorer.py already relies on internally.
+    output_tail = "\n".join((harness.stdout + harness.stderr).splitlines()[-200:])
     harness_dir_name = "harness_source" if environment is Environment.OSS_FUZZ else "harness_src"
     verify_command = _verification_command(
         environment,
@@ -370,8 +374,8 @@ def build_harness_prompt(
         f"- missing_system_libs (linker-reported): "
         f"{', '.join(harness.missing_system_libs) or '(none detected)'}\n"
         f"- exit_code: {harness.exit_code}\n\n"
-        f"### Linker/compiler output (last 200 lines of stderr)\n\n"
-        f"```\n{stderr_tail}\n```\n\n"
+        f"### Linker/compiler output (last 200 lines)\n\n"
+        f"```\n{output_tail}\n```\n\n"
         f"### Verification\n\n"
         f"After applying a fix, verify it works by running this exact command:\n\n"
         f"    {verify_command}\n\n"
