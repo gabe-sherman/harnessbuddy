@@ -34,6 +34,7 @@ def name_from_url(url: str) -> str:
         name = name[:-4]
     return name or "project"
 
+
 def clean_project_dir(project_dir: Path, keep: set[Path]) -> None:
     keep_resolved = {p.resolve() for p in keep}
     for child in project_dir.iterdir():
@@ -58,7 +59,7 @@ def ingest_url(
     apt/brew packages an agent reported missing) across the workspace wipe below —
     without this, every re-run for the same project would silently discard it.
     """
-    name = project_name or name_from_url(url)
+    name = (project_name or name_from_url(url)).lower()
     project_dir = state_dir / name
     dest = project_dir / "src"
     repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
@@ -89,7 +90,7 @@ def ingest_local(
     """
     if not path.exists() or not path.is_dir():
         raise RepositoryNotFoundError(f"Local path does not exist or is not a directory: {path}")
-    name = project_name or path.name
+    name = (project_name or path.name).lower()
     origin = _get_git_origin(path)
     if origin is None:
         raise NoCloneableOriginError(

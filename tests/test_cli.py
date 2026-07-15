@@ -94,6 +94,38 @@ def test_generate_success_project_name_override(
     assert (Path(".harnessbuddy") / "custom").is_dir()
 
 
+def test_generate_success_mixed_case_project_name_is_lowercased_consistently(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    """Docker rejects uppercase image tags; the project name is lowercased at ingestion
+    (core/repos.py) so every later phase (workspace/state/logs directories, all derived
+    from AnalysisResult.project_name) agrees with where the repo was actually cloned —
+    a regression test for a bug where lowercasing only in analyze() left the ingested
+    source directory and the later workspace path pointing at different, mismatched
+    casings of the same name."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--project-name",
+                "MyLib",
+            ]
+        )
+    assert rc == 0
+    # Path.exists() alone isn't reliable here: some host filesystems (e.g. a
+    # case-insensitive macOS bind mount under Docker Desktop) resolve "MyLib" and
+    # "mylib" to the same entry regardless of casing. Read the actual directory entry
+    # name back instead, which stays case-preserving even there.
+    entry_names = {entry.name for entry in Path(".harnessbuddy").iterdir()}
+    assert "mylib" in entry_names
+    assert "MyLib" not in entry_names
+
+
 def test_generate_success_default_output_uses_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

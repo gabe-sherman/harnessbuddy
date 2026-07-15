@@ -70,6 +70,32 @@ def test_ingest_local_project_name_override(local_repo_with_origin: Path) -> Non
     assert source.project_name == "custom"
 
 
+def test_ingest_local_project_name_override_is_lowercased(local_repo_with_origin: Path) -> None:
+    """Docker rejects uppercase repository/tag names (e.g. the harnessbuddy-dev/<project>
+    image tag and OSS-Fuzz's own project-name convention), and every later stage
+    (workspace/state/logs directories) derives its path from this same name — so it must
+    be normalized once, here, rather than downstream, to avoid a casing mismatch between
+    where the repo was actually cloned and where later phases look for it."""
+    source = ingest_local(local_repo_with_origin, project_name="MyLib")
+    assert source.project_name == "mylib"
+
+
+def test_ingest_local_inferred_project_name_is_lowercased(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "MyLib"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/MyLib.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    source = ingest_local(repo)
+    assert source.project_name == "mylib"
+
+
 def test_ingest_local_repo_ref_propagated(local_repo_with_origin: Path) -> None:
     source = ingest_local(local_repo_with_origin, repo_ref="v1.0.0")
     assert source.repo_ref == "v1.0.0"
