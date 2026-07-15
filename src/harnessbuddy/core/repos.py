@@ -65,11 +65,11 @@ def ingest_url(
     repo_source = RepoSource(source_path=dest, clone_url=url, project_name=name, repo_ref=repo_ref)
     state_file = project_state_file(state_dir, name)
 
-    clean_project_dir(project_dir, keep={dest, state_file})
     if not dest.exists():
         subprocess.run(["git", "clone", "--recursive", url, str(dest)], check=True)
     else:
         # Reset src state across runs
+        clean_project_dir(project_dir, keep={dest, state_file})
         subprocess.run(["git", "reset", "--hard"], cwd=dest, check=True)
         subprocess.run(["git", "clean", "-fdx"], cwd=dest, check=True)
         if repo_ref:

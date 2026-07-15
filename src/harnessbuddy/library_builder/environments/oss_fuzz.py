@@ -473,7 +473,7 @@ class OssFuzzExecutor:
         reporting it via agent_report.json) — probes then silently ran against a stale
         image missing the fix.
         """
-        tag = f"harnessbuddy-dev/{analysis.project_name.lower()}:latest"
+        tag = f"harnessbuddy-dev/{analysis.project_name}:latest"
         command = ["docker", "build", "-t", tag, "."]
         result = run_command(command, workdir, _IMAGE_BUILD_TIMEOUT_SECONDS)
 

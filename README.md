@@ -101,7 +101,9 @@ the library's C/C++ declarations:
 - `records` — structs/unions: name (if any), `kind`, fields, declaring header
 - `warnings` — non-fatal issues hit while parsing
 
-`generate-yaml` reads `features.json` and keeps only `is_public_api: true` functions to
-build an OSS-Fuzz-Gen compatible benchmark YAML.
+By default `generate-yaml` reads `features.json` and keeps only public functions to
+build an OSS-Fuzz-Gen compatible benchmark YAML. 
+`generate-yaml` also supports per-header function extraction via the `--headers` argument, which
+is recommended for finer-grained extraction.
 
 Run `uv run harnessbuddy --help` for details.

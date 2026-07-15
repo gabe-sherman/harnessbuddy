@@ -9,7 +9,9 @@ dist/
 .ruff_cache/
 .mypy_cache/
 output/
+ground_truth_test_output/
 zlib_feature_test/
+scripts/ci.sh
 
 # Beads / Dolt files (added by bd init) — kept local only, not tracked in git
 .beads/
@@ -20,3 +22,7 @@ zlib_feature_test/
 # Local dev tooling / planning docs — not part of the shipped repo
 .claude/
 specs/
+plans/
+STATUS.md
+.specify/
+.devcontainer
