@@ -884,6 +884,28 @@ def _final_run_status(
     return RunStatus.SUCCESS
 
 
+def _print_run_summary(status: RunStatus) -> None:
+    """Print a final, unambiguous overall-outcome line.
+
+    Output generation's own PhaseReporter banner reports that phase's narrow job
+    (writing scaffold files) succeeding, which it does even when an earlier build
+    phase failed and the pipeline only reached generation via best-effort harness
+    handling or --skip-validation — without this, that's the last thing printed, and
+    reads as an overall success when it wasn't.
+    """
+    from harnessbuddy.library_builder.stats import RunStatus
+
+    if status is RunStatus.SUCCESS:
+        print("Overall: SUCCESS")
+        return
+    reason = (
+        "static library build failed"
+        if status is RunStatus.FAILED_LIBRARY_BUILD
+        else "harness compile probe failed"
+    )
+    print(f"Overall: FAILED ({reason} — see diagnostic above)", file=sys.stderr)
+
+
 def _handle_library_agent_error(  # noqa: PLR0913 -- private helper; all params are distinct required inputs
     exc: BuildFailureError | LLMBudgetError,
     analysis: AnalysisResult,
@@ -1215,12 +1237,14 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             reporter.succeed()
         else:
             reporter.fail()
+    final_status = _final_run_status(result, harness_result)
+    _print_run_summary(final_status)
     _write_run_stats(
         base_output,
         start_time,
         agent_phase_stats_from_build(result),
         agent_phase_stats_from_harness(harness_result),
-        _final_run_status(result, harness_result),
+        final_status,
         environment,
         result.compile_commands_path,
         harness_result.command or result.command,

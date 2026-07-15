@@ -479,6 +479,64 @@ def test_skip_validation_continues_past_failed_library_build(
     assert stats["status"] == "failed_library_build"
 
 
+def test_skip_validation_continues_past_failed_library_build_prints_overall_failed(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Output generation always writes files (best-effort), so its own phase banner
+    reports [SUCCEEDED] even though the underlying build failed -- without an explicit
+    overall-outcome line, that banner is the last thing printed and reads as a full
+    success. Confirm the run is never left looking like an unqualified success."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="build failed",
+        stderr="",
+        exit_code=1,
+        duration_seconds=3.0,
+    )
+    with patch("harnessbuddy.cli.build_library", return_value=fake_build_result):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--skip-validation",
+            ]
+        )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Overall: FAILED" in err
+    assert "static library build" in err
+
+
+def test_generate_success_prints_overall_success(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Overall: SUCCESS" in out
+
+
+def test_generate_writes_stats_json_failed_harness_build_prints_overall_failed(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Overall: FAILED" in err
+    assert "harness compile probe" in err
+
+
 def test_without_skip_validation_still_stops_on_failed_library_build(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
