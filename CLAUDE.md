@@ -104,9 +104,10 @@ uv run ty check                                        # type check
   fixtures in its output.
 - See `plans/python_code_standards.md` for full standards.
 
-**Note:** `.beads/issues.jsonl` is a normal git-tracked file (the passive export
-mentioned below) — creating/updating beads issues does not commit or push it.
-Stage, commit, and push it like any other change as part of session close.
+**Note:** `.beads/`, `.claude/`, and `specs/` are gitignored — they hold local
+issue-tracker state, editor/agent settings, and spec-kit planning docs, not shipped
+project code. Don't stage, commit, or push them; the session-close protocol below still
+applies to actual code/doc changes, just not these directories.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker

@@ -11,7 +11,12 @@ dist/
 output/
 zlib_feature_test/
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt files (added by bd init) — kept local only, not tracked in git
+.beads/
 .dolt/
 *.db
 .beads-credential-key
+
+# Local dev tooling / planning docs — not part of the shipped repo
+.claude/
+specs/
