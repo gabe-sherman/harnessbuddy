@@ -9,7 +9,11 @@ from pathlib import Path
 from harnessbuddy.core.subprocesses import Runner, run_command
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import HarnessExplorationResult, Language
-from harnessbuddy.library_builder.scripts import build_harness_script, write_default_fuzzer
+from harnessbuddy.library_builder.scripts import (
+    build_harness_script,
+    build_harnesses_script,
+    write_default_fuzzer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +38,7 @@ _LIB_PATTERNS: dict[str, re.Pattern[str]] = {
 _CXX_ABI_RE = re.compile(r"operator (?:new|delete)\b|__cxa_|__gxx_personality")
 
 # Mirrors scripts.py's build_harness_script format, used to re-derive STATIC_LIBS /
-# EXTRA_LINK_FLAGS from a (possibly agent-edited) compile_harnesses.sh after a fix, since
+# EXTRA_LINK_FLAGS from a (possibly agent-edited) compile_harness.sh after a fix, since
 # an agent may hand-edit these variables directly rather than us regenerating them.
 _STATIC_LIBS_BLOCK_RE = re.compile(r"STATIC_LIBS=\((.*?)\n\)", re.DOTALL)
 _STATIC_LIB_ENTRY_RE = re.compile(r'"\$INSTALL_DIR/lib/([^"]+)"')
@@ -71,7 +75,7 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     running this inside a container pass a run primitive that wraps the command in a
     `docker run` invocation instead. For Environment.OSS_FUZZ, each attempt runs the base
     image's own `compile` entrypoint (not just the generated script directly), since that's
-    what populates $LIB_FUZZING_ENGINE before compile_harnesses.sh links against it.
+    what populates $LIB_FUZZING_ENGINE before compile_harness.sh links against it.
     """
     extra_include_paths = extra_include_paths or []
     extra_library_paths = extra_library_paths or []
@@ -115,7 +119,8 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     # file, so the discovered language can never desync from what final generation copies.
     harness_path = write_default_fuzzer(harness_src_dir, language)
 
-    script_path = workdir / "compile_harnesses.sh"
+    script_path = workdir / "compile_harness.sh"
+    batch_script_path = workdir / "compile_harnesses.sh"
     runner = run if run is not None else run_command
     extra_flags: list[str] = list(_DEFAULT_LINK_FLAGS)
     seen_flags: set[str] = set(_DEFAULT_LINK_FLAGS)
@@ -140,12 +145,17 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
             build_harness_script(
                 intermediate,
                 whole_archive=True,
-                harness_dir_name=harness_dir_name,
                 oss_fuzz=oss_fuzz,
             )
         )
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        command = ["bash", "-c", "compile"] if oss_fuzz else ["bash", str(script_path.name)]
+        batch_script_path.write_text(
+            build_harnesses_script(harness_dir_name=harness_dir_name, oss_fuzz=oss_fuzz)
+        )
+        batch_script_path.chmod(
+            batch_script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        )
+        command = ["bash", "-c", "compile"] if oss_fuzz else ["bash", batch_script_path.name]
         result = runner(command, workdir, 60)
         last_stdout = result.stdout
         last_stderr = result.stderr
@@ -270,7 +280,7 @@ def _validate_harness_artifacts(workdir: Path) -> list[str]:
 def reparse_link_config(
     script_text: str, static_libs: list[Path], transitive_link_flags: list[str]
 ) -> tuple[list[Path], list[str]]:
-    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from compile_harnesses.sh's text.
+    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from compile_harness.sh's text.
 
     An agent fixing a harness link failure edits these variables directly rather than
     going through build_harness_script, so the structured HarnessExplorationResult it's
@@ -296,7 +306,7 @@ def reparse_lib_paths(script_text: str, extra_library_paths: list[str]) -> list[
 
     Mirrors reparse_link_config's EXTRA_LINK_FLAGS handling: falls back to the given
     paths wherever the expected format isn't found in the (possibly agent-edited)
-    compile_harnesses.sh text.
+    compile_harness.sh text.
     """
     match = _EXTRA_LIB_PATHS_RE.search(script_text)
     if not match:

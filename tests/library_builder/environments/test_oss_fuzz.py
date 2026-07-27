@@ -833,6 +833,7 @@ def test_run_library_build_materializes_real_project_layout(tmp_path: Path) -> N
     assert (workdir / "project.yaml").exists()
     assert (workdir / "harness_source").is_dir()
     assert (workdir / "build_library.sh").exists()
+    assert (workdir / "compile_harness.sh").exists()
     assert (workdir / "compile_harnesses.sh").exists()
 
 
@@ -863,7 +864,7 @@ def test_run_library_build_workspace_dockerfile_has_no_git_clone_bind_mount_quir
 
     content = (workdir / "Dockerfile").read_text()
     assert f"RUN git clone --recursive {_FAKE_URL} $SRC/src" in content
-    assert "COPY build.sh build_library.sh compile_harnesses.sh $SRC/" in content
+    assert "COPY build.sh build_library.sh compile_harness.sh compile_harnesses.sh $SRC/" in content
 
 
 def test_probe_image_build_error_class_removed() -> None:

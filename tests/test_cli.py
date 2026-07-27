@@ -357,6 +357,7 @@ def _oss_fuzz_workspace(project_name: str = "mylib") -> Path:
     )
     (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
     (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harness.sh").write_text("#!/bin/bash\n# validated compiler\n")
     (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
     (workspace / "harness_source").mkdir()
     (workspace / "harness_source" / "default_fuzzer.c").write_text("// stub\n")
@@ -801,7 +802,7 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("stub binary")
-        (workdir / "compile_harnesses.sh").write_text(
+        (workdir / "compile_harness.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
         (workdir / "agent_report.json").write_text(
@@ -936,7 +937,7 @@ def test_generate_agent_report_extra_library_path_reaches_local_harness_script(
             ]
         )
     assert rc == 0
-    local_script = (output_dir / "local" / "compile_harnesses.sh").read_text()
+    local_script = (output_dir / "local" / "compile_harness.sh").read_text()
     assert f"-L{extra_lib_path}" in local_script
 
 
@@ -1084,7 +1085,7 @@ def test_generate_harness_missing_package_reaches_output_on_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("stub binary")
-        (workdir / "compile_harnesses.sh").write_text(
+        (workdir / "compile_harness.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
         )
         (workdir / "agent_report.json").write_text(
@@ -1147,7 +1148,7 @@ def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("stub binary")
-        (workdir / "compile_harnesses.sh").write_text(
+        (workdir / "compile_harness.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-lfoo"\n'
         )
         (workdir / "agent_report.json").write_text(
@@ -1182,7 +1183,7 @@ def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
     assert rc == 0
     assert "ACTION REQUIRED" not in capsys.readouterr().err
     setup_sh = (output_dir / "local" / "setup.sh").read_text()
-    local_compile_harnesses = (output_dir / "local" / "compile_harnesses.sh").read_text()
+    local_compile_harnesses = (output_dir / "local" / "compile_harness.sh").read_text()
     assert ("foo" if sys.platform == "darwin" else "libfoo-dev") in setup_sh
     assert "-lfoo" in local_compile_harnesses
 
@@ -1303,7 +1304,7 @@ def test_generate_agent_repaired_harness_linked_flags_reaches_output_on_success(
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("stub binary")
-        (workdir / "compile_harnesses.sh").write_text(
+        (workdir / "compile_harness.sh").write_text(
             'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS="-llzma"\n'
         )
         (workdir / "agent_report.json").write_text(json.dumps({"summary": "done"}))
@@ -1446,9 +1447,7 @@ def test_generate_quiet_still_prints_phase_banners(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
-        rc = main(
-            ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--quiet"]
-        )
+        rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir), "--quiet"])
     assert rc == 0
     out = capsys.readouterr().out
     for label in ("Repository ingestion", "Static library build", "Output generation"):

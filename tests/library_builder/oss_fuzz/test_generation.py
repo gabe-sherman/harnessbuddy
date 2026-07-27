@@ -29,6 +29,7 @@ _EXPECTED_TOP_LEVEL_FILES = frozenset(
         "Dockerfile",
         "build.sh",
         "build_library.sh",
+        "compile_harness.sh",
         "compile_harnesses.sh",
     }
 )
@@ -71,6 +72,7 @@ def _validated_workspace(tmp_path: Path) -> Path:
     )
     (workspace / "build.sh").write_text("#!/bin/bash\n# validated build.sh\n")
     (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harness.sh").write_text("#!/bin/bash\n# validated compiler\n")
     (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
     harness_source = workspace / "harness_source"
     harness_source.mkdir()
@@ -229,6 +231,16 @@ def test_workspace_copy_compile_harnesses_sh_byte_identical(tmp_path: Path) -> N
     )
     content = (result.output_path / "compile_harnesses.sh").read_text()
     assert content == (workspace / "compile_harnesses.sh").read_text()
+
+
+def test_workspace_copy_compile_harness_sh_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    result = generate_oss_fuzz(
+        _analysis("cmake_repo"), tmp_path / "out", _exploration_for(workspace)
+    )
+    assert (result.output_path / "compile_harness.sh").read_text() == (
+        workspace / "compile_harness.sh"
+    ).read_text()
 
 
 def test_workspace_copy_harness_source_includes_discovered_default_fuzzer(tmp_path: Path) -> None:

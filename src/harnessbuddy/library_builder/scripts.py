@@ -163,26 +163,28 @@ def write_default_fuzzer(harness_dir: Path, language: Language) -> Path:
 
 
 def build_harness_script(
-    harness: HarnessExplorationResult,
+    harness: HarnessExplorationResult | None,
     *,
     whole_archive: bool = False,
-    harness_dir_name: str = "harness_src",
     oss_fuzz: bool = False,
 ) -> str:
-    """Generate a harness compilation script.
+    """Generate a script that compiles one harness source into one binary.
 
     Args:
         harness: exploration result providing static libs and link flags.
         whole_archive: when True, link with --whole-archive (Linux, or oss_fuzz — the
             script always runs inside the Linux base-builder container regardless of
             the host OS) or -all_load (macOS, local environment only).
-        harness_dir_name: name of the directory containing harness source files.
         oss_fuzz: when True, generate an OSS-Fuzz-compatible script that uses
             CC/CXX/CFLAGS/CXXFLAGS/$OUT/$LIB_FUZZING_ENGINE from the base image
             rather than defining them with local defaults.
     """
-    lib_lines = "".join(f'    "$INSTALL_DIR/lib/{p.name}"\n' for p in harness.static_libs)
-    extra = " ".join(harness.transitive_link_flags)
+    static_libs = harness.static_libs if harness is not None else []
+    transitive_link_flags = harness.transitive_link_flags if harness is not None else []
+    extra_library_paths = harness.extra_library_paths if harness is not None else []
+    extra_include_paths = harness.extra_include_paths if harness is not None else []
+    lib_lines = "".join(f'    "$INSTALL_DIR/lib/{path.name}"\n' for path in static_libs)
+    extra = " ".join(transitive_link_flags)
 
     if oss_fuzz:
         extra_line = f'EXTRA_LINK_FLAGS="{extra}"\n' if extra else "EXTRA_LINK_FLAGS=\n"
@@ -193,11 +195,11 @@ def build_harness_script(
         else:
             extra_line = "EXTRA_LINK_FLAGS=\n"
 
-    extra_lib_paths = " ".join(f"-L{p}" for p in harness.extra_library_paths)
+    extra_lib_paths = " ".join(f"-L{path}" for path in extra_library_paths)
     extra_lib_paths_line = (
         f'EXTRA_LIB_PATHS="{extra_lib_paths}"\n' if extra_lib_paths else "EXTRA_LIB_PATHS=\n"
     )
-    extra_include_flags = "".join(f' "-I{p}"' for p in harness.extra_include_paths)
+    extra_include_flags = "".join(f' "-I{path}"' for path in extra_include_paths)
 
     if whole_archive:
         if not oss_fuzz and sys.platform == "darwin":
@@ -209,8 +211,6 @@ def build_harness_script(
         static_libs_str = '"${STATIC_LIBS[@]-}"'
 
     engine_flag = ' "$LIB_FUZZING_ENGINE"' if oss_fuzz else ""
-    out_ref = "$OUT" if oss_fuzz else "$OUT_DIR"
-
     preamble = (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
@@ -228,10 +228,11 @@ def build_harness_script(
             "\n"
         )
     preamble += (
-        f'INSTALL_DIR="$BUILD_PREFIX/install"\nHARNESS_DIR="$SCRIPT_DIR/{harness_dir_name}"\n'
+        'INSTALL_DIR="$BUILD_PREFIX/install"\n'
+        'HARNESS_SOURCE="${1:?usage: compile_harness.sh SOURCE OUTPUT}"\n'
+        'OUTPUT_BINARY="${2:?usage: compile_harness.sh SOURCE OUTPUT}"\n'
+        'mkdir -p "$(dirname "$OUTPUT_BINARY")"\n'
     )
-    if not oss_fuzz:
-        preamble += 'OUT_DIR="$SCRIPT_DIR/out"\nmkdir -p "$OUT_DIR"\n'
     preamble += "\n"
 
     return (
@@ -243,26 +244,65 @@ def build_harness_script(
         + extra_line
         + extra_lib_paths_line
         + "\n"
-        + 'for harness in "$HARNESS_DIR"/*; do\n'
-        + '  [ -f "$harness" ] || continue\n'
-        + '  name="$(basename "$harness")"\n'
-        + '  echo "Compiling harness $name"\n'
-        + '  output="${name%.*}"\n'
-        + '  case "$harness" in\n'
-        + "    *.c)\n"
-        + f'      "$CC" $CFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$harness" \\\n'
+        + 'case "$HARNESS_SOURCE" in\n'
+        + "  *.c)\n"
+        + f'    "$CC" $CFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$HARNESS_SOURCE" \\\n'
         + (
             f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
-            f' -o "{out_ref}/$output"\n'
+            ' -o "$OUTPUT_BINARY"\n'
         )
-        + "      ;;\n"
-        + "    *.cc|*.cpp|*.cxx)\n"
-        + f'      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$harness" \\\n'
+        + "    ;;\n"
+        + "  *.cc|*.cpp|*.cxx)\n"
+        + (
+            f'    "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} '
+            '"$HARNESS_SOURCE" \\\n'
+        )
         + (
             f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
-            f' -o "{out_ref}/$output"\n'
+            ' -o "$OUTPUT_BINARY"\n'
         )
-        + "      ;;\n"
-        + "  esac\n"
-        + "done\n"
+        + "    ;;\n"
+        + "  *)\n"
+        + '    echo "Unsupported harness extension: $HARNESS_SOURCE" >&2\n'
+        + "    exit 2\n"
+        + "    ;;\n"
+        + "esac\n"
+    )
+
+
+def build_harnesses_script(*, harness_dir_name: str, oss_fuzz: bool) -> str:
+    """Generate a deterministic batch wrapper around ``compile_harness.sh``.
+
+    The wrapper accepts optional source and output directories. It is intentionally small:
+    every compiler and linker decision remains in the single-harness interface.
+    """
+    default_output_dir = "$OUT" if oss_fuzz else "$SCRIPT_DIR/out"
+    return (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "\n"
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f'HARNESS_DIR="${{1:-$SCRIPT_DIR/{harness_dir_name}}}"\n'
+        f'OUT_DIR="${{2:-{default_output_dir}}}"\n'
+        'mkdir -p "$OUT_DIR"\n'
+        "shopt -s nullglob\n"
+        "harnesses=(\n"
+        '  "$HARNESS_DIR"/*.c "$HARNESS_DIR"/*.cc\n'
+        '  "$HARNESS_DIR"/*.cpp "$HARNESS_DIR"/*.cxx\n'
+        ")\n"
+        "outputs=()\n"
+        'for harness in "${harnesses[@]}"; do\n'
+        '  name="$(basename "${harness%.*}")"\n'
+        '  for output in "${outputs[@]}"; do\n'
+        '    if [ "$output" = "$name" ]; then\n'
+        '      echo "Duplicate harness output name: $name" >&2\n'
+        "      exit 2\n"
+        "    fi\n"
+        "  done\n"
+        '  outputs+=("$name")\n'
+        "done\n"
+        'for harness in "${harnesses[@]}"; do\n'
+        '  name="$(basename "${harness%.*}")"\n'
+        '  "$SCRIPT_DIR/compile_harness.sh" "$harness" "$OUT_DIR/$name"\n'
+        "done\n"
     )

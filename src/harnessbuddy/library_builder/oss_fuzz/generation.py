@@ -23,7 +23,7 @@ def generate_oss_fuzz(
 
     When exploration ran in the oss-fuzz environment, the workspace it validated
     already contains project.yaml/Dockerfile/build.sh/build_library.sh/
-    compile_harnesses.sh/harness_source/* — this copies those already-validated
+    compile_harness.sh/compile_harnesses.sh/harness_source/* — this copies those already-validated
     files verbatim (FR-005) instead of re-deriving them, so the shipped project is
     exactly what was validated (including any agent-applied fixes). The Dockerfile
     additionally has its exploration-only "bear" apt dependency stripped, since the
@@ -41,6 +41,7 @@ def generate_oss_fuzz(
         _copy_dockerfile(output_path, validated_workspace),
         _copy_build_sh(output_path, validated_workspace),
         _copy_build_library_sh(output_path, validated_workspace),
+        _copy_compile_harness_sh(output_path, validated_workspace),
         _copy_compile_harnesses_sh(output_path, validated_workspace),
         *copied_harness_source,
     ]
@@ -131,6 +132,14 @@ def _copy_compile_harnesses_sh(output_path: Path, validated_workspace: Path | No
     compile_harnesses.sh from the validated workspace verbatim."""
     path = output_path / "compile_harnesses.sh"
     shutil.copy2(_require_workspace_file(validated_workspace, "compile_harnesses.sh"), path)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def _copy_compile_harness_sh(output_path: Path, validated_workspace: Path | None) -> Path:
+    """Copy the validated compiler that accepts one source and one output path."""
+    path = output_path / "compile_harness.sh"
+    shutil.copy2(_require_workspace_file(validated_workspace, "compile_harness.sh"), path)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 

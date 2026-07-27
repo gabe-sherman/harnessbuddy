@@ -4,6 +4,7 @@ import stat
 from pathlib import Path
 
 from harnessbuddy.library_builder.models import AnalysisResult, AutotoolsSetup, Language
+from harnessbuddy.library_builder.scripts import build_harness_script, build_harnesses_script
 
 _AUTOTOOLS_PACKAGES = ("autoconf", "automake", "libtool", "pkg-config")
 
@@ -19,35 +20,9 @@ _BUILD_SH = (
     '"$SRC/compile_harnesses.sh"\n'
 )
 
-_COMPILE_HARNESSES_SH_STUB = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-    'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
-    "\n"
-    'INSTALL_DIR="$BUILD_PREFIX/install"\n'
-    'HARNESS_DIR="$SCRIPT_DIR/harness_source"\n'
-    "\n"
-    "# TODO: add static library paths\n"
-    "STATIC_LIBS=()\n"
-    "EXTRA_LINK_FLAGS=\n"
-    "\n"
-    'for harness in "$HARNESS_DIR"/*; do\n'
-    '  [ -f "$harness" ] || continue\n'
-    '  name="$(basename "$harness")"\n'
-    '  output="${name%.*}"\n'
-    '  case "$harness" in\n'
-    "    *.c)\n"
-    '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS "$LIB_FUZZING_ENGINE" -o "$OUT/$output"\n'
-    "      ;;\n"
-    "    *.cc|*.cpp|*.cxx)\n"
-    '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS "$LIB_FUZZING_ENGINE" -o "$OUT/$output"\n'
-    "      ;;\n"
-    "  esac\n"
-    "done\n"
+_COMPILE_HARNESS_SH_STUB = build_harness_script(None, oss_fuzz=True)
+_COMPILE_HARNESSES_SH_STUB = build_harnesses_script(
+    harness_dir_name="harness_source", oss_fuzz=True
 )
 
 
@@ -101,7 +76,7 @@ def write_dockerfile(output_path: Path, analysis: AnalysisResult, *, include_bea
         lines.append(f"RUN git -C $SRC/src checkout {analysis.repo_ref}\n")
     lines += [
         "COPY harness_source $SRC/harness_source\n",
-        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n",
+        "COPY build.sh build_library.sh compile_harness.sh compile_harnesses.sh $SRC/\n",
         "WORKDIR $SRC/src\n",
     ]
     path.write_text("".join(lines))
@@ -148,15 +123,19 @@ def write_build_sh(output_path: Path) -> Path:
 
 
 def write_compile_harnesses_stub(output_path: Path) -> Path:
-    """Seed compile_harnesses.sh with a stub that compiles whatever's in
-    harness_source/ (research.md #3) — written early during workspace materialization
-    so check_docker_build.sh's /out non-empty check has something to find even before
-    harness-link discovery ever runs. generate_oss_fuzz later copies whatever ends up
-    here (this stub, or an agent's fix) verbatim, never re-deriving it."""
-    path = output_path / "compile_harnesses.sh"
-    path.write_text(_COMPILE_HARNESSES_SH_STUB)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+    """Seed single-harness and batch compiler scripts for an initial build.
+
+    The batch script compiles every supported source in harness_source/ so
+    check_docker_build.sh's /out non-empty check has something to find before harness-link
+    discovery. generate_oss_fuzz later copies these scripts (or an agent's fix) verbatim.
+    """
+    compiler = output_path / "compile_harness.sh"
+    compiler.write_text(_COMPILE_HARNESS_SH_STUB)
+    compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    batch = output_path / "compile_harnesses.sh"
+    batch.write_text(_COMPILE_HARNESSES_SH_STUB)
+    batch.chmod(batch.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return batch
 
 
 __all__ = [
