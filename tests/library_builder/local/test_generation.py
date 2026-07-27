@@ -45,6 +45,7 @@ def test_all_files_generated(fixture_name: str, tmp_path: Path) -> None:
     result = generate_local(_analysis(fixture_name), tmp_path / "out")
     assert (result.output_path / "setup.sh").exists()
     assert (result.output_path / "build_library.sh").exists()
+    assert (result.output_path / "compile_harness.sh").exists()
     assert (result.output_path / "compile_harnesses.sh").exists()
     assert any((result.output_path / "harness_src").glob("default_fuzzer.*"))
 
@@ -215,13 +216,13 @@ def test_build_library_sh_has_no_capture_instrumentation_copied_verbatim(
     assert "bear" not in content
 
 
-# compile_harnesses.sh — reuse of the validated (possibly agent-fixed) script
+# compile_harness.sh — reuse of the validated (possibly agent-fixed) script
 
 
 def _harness_with_script(script_path: Path | None) -> HarnessExplorationResult:
     return HarnessExplorationResult(
         succeeded=True,
-        command=["bash", "compile_harnesses.sh"],
+        command=["bash", "compile_harness.sh"],
         static_libs=[Path("libfoo.a")],
         include_dir=Path("/tmp/install/include"),
         transitive_link_flags=["-lresolv"],
@@ -232,28 +233,28 @@ def _harness_with_script(script_path: Path | None) -> HarnessExplorationResult:
     )
 
 
-def test_compile_harnesses_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
-    validated = tmp_path / "validated_compile_harnesses.sh"
+def test_compile_harness_sh_copies_validated_script_verbatim(tmp_path: Path) -> None:
+    validated = tmp_path / "validated_compile_harness.sh"
     validated.write_text("#!/bin/bash\n# agent fix: added -lresolv\n")
     result = generate_local(
         _analysis("cmake_repo"),
         tmp_path / "out",
         harness_exploration=_harness_with_script(validated),
     )
-    content = (result.output_path / "compile_harnesses.sh").read_text()
+    content = (result.output_path / "compile_harness.sh").read_text()
     assert content == validated.read_text()
 
 
-def test_compile_harnesses_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
+def test_compile_harness_sh_falls_back_to_template_without_script_path(tmp_path: Path) -> None:
     result = generate_local(
         _analysis("cmake_repo"), tmp_path / "out", harness_exploration=_harness_with_script(None)
     )
-    content = (result.output_path / "compile_harnesses.sh").read_text()
+    content = (result.output_path / "compile_harness.sh").read_text()
     assert "libfoo.a" in content
     assert "-lresolv" in content
 
 
-# workspace copy — build_library.sh/compile_harnesses.sh/harness_src/* copied verbatim
+# workspace copy — build_library.sh/compiler scripts/harness_src/* copied verbatim
 # from the validated workspace instead of re-derived (T017, T020, FR-005)
 
 
@@ -261,6 +262,7 @@ def _validated_workspace(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "build_library.sh").write_text("#!/bin/bash\n# validated build\n")
+    (workspace / "compile_harness.sh").write_text("#!/bin/bash\n# validated compiler\n")
     (workspace / "compile_harnesses.sh").write_text("#!/bin/bash\n# validated harness\n")
     harness_src = workspace / "harness_src"
     harness_src.mkdir()
@@ -289,6 +291,15 @@ def test_workspace_copy_compile_harnesses_sh_byte_identical_even_when_unset_on_r
     result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration, harness)
     content = (result.output_path / "compile_harnesses.sh").read_text()
     assert content == (workspace / "compile_harnesses.sh").read_text()
+
+
+def test_workspace_copy_compile_harness_sh_byte_identical(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    exploration = _exploration_with_script(workspace / "build_library.sh")
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+    assert (result.output_path / "compile_harness.sh").read_text() == (
+        workspace / "compile_harness.sh"
+    ).read_text()
 
 
 def test_workspace_copy_harness_src_includes_discovered_default_fuzzer(tmp_path: Path) -> None:

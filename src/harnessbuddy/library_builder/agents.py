@@ -47,7 +47,7 @@ _HARNESS_SKILL_PATH: Path = (
 )
 
 _HARNESS_INLINE_INSTRUCTIONS: str = (
-    "Fix the failed harness link probe. Modify compile_harnesses.sh in the work directory "
+    "Fix the failed harness link probe. Modify compile_harness.sh in the work directory "
     "so that compiling and linking the probe harness against the installed static "
     "libraries succeeds and produces a binary in out/."
 )
@@ -367,7 +367,7 @@ def build_harness_prompt(
         f"- source_dir: {analysis.source_path}\n"
         f"- install_dir: {install_dir}\n"
         f"- workdir: {workdir}\n"
-        f"- compile_harnesses.sh: {workdir / 'compile_harnesses.sh'}\n"
+        f"- compile_harness.sh: {workdir / 'compile_harness.sh'}\n"
         f"- harness_src: {workdir / harness_dir_name}\n"
         f"- static_libs: {', '.join(p.name for p in harness.static_libs) or '(none)'}\n"
         f"- auto_resolved_link_flags: {' '.join(harness.transitive_link_flags) or '(none)'}\n"
@@ -395,7 +395,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
-    and modify compile_harnesses.sh and harness_src/ directly.
+    and modify compile_harness.sh and harness_src/ directly.
     """
     prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir, environment)
     if tool == "claude":
@@ -416,7 +416,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     static_libs = harness.static_libs
     transitive_link_flags = harness.transitive_link_flags
     extra_library_paths = harness.extra_library_paths
-    script_path = paths.workdir / "compile_harnesses.sh"
+    script_path = paths.workdir / "compile_harness.sh"
     if succeeded:
         validation_errors = _post_agent_validation_errors(
             environment,

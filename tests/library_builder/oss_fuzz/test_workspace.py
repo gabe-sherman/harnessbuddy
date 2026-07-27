@@ -79,7 +79,7 @@ def test_write_dockerfile_include_bear_false_matches_no_ref_content(tmp_path: Pa
         f"ENV FUZZING_LANGUAGE={analysis.language.value}\n"
         f"RUN git clone --recursive {_FAKE_URL} $SRC/src\n"
         "COPY harness_source $SRC/harness_source\n"
-        "COPY build.sh build_library.sh compile_harnesses.sh $SRC/\n"
+        "COPY build.sh build_library.sh compile_harness.sh compile_harnesses.sh $SRC/\n"
         "WORKDIR $SRC/src\n"
     )
     assert content == expected

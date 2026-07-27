@@ -393,7 +393,7 @@ def test_harness_agent_unresolved_package_preserves_libs_and_adds_link_flag(
     """
     workdir = tmp_path / "work"
     workdir.mkdir()
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcurl.a"\n)\n\nEXTRA_LINK_FLAGS="-lssl"\n'
     )
     (workdir / "agent_report.json").write_text(
@@ -464,7 +464,7 @@ def test_harness_agent_writes_report_file(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "default_fuzzer").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -490,7 +490,7 @@ def test_harness_agent_uses_report_paths_when_script_has_none(tmp_path: Path) ->
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "default_fuzzer").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     (workdir / "agent_report.json").write_text(
@@ -518,7 +518,7 @@ def test_harness_agent_uses_script_paths_when_report_has_none(tmp_path: Path) ->
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "default_fuzzer").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
     )
@@ -538,7 +538,7 @@ def test_harness_agent_unions_report_and_script_paths(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "default_fuzzer").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\n'
         'EXTRA_LINK_FLAGS="-lresolv"\nEXTRA_LIB_PATHS="-L/opt/lib"\n'
     )
@@ -604,7 +604,7 @@ def test_library_agent_oss_fuzz_rejects_false_success_claim(tmp_path: Path) -> N
 def test_harness_agent_oss_fuzz_success_does_not_require_host_out_dir(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     workdir.mkdir()
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -627,7 +627,7 @@ def test_harness_agent_oss_fuzz_success_does_not_require_host_out_dir(tmp_path: 
 def test_harness_agent_oss_fuzz_rejects_false_success_claim(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     workdir.mkdir()
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -649,7 +649,7 @@ def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "out").mkdir(parents=True)
     (workdir / "out" / "default_fuzzer").write_text("stub binary")
-    (workdir / "compile_harnesses.sh").write_text(
+    (workdir / "compile_harness.sh").write_text(
         'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
     )
     with patch(
@@ -664,4 +664,4 @@ def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     assert result.succeeded is True
     assert result.transitive_link_flags == ["-lresolv"]
     assert result.static_libs == [Path("libcares.a")]
-    assert result.script_path == workdir / "compile_harnesses.sh"
+    assert result.script_path == workdir / "compile_harness.sh"

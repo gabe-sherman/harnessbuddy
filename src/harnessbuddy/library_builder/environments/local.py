@@ -30,7 +30,10 @@ class LocalExecutor:
     ) -> BuildExplorationResult:
         from harnessbuddy.library_builder.environments import verification
         from harnessbuddy.library_builder.exploration import explore
-        from harnessbuddy.library_builder.local.generation import _COMPILE_HARNESSES_SH_STUB
+        from harnessbuddy.library_builder.local.generation import (
+            _COMPILE_HARNESS_SH_STUB,
+            _COMPILE_HARNESSES_SH_STUB,
+        )
         from harnessbuddy.library_builder.scripts import write_default_fuzzer
 
         workdir = workdir.resolve()
@@ -42,8 +45,8 @@ class LocalExecutor:
             # the shared verification script to check.
             return exploration_result
 
-        stub_path = workdir / "compile_harnesses.sh"
-        if not stub_path.exists():
+        batch_path = workdir / "compile_harnesses.sh"
+        if not batch_path.exists():
             # The stub compiles whatever's in harness_src/ (research.md #3) — write the
             # real default fuzzer stub now so check_local_build.sh's out/ non-empty check
             # (agents/scripts/check_local_build.sh) has something to find even before
@@ -53,8 +56,13 @@ class LocalExecutor:
             harness_src_dir = workdir / "harness_src"
             harness_src_dir.mkdir(exist_ok=True)
             write_default_fuzzer(harness_src_dir, analysis.language)
-            stub_path.write_text(_COMPILE_HARNESSES_SH_STUB)
-            stub_path.chmod(stub_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            compiler_path = workdir / "compile_harness.sh"
+            compiler_path.write_text(_COMPILE_HARNESS_SH_STUB)
+            compiler_path.chmod(
+                compiler_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+            batch_path.write_text(_COMPILE_HARNESSES_SH_STUB)
+            batch_path.chmod(batch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         if not exploration_result.succeeded:
             # The probe above already failed against this exact build_library.sh —

@@ -15,47 +15,13 @@ from harnessbuddy.library_builder.models import (
 )
 from harnessbuddy.library_builder.scripts import (
     build_harness_script,
+    build_harnesses_script,
     build_library_script,
     write_default_fuzzer,
 )
 
-_COMPILE_HARNESSES_SH_STUB = (
-    "#!/bin/bash\n"
-    "set -euo pipefail\n"
-    "\n"
-    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-    'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
-    "\n"
-    'CC="${CC:-clang}"\n'
-    'CXX="${CXX:-clang++}"\n'
-    'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
-    'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
-    "\n"
-    'INSTALL_DIR="$BUILD_PREFIX/install"\n'
-    'HARNESS_DIR="$SCRIPT_DIR/harness_src"\n'
-    'OUT_DIR="$SCRIPT_DIR/out"\n'
-    'mkdir -p "$OUT_DIR"\n'
-    "\n"
-    "# TODO: add static library paths\n"
-    "STATIC_LIBS=()\n"
-    "EXTRA_LINK_FLAGS=\n"
-    "\n"
-    'for harness in "$HARNESS_DIR"/*; do\n'
-    '  [ -f "$harness" ] || continue\n'
-    '  name="$(basename "$harness")"\n'
-    '  output="${name%.*}"\n'
-    '  case "$harness" in\n'
-    "    *.c)\n"
-    '      "$CC" $CFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
-    "      ;;\n"
-    "    *.cc|*.cpp|*.cxx)\n"
-    '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-    '        "${STATIC_LIBS[@]-}" $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n'
-    "      ;;\n"
-    "  esac\n"
-    "done\n"
-)
+_COMPILE_HARNESS_SH_STUB = build_harness_script(None)
+_COMPILE_HARNESSES_SH_STUB = build_harnesses_script(harness_dir_name="harness_src", oss_fuzz=False)
 
 
 def generate_local(
@@ -68,8 +34,8 @@ def generate_local(
     """Generate a local build skeleton for host-native development and testing.
 
     When exploration ran in the local environment, the workspace it validated already
-    contains build_library.sh/compile_harnesses.sh/harness_src/* — this copies those
-    already-validated files verbatim (FR-005) instead of re-deriving them. setup.sh has
+    contains build_library.sh/compile_harness.sh/compile_harnesses.sh/harness_src/* — this
+    copies those already-validated files verbatim (FR-005) instead of re-deriving them. setup.sh has
     no workspace equivalent (exploration already operates on a pre-cloned repository), so
     it is always written fresh.
     """
@@ -83,7 +49,8 @@ def generate_local(
     files: list[Path] = [
         _write_setup_sh(output_path, analysis, brew_packages=brew_packages or []),
         _write_build_library_sh(output_path, analysis, exploration, validated_workspace),
-        _write_compile_harnesses_sh(output_path, harness_exploration, validated_workspace),
+        _write_compile_harness_sh(output_path, harness_exploration, validated_workspace),
+        _write_compile_harnesses_sh(output_path, validated_workspace),
         *copied_harness_src,
     ]
     if not any(harness_src_dir.glob("default_fuzzer.*")):
@@ -192,7 +159,6 @@ def _write_build_library_sh(
 
 def _write_compile_harnesses_sh(
     output_path: Path,
-    harness: HarnessExplorationResult | None,
     validated_workspace: Path | None,
 ) -> Path:
     """Write compile_harnesses.sh, copying the validated (possibly agent-fixed, possibly
@@ -202,6 +168,21 @@ def _write_compile_harnesses_sh(
     path = output_path / "compile_harnesses.sh"
     if validated_workspace is not None and (validated_workspace / "compile_harnesses.sh").exists():
         shutil.copy2(validated_workspace / "compile_harnesses.sh", path)
+    else:
+        path.write_text(_COMPILE_HARNESSES_SH_STUB)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def _write_compile_harness_sh(
+    output_path: Path,
+    harness: HarnessExplorationResult | None,
+    validated_workspace: Path | None,
+) -> Path:
+    """Write the single-harness compiler used by compile_harnesses.sh."""
+    path = output_path / "compile_harness.sh"
+    if validated_workspace is not None and (validated_workspace / "compile_harness.sh").exists():
+        shutil.copy2(validated_workspace / "compile_harness.sh", path)
     elif (
         harness is not None
         and harness.script_path is not None
@@ -209,9 +190,6 @@ def _write_compile_harnesses_sh(
     ):
         shutil.copy2(harness.script_path, path)
     else:
-        content = (
-            build_harness_script(harness) if harness is not None else _COMPILE_HARNESSES_SH_STUB
-        )
-        path.write_text(content)
+        path.write_text(build_harness_script(harness))
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path

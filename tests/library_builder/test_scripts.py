@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -12,7 +14,11 @@ from harnessbuddy.library_builder.models import (
     BuildSystem,
     HarnessExplorationResult,
 )
-from harnessbuddy.library_builder.scripts import build_harness_script, build_library_script
+from harnessbuddy.library_builder.scripts import (
+    build_harness_script,
+    build_harnesses_script,
+    build_library_script,
+)
 
 # The paths generate_oss_fuzz's workspace materialization uses (oss_fuzz/generation.py),
 # shared by every build_library.sh content test below since the command text these
@@ -103,47 +109,92 @@ def _harness(
     )
 
 
-# empty extra paths — regression safety net pinning the canonical script shape
+def _fake_compiler(path: Path) -> None:
+    path.write_text(
+        '#!/bin/bash\nset -euo pipefail\nprintf "%s\\n" "$@" > "$COMPILER_ARGS"\ntouch "${!#}"\n'
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def test_empty_extra_paths_local_script_is_pinned() -> None:
-    script = build_harness_script(_harness())
-    assert script == (
-        '#!/bin/bash\nset -euo pipefail\n\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"'
-        ' && pwd)"\nBUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n\nCC="${CC:-clang}"\n'
-        'CXX="${CXX:-clang++}"\n'
-        'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
-        'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n\nINSTALL_DIR="$BUILD_PREFIX/install"\n'
-        'HARNESS_DIR="$SCRIPT_DIR/harness_src"\nOUT_DIR="$SCRIPT_DIR/out"\nmkdir -p "$OUT_DIR"\n'
-        '\nSTATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
-        'EXTRA_LIB_PATHS=\n\nfor harness in "$HARNESS_DIR"/*; do\n  [ -f "$harness" ] ||'
-        ' continue\n  name="$(basename "$harness")"\n  echo "Compiling harness $name"\n'
-        '  output="${name%.*}"\n'
-        '  case "$harness" in\n    *.c)\n      "$CC" $CFLAGS "-I$INSTALL_DIR/include"'
-        ' "$harness" \\\n        "${STATIC_LIBS[@]-}" $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS'
-        ' -o "$OUT_DIR/$output"\n      ;;\n    *.cc|*.cpp|*.cxx)\n      "$CXX" $CXXFLAGS'
-        ' "-I$INSTALL_DIR/include" "$harness" \\\n        "${STATIC_LIBS[@]-}" $EXTRA_LIB_PATHS'
-        ' $EXTRA_LINK_FLAGS -o "$OUT_DIR/$output"\n      ;;\n  esac\ndone\n'
+def test_single_harness_compiler_accepts_explicit_source_and_output_paths(tmp_path: Path) -> None:
+    compiler = tmp_path / "compile_harness.sh"
+    compiler.write_text(build_harness_script(_harness(transitive_link_flags=["-lfoo"])))
+    compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
+    fake_cc = tmp_path / "fake-clang"
+    _fake_compiler(fake_cc)
+    harness = tmp_path / "candidate.c"
+    harness.write_text("int LLVMFuzzerTestOneInput(void) { return 0; }\n")
+    output = tmp_path / "nested" / "candidate"
+    compiler_args = tmp_path / "compiler-args.txt"
+
+    result = subprocess.run(
+        ["bash", str(compiler), str(harness), str(output)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CC": str(fake_cc), "CFLAGS": "", "COMPILER_ARGS": str(compiler_args)},
+        timeout=10,
     )
 
+    assert result.returncode == 0
+    assert output.exists()
+    assert str(harness) in compiler_args.read_text().splitlines()
+    assert "-lfoo" in compiler_args.read_text().splitlines()
 
-def test_empty_extra_paths_oss_fuzz_script_is_pinned() -> None:
-    script = build_harness_script(_harness(), oss_fuzz=True)
-    assert script == (
-        '#!/bin/bash\nset -euo pipefail\n\nSCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"'
-        ' && pwd)"\nBUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n\n'
-        'INSTALL_DIR="$BUILD_PREFIX/install"\nHARNESS_DIR="$SCRIPT_DIR/harness_src"\n'
-        '\nSTATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\nEXTRA_LINK_FLAGS=\n'
-        'EXTRA_LIB_PATHS=\n\nfor harness in "$HARNESS_DIR"/*; do\n  [ -f "$harness" ] ||'
-        ' continue\n  name="$(basename "$harness")"\n  echo "Compiling harness $name"\n'
-        '  output="${name%.*}"\n'
-        '  case "$harness" in\n    *.c)\n      "$CC" $CFLAGS "-I$INSTALL_DIR/include"'
-        ' "$harness" \\\n        "${STATIC_LIBS[@]-}" $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS'
-        ' "$LIB_FUZZING_ENGINE" -o "$OUT/$output"\n      ;;\n    *.cc|*.cpp|*.cxx)\n'
-        '      "$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "$harness" \\\n'
-        '        "${STATIC_LIBS[@]-}" $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS "$LIB_FUZZING_ENGINE"'
-        ' -o "$OUT/$output"\n      ;;\n  esac\ndone\n'
+
+def test_batch_compiler_builds_every_supported_harness_into_requested_output_directory(
+    tmp_path: Path,
+) -> None:
+    compiler = tmp_path / "compile_harness.sh"
+    compiler.write_text(build_harness_script(_harness()))
+    compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
+    batch = tmp_path / "compile_harnesses.sh"
+    batch.write_text(build_harnesses_script(harness_dir_name="harness_source", oss_fuzz=False))
+    batch.chmod(batch.stat().st_mode | stat.S_IXUSR)
+    fake_compiler = tmp_path / "fake-clang"
+    _fake_compiler(fake_compiler)
+    harness_dir = tmp_path / "agent-output"
+    harness_dir.mkdir()
+    (harness_dir / "first.c").write_text("// C\n")
+    (harness_dir / "second.cc").write_text("// C++\n")
+    (harness_dir / "ignore.txt").write_text("not a harness\n")
+    output_dir = tmp_path / "binaries"
+
+    result = subprocess.run(
+        ["bash", str(batch), str(harness_dir), str(output_dir)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CC": str(fake_compiler),
+            "CXX": str(fake_compiler),
+            "CFLAGS": "",
+            "CXXFLAGS": "",
+            "COMPILER_ARGS": str(tmp_path / "compiler-args.txt"),
+        },
+        timeout=10,
     )
+
+    assert result.returncode == 0
+    assert {path.name for path in output_dir.iterdir()} == {"first", "second"}
+
+
+def test_batch_compiler_rejects_harnesses_that_would_overwrite_each_other(tmp_path: Path) -> None:
+    batch = tmp_path / "compile_harnesses.sh"
+    batch.write_text(build_harnesses_script(harness_dir_name="harness_source", oss_fuzz=False))
+    batch.chmod(batch.stat().st_mode | stat.S_IXUSR)
+    harness_dir = tmp_path / "agent-output"
+    harness_dir.mkdir()
+    (harness_dir / "same.c").write_text("// C\n")
+    (harness_dir / "same.cc").write_text("// C++\n")
+
+    result = subprocess.run(
+        ["bash", str(batch), str(harness_dir), str(tmp_path / "binaries")],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
 
 
 # extra_include_paths — -I flags in both compile branches
@@ -154,11 +205,12 @@ def test_extra_include_paths_appear_in_both_compile_branches() -> None:
         _harness(extra_include_paths=["/usr/include/foo", "/opt/include"])
     )
     c_line = (
-        '"$CC" $CFLAGS "-I$INSTALL_DIR/include" "-I/usr/include/foo" "-I/opt/include" "$harness" \\'
+        '"$CC" $CFLAGS "-I$INSTALL_DIR/include" '
+        '"-I/usr/include/foo" "-I/opt/include" "$HARNESS_SOURCE" \\'
     )
     cxx_line = (
         '"$CXX" $CXXFLAGS "-I$INSTALL_DIR/include" "-I/usr/include/foo" "-I/opt/include" '
-        '"$harness" \\'
+        '"$HARNESS_SOURCE" \\'
     )
     assert c_line in script
     assert cxx_line in script
@@ -191,7 +243,7 @@ def test_oss_fuzz_variant_with_both_extra_paths_produces_same_flags() -> None:
         oss_fuzz=True,
     )
     assert 'EXTRA_LIB_PATHS="-L/usr/lib/x86_64-linux-gnu"\n' in script
-    assert '"-I$INSTALL_DIR/include" "-I/usr/include/foo" "$harness"' in script
+    assert '"-I$INSTALL_DIR/include" "-I/usr/include/foo" "$HARNESS_SOURCE"' in script
     assert script.count("$EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS") == 2
 
 

@@ -274,9 +274,10 @@ def test_script_path_set_on_success(tmp_path: Path) -> None:
         result = explore_harness_compilation(install_dir, tmp_path, Language.C)
 
     assert result.succeeded is True
-    assert result.script_path == tmp_path / "compile_harnesses.sh"
+    assert result.script_path == tmp_path / "compile_harness.sh"
     assert result.script_path is not None
     assert result.script_path.exists()
+    assert (tmp_path / "compile_harnesses.sh").exists()
 
 
 def test_script_path_unset_on_failure(tmp_path: Path) -> None:

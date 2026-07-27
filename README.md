@@ -17,7 +17,8 @@ scaffold or a ready-to-drop-in OSS-Fuzz project.
     `build_harness.sh`, `harness_src/`)
   - `oss-fuzz/` — a project laid out to drop into an existing OSS-Fuzz checkout's
     `projects/<name>/` and build with its own tooling (`project.yaml`, `Dockerfile`,
-    `build.sh`, `build_library.sh`, `compile_harnesses.sh`, `harness_source/`), with
+    `build.sh`, `build_library.sh`, `compile_harness.sh`, `compile_harnesses.sh`,
+    `harness_source/`), with
     `--environment oss-fuzz`
 - Optionally falls back to an LLM agent (`--agent claude` or `--agent codex`) to repair
   build scripts when a static build fails.

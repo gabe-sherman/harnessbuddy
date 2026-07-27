@@ -1,13 +1,13 @@
 You are helping debug and fix a failed harness compilation/link probe for a C/C++ library.
 
-Your goal: make compile_harnesses.sh succeed so that the probe harness compiles and links
+Your goal: make compile_harness.sh succeed so that a supplied harness compiles and links
 against the library's static artifacts, producing a binary in out/.
 
 ## What you have
 
 The failure context will be appended below. It includes:
 - The install directory containing static libraries (install/lib/*.a) and headers (install/include/)
-- The work directory containing compile_harnesses.sh and harness_src/
+- The work directory containing compile_harness.sh and harness_src/
 - The static libraries already discovered
 - Any link flags already auto-resolved from known symbol patterns
 - Any missing system libraries already reported by the linker
@@ -15,7 +15,7 @@ The failure context will be appended below. It includes:
 
 workdir is not a scratch directory — it is the real project directory that generation
 copies its final output from (for oss-fuzz, it's the same directory that becomes the
-shipped project). Edits you make here to compile_harnesses.sh, a Dockerfile, or other
+shipped project). Edits you make here to compile_harness.sh, a Dockerfile, or other
 files persist into that output.
 
 ## Reproducibility
@@ -25,28 +25,28 @@ months from now — only ever sees the files saved in workdir plus a fresh `git 
 the library's source. Two rules follow from that:
 
 - **Persist every fix to disk, and only to disk.** Nothing outside what's saved in
-  `compile_harnesses.sh` (or a Dockerfile/patch file it invokes) survives to the next
+  `compile_harness.sh` (or a Dockerfile/patch file it invokes) survives to the next
   run — not a command typed directly in this shell, not an exported env var, not a
   file edited by hand outside what the script itself does. The script must succeed
   standalone against a fresh `install/`, with no leftover state from this or any prior
   session. If a fix needs an env var, a package, or a symlink, encode it into
-  compile_harnesses.sh (or the Dockerfile) so a fresh checkout reproduces it identically.
+  compile_harness.sh (or the Dockerfile) so a fresh checkout reproduces it identically.
 - **Hand-edits to the source tree do not persist.** Both the local `setup.sh` and the
   shipped oss-fuzz `Dockerfile` re-clone the library from git at build time — the copy
   of the source sitting in workdir right now is discarded the moment you exit. If a fix
   genuinely requires changing a source file (e.g. a missing header the harness needs),
-  encode that change as a step compile_harnesses.sh performs itself — e.g. a `sed -i`
+  encode that change as a step compile_harness.sh performs itself — e.g. a `sed -i`
   invocation, or `patch < "$SCRIPT_DIR/some.patch"` where the patch file lives next to
-  compile_harnesses.sh — not a one-off edit to the file in the source directory.
+  compile_harness.sh — not a one-off edit to the file in the source directory.
 
 Also: use the script's own `$SCRIPT_DIR`/`$BUILD_PREFIX`/`$INSTALL_DIR` variables
-(already defined near the top of compile_harnesses.sh) instead of baking in this
+(already defined near the top of compile_harness.sh) instead of baking in this
 session's actual filesystem paths (e.g. `/home/user/.harnessbuddy/...`) — those paths
 won't exist on a different machine or in a fresh container.
 
 ## What to do
 
-1. Read compile_harnesses.sh in the work directory to understand the link command that was
+1. Read compile_harness.sh in the work directory to understand the link command that was
    attempted (STATIC_LIBS array, EXTRA_LINK_FLAGS, compiler invocation).
 2. Read the linker/compiler errors in the failure context to identify unresolved symbols
    or missing libraries.
@@ -60,13 +60,13 @@ won't exist on a different machine or in a fresh container.
      (the library is already present on this machine, or an alternative like a static
      archive already in install/lib, or a different link order resolves it): make the
      fix yourself — edit EXTRA_LINK_FLAGS, include paths, or static library link order
-     directly in compile_harnesses.sh — and verify it. Still report the flag in
+   directly in compile_harness.sh — and verify it. Still report the flag in
      `missing_libs`/`missing_apt_packages`/`missing_brew_packages` in `agent_report.json`
      (see below), even though it already worked here — HarnessBuddy needs the package
      name recorded for portability to environments that don't already have it.
    - **If the library isn't resolvable on this machine at all** (nothing to link
      against; installing a system package is unavoidable): do not edit
-     EXTRA_LINK_FLAGS yourself, since you cannot verify a fix you cannot compile.
+   EXTRA_LINK_FLAGS yourself, since you cannot verify a fix you cannot compile.
      Instead, identify the bare library name and report it via `missing_libs` (see
      below), determine the actual apt and brew package names independently (see
      `agent_report.json` fields), print:
@@ -75,13 +75,13 @@ won't exist on a different machine or in a fresh container.
      Write `agent_report.json`, exit with a non-zero status code, and do not proceed
      further.
 5. Once you've made a fix, run the verification command given in the failure context below
-   (not compile_harnesses.sh directly) to confirm it now succeeds in the selected target
+   (not compile_harness.sh directly) to confirm it now succeeds in the selected target
    environment and a binary appears in out/.
 
 ## `agent_report.json`
 
 Before exiting — on **every** outcome, success or stop-for-human-action — write
-`agent_report.json` to the work directory (the directory containing compile_harnesses.sh)
+`agent_report.json` to the work directory (the directory containing compile_harness.sh)
 with this shape:
 
 ```json
