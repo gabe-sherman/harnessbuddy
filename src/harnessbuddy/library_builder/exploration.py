@@ -158,6 +158,7 @@ def explore(  # noqa: PLR0913 -- 4 of 6 are keyword-only with defaults, each ind
         stderr=stderr,
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
+        install_dir=install_dir,
         script_path=script_path if standard_layout else None,
         environment=environment,
         compile_commands_path=compile_commands_path,

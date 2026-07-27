@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import sys
@@ -45,6 +46,7 @@ def generate_local(
     validated_workspace = _validated_local_workspace(exploration)
     harness_src_dir = output_path / "harness_src"
     copied_harness_src = _copy_harness_src(output_path, validated_workspace)
+    _copy_install_artifacts(output_path, exploration, validated_workspace)
 
     files: list[Path] = [
         _write_setup_sh(output_path, analysis, brew_packages=brew_packages or []),
@@ -91,6 +93,20 @@ def _copy_harness_src(output_path: Path, validated_workspace: Path | None) -> li
         shutil.copy2(entry, dest)
         copied.append(dest)
     return copied
+
+
+def _copy_install_artifacts(
+    output_path: Path,
+    exploration: BuildExplorationResult | None,
+    validated_workspace: Path | None,
+) -> None:
+    """Publish the validated install tree beside the portable local compiler scripts."""
+    install_dir = exploration.install_dir if exploration is not None else None
+    if install_dir is None and validated_workspace is not None:
+        install_dir = validated_workspace / "install"
+    if install_dir is None or not install_dir.is_dir():
+        return
+    shutil.copytree(install_dir, output_path / "install", symlinks=True)
 
 
 def _write_setup_sh(
@@ -190,6 +206,12 @@ def _write_compile_harness_sh(
     ):
         shutil.copy2(harness.script_path, path)
     else:
-        path.write_text(build_harness_script(harness))
+        path.write_text(
+            build_harness_script(
+                harness,
+                local_cflags=os.environ.get("CFLAGS"),
+                local_cxxflags=os.environ.get("CXXFLAGS"),
+            )
+        )
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path

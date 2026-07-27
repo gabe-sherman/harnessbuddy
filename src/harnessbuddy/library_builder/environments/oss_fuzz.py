@@ -16,6 +16,7 @@ from harnessbuddy.library_builder.oss_fuzz import workspace
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
@@ -257,11 +258,17 @@ class OssFuzzExecutor:
             )
 
     def run_library_build(
-        self, analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
+        self,
+        analysis: AnalysisResult,
+        workdir: Path,
+        *,
+        timeout: int = 300,
+        parameters: BuildParameters | None = None,
     ) -> BuildExplorationResult:
         from harnessbuddy.library_builder.exploration import explore, write_build_library_script
         from harnessbuddy.library_builder.models import BuildExplorationResult
 
+        del parameters
         workdir = workdir.resolve()
         self._project_name = analysis.project_name
         self._materialize_workspace(workdir, analysis)
@@ -316,7 +323,7 @@ class OssFuzzExecutor:
             command=verification.docker_verification_command(workdir, analysis.project_name),
         )
 
-    def run_harness_compile(
+    def run_harness_compile(  # noqa: PLR0913 -- paths and build configuration are independent inputs
         self,
         install_dir: Path,
         workdir: Path,
@@ -324,9 +331,11 @@ class OssFuzzExecutor:
         *,
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
+        parameters: BuildParameters | None = None,
     ) -> HarnessExplorationResult:
         from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 
+        del parameters
         if self._image_tag is None or self._project_name is None:
             raise RuntimeError(
                 "OssFuzzExecutor.run_harness_compile requires a prior successful "

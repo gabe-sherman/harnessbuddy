@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -167,6 +168,8 @@ def build_harness_script(
     *,
     whole_archive: bool = False,
     oss_fuzz: bool = False,
+    local_cflags: str | None = None,
+    local_cxxflags: str | None = None,
 ) -> str:
     """Generate a script that compiles one harness source into one binary.
 
@@ -178,6 +181,12 @@ def build_harness_script(
         oss_fuzz: when True, generate an OSS-Fuzz-compatible script that uses
             CC/CXX/CFLAGS/CXXFLAGS/$OUT/$LIB_FUZZING_ENGINE from the base image
             rather than defining them with local defaults.
+        local_cflags: C flags embedded in a local compiler script. When omitted,
+            uses libFuzzer's default. The generated script replaces inherited
+            CFLAGS because library-build flags may omit libFuzzer's main.
+        local_cxxflags: C++ flags embedded in a local compiler script. When omitted,
+            uses libFuzzer's default. The generated script replaces inherited
+            CXXFLAGS because library-build flags may omit libFuzzer's main.
     """
     static_libs = harness.static_libs if harness is not None else []
     transitive_link_flags = harness.transitive_link_flags if harness is not None else []
@@ -220,11 +229,15 @@ def build_harness_script(
         "\n"
     )
     if not oss_fuzz:
+        cc = os.environ.get("CC", "clang")
+        cxx = os.environ.get("CXX", "clang++")
+        cflags = local_cflags or "-fsanitize=fuzzer"
+        cxxflags = local_cxxflags or "-fsanitize=fuzzer"
         preamble += (
-            'CC="${CC:-clang}"\n'
-            'CXX="${CXX:-clang++}"\n'
-            'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"\n'
-            'CXXFLAGS="${CXXFLAGS:--fsanitize=fuzzer}"\n'
+            f'CC="${{CC:-{_double_quoted_shell_value(cc)}}}"\n'
+            f'CXX="${{CXX:-{_double_quoted_shell_value(cxx)}}}"\n'
+            f'CFLAGS="{_double_quoted_shell_value(cflags)}"\n'
+            f'CXXFLAGS="{_double_quoted_shell_value(cxxflags)}"\n'
             "\n"
         )
     preamble += (
@@ -246,7 +259,10 @@ def build_harness_script(
         + "\n"
         + 'case "$HARNESS_SOURCE" in\n'
         + "  *.c)\n"
-        + f'    "$CC" $CFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} "$HARNESS_SOURCE" \\\n'
+        + (
+            f'    "$CC" $CFLAGS "-I$INSTALL_DIR/include"{extra_include_flags} '
+            '"$HARNESS_SOURCE" \\\n'
+        )
         + (
             f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
             ' -o "$OUTPUT_BINARY"\n'
@@ -268,6 +284,11 @@ def build_harness_script(
         + "    ;;\n"
         + "esac\n"
     )
+
+
+def _double_quoted_shell_value(value: str) -> str:
+    """Escape a configured default that is embedded inside a shell double-quoted value."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
 
 
 def build_harnesses_script(*, harness_dir_name: str, oss_fuzz: bool) -> str:

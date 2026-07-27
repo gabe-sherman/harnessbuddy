@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -98,7 +99,7 @@ def _harness(
     return HarnessExplorationResult(
         succeeded=True,
         command=[],
-        static_libs=static_libs or [Path("libfoo.a")],
+        static_libs=static_libs if static_libs is not None else [Path("libfoo.a")],
         include_dir=Path("/tmp/install/include"),
         transitive_link_flags=transitive_link_flags or [],
         stdout="",
@@ -139,6 +140,74 @@ def test_single_harness_compiler_accepts_explicit_source_and_output_paths(tmp_pa
     assert output.exists()
     assert str(harness) in compiler_args.read_text().splitlines()
     assert "-lfoo" in compiler_args.read_text().splitlines()
+
+
+def test_single_harness_compiler_uses_configured_defaults_without_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_cc = tmp_path / "fake-clang"
+    _fake_compiler(fake_cc)
+    monkeypatch.setenv("CC", str(fake_cc))
+    compiler = tmp_path / "compile_harness.sh"
+    compiler.write_text(
+        build_harness_script(
+            _harness(),
+            local_cflags="-fsanitize=fuzzer,address -fprofile-instr-generate",
+        )
+    )
+    compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
+    harness = tmp_path / "candidate.c"
+    harness.write_text("int LLVMFuzzerTestOneInput(void) { return 0; }\n")
+    compiler_args = tmp_path / "compiler-args.txt"
+    environment = {**os.environ, "COMPILER_ARGS": str(compiler_args)}
+    environment.pop("CC", None)
+    environment.pop("CFLAGS", None)
+
+    result = subprocess.run(
+        ["bash", str(compiler), str(harness), str(tmp_path / "candidate")],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert "-fsanitize=fuzzer,address" in compiler_args.read_text().splitlines()
+
+
+@pytest.mark.skipif(shutil.which("clang") is None, reason="clang is required for libFuzzer linking")
+def test_single_harness_compiler_ignores_ambient_library_flags(tmp_path: Path) -> None:
+    """A prepared compiler must retain libFuzzer main when its caller built with no-link flags."""
+    compiler = tmp_path / "compile_harness.sh"
+    compiler.write_text(
+        build_harness_script(
+            _harness(static_libs=[]),
+            local_cflags="-fsanitize=fuzzer -DHARNESSBUDDY_TEST",
+        )
+    )
+    compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
+    harness = tmp_path / "candidate.c"
+    harness.write_text(
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "#ifndef HARNESSBUDDY_TEST\n"
+        "#error generated harness flags were not used\n"
+        "#endif\n"
+        "int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {\n"
+        "  return (int)(data == 0 && size != 0);\n"
+        "}\n"
+    )
+    environment = {**os.environ, "CC": "clang", "CFLAGS": "-fsanitize=fuzzer-no-link"}
+
+    result = subprocess.run(
+        ["bash", str(compiler), str(harness), str(tmp_path / "candidate")],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_batch_compiler_builds_every_supported_harness_into_requested_output_directory(

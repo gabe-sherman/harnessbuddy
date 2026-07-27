@@ -148,7 +148,9 @@ def test_existing_output_dir_raises(tmp_path: Path) -> None:
 # build_library.sh — reuse of the explored (possibly agent-fixed) script
 
 
-def _exploration_with_script(script_path: Path | None) -> BuildExplorationResult:
+def _exploration_with_script(
+    script_path: Path | None, *, install_dir: Path | None = None
+) -> BuildExplorationResult:
     return BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=True,
@@ -158,6 +160,7 @@ def _exploration_with_script(script_path: Path | None) -> BuildExplorationResult
         exit_code=0,
         duration_seconds=1.0,
         script_path=script_path,
+        install_dir=install_dir,
     )
 
 
@@ -316,3 +319,31 @@ def test_workspace_copy_harness_src_includes_discovered_default_fuzzer(tmp_path:
     assert (result.output_path / "harness_src" / "extra_helper.c").read_text() == (
         workspace / "harness_src" / "extra_helper.c"
     ).read_text()
+
+
+def test_validated_workspace_publishes_ready_install_artifacts(tmp_path: Path) -> None:
+    workspace = _validated_workspace(tmp_path)
+    (workspace / "install" / "include").mkdir(parents=True)
+    (workspace / "install" / "lib").mkdir()
+    (workspace / "install" / "include" / "demo.h").write_text("int demo(void);\n")
+    (workspace / "install" / "lib" / "libdemo.a").write_text("archive")
+    exploration = _exploration_with_script(workspace / "build_library.sh")
+
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+
+    assert (result.output_path / "install" / "lib" / "libdemo.a").is_file()
+
+
+def test_nonportable_build_script_still_publishes_validated_install_artifacts(
+    tmp_path: Path,
+) -> None:
+    workspace = _validated_workspace(tmp_path)
+    install_dir = workspace / "install"
+    (install_dir / "include").mkdir(parents=True)
+    (install_dir / "lib").mkdir()
+    (install_dir / "lib" / "libdemo.a").write_text("archive")
+    exploration = _exploration_with_script(None, install_dir=install_dir)
+
+    result = generate_local(_analysis("cmake_repo"), tmp_path / "out", exploration)
+
+    assert (result.output_path / "install" / "lib" / "libdemo.a").is_file()

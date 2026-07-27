@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import stat
 from pathlib import Path
@@ -146,6 +147,8 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
                 intermediate,
                 whole_archive=True,
                 oss_fuzz=oss_fuzz,
+                local_cflags=os.environ.get("CFLAGS"),
+                local_cxxflags=os.environ.get("CXXFLAGS"),
             )
         )
         script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

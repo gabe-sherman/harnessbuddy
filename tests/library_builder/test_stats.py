@@ -237,6 +237,7 @@ def test_write_run_stats_clean_success(tmp_path: Path) -> None:
         "environment": "local",
         "compile_commands_path": None,
         "verification_command": None,
+        "build_parameters": None,
     }
 
 
@@ -284,6 +285,7 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
         "environment": "local",
         "compile_commands_path": None,
         "verification_command": None,
+        "build_parameters": None,
     }
 
 
@@ -325,4 +327,5 @@ def test_write_run_stats_harness_unrecoverable_with_codex(tmp_path: Path) -> Non
         "environment": "local",
         "compile_commands_path": None,
         "verification_command": None,
+        "build_parameters": None,
     }

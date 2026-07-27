@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from harnessbuddy.core.reporting import FailureDiagnostic
     from harnessbuddy.core.repos import RepoSource
     from harnessbuddy.library_builder.agents import BuildFailureError, LLMBudgetError
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.dependency_resolution import DependencySource, DependencyState
     from harnessbuddy.library_builder.environments.base import Environment, EnvironmentExecutor
     from harnessbuddy.library_builder.models import (
@@ -69,6 +70,31 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         default="local",
         metavar="local|oss-fuzz",
         help="Target environment to build and validate each stage in. Default: local.",
+    )
+    p.add_argument("--cc", metavar="COMPILER", help="C compiler for local build preparation.")
+    p.add_argument("--cxx", metavar="COMPILER", help="C++ compiler for local build preparation.")
+    p.add_argument(
+        "--library-cflags",
+        metavar="FLAGS",
+        help="C flags for the library build; defaults to CFLAGS. Use --library-cflags=FLAGS.",
+    )
+    p.add_argument(
+        "--library-cxxflags",
+        metavar="FLAGS",
+        help="C++ flags for the library build; defaults to CXXFLAGS. Use --library-cxxflags=FLAGS.",
+    )
+    p.add_argument(
+        "--harness-cflags",
+        metavar="FLAGS",
+        help="Default C flags in the generated local harness compiler; use --harness-cflags=FLAGS.",
+    )
+    p.add_argument(
+        "--harness-cxxflags",
+        metavar="FLAGS",
+        help=(
+            "Default C++ flags in the generated local harness compiler; "
+            "use --harness-cxxflags=FLAGS."
+        ),
     )
     p.add_argument(
         "--skip-validation",
@@ -198,6 +224,7 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
     timeout: int = 300,
     quiet: bool = False,
     logs_dir: Path | None = None,
+    parameters: BuildParameters | None = None,
 ) -> BuildExplorationResult:
     """Run the executor's library build, then optionally fall back to an LLM agent.
 
@@ -206,11 +233,19 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
     repair with distinct PhaseReporter banners (FR-001/FR-002); logs_dir, when given,
     is where the deterministic build's full raw output is persisted (FR-004).
     """
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
+
+    parameters = parameters or BuildParameters.from_args(object())
     static_log_path = logs_dir / f"{Phase.STATIC_LIBRARY_BUILD.value}.log" if logs_dir else None
     with PhaseReporter(Phase.STATIC_LIBRARY_BUILD) as reporter:
         reporter.set_log_path(static_log_path)
-        with streaming_context(quiet=quiet, log_path=static_log_path):
-            result = executor.run_library_build(analysis, workspace, timeout=timeout)
+        with (
+            parameters.library_environment(),
+            streaming_context(quiet=quiet, log_path=static_log_path),
+        ):
+            result = executor.run_library_build(
+                analysis, workspace, timeout=timeout, parameters=parameters
+            )
         if result.succeeded:
             reporter.succeed()
         else:
@@ -221,22 +256,24 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
             from harnessbuddy.library_builder.agents import invoke_library_builder_agent
 
             with PhaseReporter(Phase.AGENT_LIBRARY_REPAIR) as agent_reporter:
-                result = invoke_library_builder_agent(
-                    analysis,
-                    result,
-                    workspace,
-                    tool=agent,
-                    environment=result.environment,
-                )
+                with parameters.library_environment():
+                    result = invoke_library_builder_agent(
+                        analysis,
+                        result,
+                        workspace,
+                        tool=agent,
+                        environment=result.environment,
+                    )
                 agent_reporter.set_log_path(result.transcript_path)
                 if result.succeeded:
                     agent_reporter.succeed()
                 else:
                     agent_reporter.fail()
             if result.succeeded:
-                result = _sync_artifacts_after_agent_fix(
-                    analysis, workspace, executor, result, timeout
-                )
+                with parameters.library_environment():
+                    result = _sync_artifacts_after_agent_fix(
+                        analysis, workspace, executor, result, timeout
+                    )
         else:
             print("Library build failed and --agent argument was not provided ...")
     return result
@@ -266,6 +303,7 @@ def _sync_artifacts_after_agent_fix(
         return result
     return dataclasses.replace(
         result,
+        install_dir=sync_result.install_dir,
         compile_commands_path=sync_result.compile_commands_path,
         compile_commands_error=sync_result.compile_commands_error,
     )
@@ -281,6 +319,7 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
     agent: str | None = None,
     quiet: bool = False,
     logs_dir: Path | None = None,
+    parameters: BuildParameters | None = None,
 ) -> HarnessExplorationResult:
     """Probe harness compilation, then optionally fall back to an LLM agent if it fails.
 
@@ -291,16 +330,23 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
     PhaseReporter banners (FR-001/FR-002); logs_dir, when given, is where the
     deterministic probe's full raw output is persisted (FR-004).
     """
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
+
+    parameters = parameters or BuildParameters.from_args(object())
     static_log_path = logs_dir / f"{Phase.HARNESS_COMPILE_PROBE.value}.log" if logs_dir else None
     with PhaseReporter(Phase.HARNESS_COMPILE_PROBE) as reporter:
         reporter.set_log_path(static_log_path)
-        with streaming_context(quiet=quiet, log_path=static_log_path):
+        with (
+            parameters.harness_environment(),
+            streaming_context(quiet=quiet, log_path=static_log_path),
+        ):
             result = executor.run_harness_compile(
                 install_dir,
                 workspace,
                 analysis.language,
                 extra_include_paths=library_result.extra_include_paths,
                 extra_library_paths=library_result.extra_library_paths,
+                parameters=parameters,
             )
         if result.succeeded:
             reporter.succeed()
@@ -312,13 +358,14 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
         from harnessbuddy.library_builder.models import HarnessPaths
 
         with PhaseReporter(Phase.AGENT_HARNESS_REPAIR) as agent_reporter:
-            result = invoke_harness_builder_agent(
-                analysis,
-                result,
-                HarnessPaths(install_dir=install_dir, workdir=workspace),
-                tool=agent,
-                environment=result.environment,
-            )
+            with parameters.harness_environment():
+                result = invoke_harness_builder_agent(
+                    analysis,
+                    result,
+                    HarnessPaths(install_dir=install_dir, workdir=workspace),
+                    tool=agent,
+                    environment=result.environment,
+                )
             agent_reporter.set_log_path(result.transcript_path)
             if result.succeeded:
                 agent_reporter.succeed()
@@ -402,13 +449,20 @@ def _run_library_phase(  # noqa: PLR0913 -- private helper; all params are disti
     *,
     quiet: bool,
     logs_dir: Path | None,
+    parameters: BuildParameters,
 ) -> BuildExplorationResult:
     """Build the library, persisting any packages the library-build agent reported missing."""
     from harnessbuddy.library_builder import dependency_resolution
     from harnessbuddy.library_builder.dependency_resolution import DependencySource
 
     result = build_library(
-        analysis, workspace, executor, agent=agent, quiet=quiet, logs_dir=logs_dir
+        analysis,
+        workspace,
+        executor,
+        agent=agent,
+        quiet=quiet,
+        logs_dir=logs_dir,
+        parameters=parameters,
     )
 
     if result.missing_apt_packages or result.missing_brew_packages:
@@ -472,6 +526,7 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
     quiet: bool,
     debug: bool,
     logs_dir: Path | None,
+    parameters: BuildParameters,
 ) -> tuple[HarnessExplorationResult, list[str]]:
     """Probe harness compilation, persist any newly-discovered packages, and report status."""
     from harnessbuddy.library_builder import dependency_resolution
@@ -486,6 +541,7 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
         agent=agent,
         quiet=quiet,
         logs_dir=logs_dir,
+        parameters=parameters,
     )
 
     # Covers both libs the linker reported missing (missing_system_libs) and libs it
@@ -623,6 +679,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; all 8 params are disti
     environment: Environment,
     compile_commands_path: Path | None = None,
     verification_command: list[str] | None = None,
+    build_parameters: dict[str, str] | None = None,
 ) -> None:
     """Build and persist stats.json for this run."""
     from harnessbuddy.library_builder.stats import RunStats, write_run_stats
@@ -637,6 +694,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; all 8 params are disti
             environment=environment,
             compile_commands_path=str(compile_commands_path) if compile_commands_path else None,
             verification_command=_command_str(verification_command or []),
+            build_parameters=build_parameters,
         ),
     )
 
@@ -775,6 +833,7 @@ def _handle_library_build_failure(  # noqa: PLR0913 -- private helper; all param
     start_time: float,
     debug: bool,
     log_path: Path | None,
+    parameters: BuildParameters,
 ) -> int | None:
     """Report a failed library build. Returns an exit code to stop the pipeline, or
     None to continue past it — --skip-validation extends to also skip this per-stage
@@ -824,6 +883,7 @@ def _handle_library_build_failure(  # noqa: PLR0913 -- private helper; all param
             environment,
             result.compile_commands_path,
             result.command,
+            parameters.to_dict(),
         )
         return 1
     print(
@@ -843,6 +903,7 @@ def _report_library_build_result(  # noqa: PLR0913 -- private helper; all params
     start_time: float,
     debug: bool,
     logs_dir: Path | None,
+    parameters: BuildParameters,
 ) -> int | None:
     """Print the library-build outcome. Returns an exit code to stop the pipeline on
     failure (unless skip_validation), or None to continue to the harness phase."""
@@ -860,6 +921,7 @@ def _report_library_build_result(  # noqa: PLR0913 -- private helper; all params
             start_time=start_time,
             debug=debug,
             log_path=log_path,
+            parameters=parameters,
         )
     print("Successfully produced library build!")
     if result.compile_commands_path is not None:
@@ -918,6 +980,7 @@ def _handle_library_agent_error(  # noqa: PLR0913 -- private helper; all params 
     base_output: Path,
     start_time: float,
     debug: bool,
+    parameters: BuildParameters,
 ) -> BuildExplorationResult | int:
     """Handle a library-build agent's stop-for-human/budget-limited error: merge any
     reported packages, report the outcome, and either stop the pipeline (returning an
@@ -951,6 +1014,7 @@ def _handle_library_agent_error(  # noqa: PLR0913 -- private helper; all params 
             not_invoked_agent_stats(),
             RunStatus.FAILED_LIBRARY_BUILD,
             environment,
+            build_parameters=parameters.to_dict(),
         )
         return 1
     return _build_result_from_agent_error(exc, analysis, environment)
@@ -970,6 +1034,7 @@ def _handle_harness_agent_error(  # noqa: PLR0913 -- private helper; all params 
     base_output: Path,
     start_time: float,
     debug: bool,
+    parameters: BuildParameters,
 ) -> tuple[HarnessExplorationResult, list[str]] | int:
     """Handle a harness-build agent's stop-for-human/budget-limited error: merge any
     reported packages, report the outcome, and either stop the pipeline (returning an
@@ -1001,6 +1066,7 @@ def _handle_harness_agent_error(  # noqa: PLR0913 -- private helper; all params 
             environment,
             result.compile_commands_path,
             result.command,
+            parameters.to_dict(),
         )
         return 1
     print(
@@ -1028,6 +1094,7 @@ def _run_library_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
     quiet: bool,
     debug: bool,
     logs_dir: Path | None,
+    parameters: BuildParameters,
 ) -> BuildExplorationResult | int:
     """Run the library-build phase, converting a stop-for-human/budget-limited agent
     error into either an exit code (pipeline stops) or a synthetic failed result to
@@ -1036,7 +1103,15 @@ def _run_library_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
 
     try:
         return _run_library_phase(
-            analysis, workspace, agent, state, state_file, executor, quiet=quiet, logs_dir=logs_dir
+            analysis,
+            workspace,
+            agent,
+            state,
+            state_file,
+            executor,
+            quiet=quiet,
+            logs_dir=logs_dir,
+            parameters=parameters,
         )
     except (BuildFailureError, LLMBudgetError) as exc:
         return _handle_library_agent_error(
@@ -1050,6 +1125,7 @@ def _run_library_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
             base_output=base_output,
             start_time=start_time,
             debug=debug,
+            parameters=parameters,
         )
 
 
@@ -1070,6 +1146,7 @@ def _run_harness_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
     quiet: bool,
     debug: bool,
     logs_dir: Path | None,
+    parameters: BuildParameters,
 ) -> tuple[HarnessExplorationResult, list[str]] | int:
     """Run the harness-build phase, converting a stop-for-human/budget-limited agent
     error into either an exit code (pipeline stops) or a synthetic failed result plus
@@ -1089,6 +1166,7 @@ def _run_harness_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
             quiet=quiet,
             debug=debug,
             logs_dir=logs_dir,
+            parameters=parameters,
         )
     except (BuildFailureError, LLMBudgetError) as exc:
         return _handle_harness_agent_error(
@@ -1104,6 +1182,7 @@ def _run_harness_phase_or_agent_error(  # noqa: PLR0913 -- private helper; all p
             base_output=base_output,
             start_time=start_time,
             debug=debug,
+            parameters=parameters,
         )
 
 
@@ -1116,6 +1195,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     )
     from harnessbuddy.library_builder import dependency_resolution
     from harnessbuddy.library_builder.analysis import UnsupportedRepositoryError, analyze
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.environments.base import Environment
     from harnessbuddy.library_builder.stats import (
         agent_phase_stats_from_build,
@@ -1128,6 +1208,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     executor = _select_executor(environment)
     quiet = args.quiet
     debug = args.log_level == "debug"
+    parameters = BuildParameters.from_args(args)
 
     availability_rc = _check_environment_availability(executor, environment)
     if availability_rc is not None:
@@ -1186,6 +1267,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         quiet=quiet,
         debug=debug,
         logs_dir=logs_dir,
+        parameters=parameters,
     )
     if isinstance(outcome, int):
         return outcome
@@ -1198,6 +1280,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         start_time=start_time,
         debug=debug,
         logs_dir=logs_dir,
+        parameters=parameters,
     )
     if rc is not None:
         return rc
@@ -1219,20 +1302,22 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         quiet=quiet,
         debug=debug,
         logs_dir=logs_dir,
+        parameters=parameters,
     )
     if isinstance(outcome, int):
         return outcome
     harness_result, brew_packages = outcome
 
     with PhaseReporter(Phase.OUTPUT_GENERATION) as reporter:
-        rc = _generate_outputs(
-            analysis,
-            output_path,
-            result,
-            harness_result,
-            brew_packages,
-            environment,
-        )
+        with parameters.harness_environment():
+            rc = _generate_outputs(
+                analysis,
+                output_path,
+                result,
+                harness_result,
+                brew_packages,
+                environment,
+            )
         if rc == 0:
             reporter.succeed()
         else:
@@ -1248,6 +1333,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         environment,
         result.compile_commands_path,
         harness_result.command or result.command,
+        parameters.to_dict(),
     )
     return rc
 

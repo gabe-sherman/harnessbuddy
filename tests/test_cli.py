@@ -74,6 +74,40 @@ def test_generate_success_prints_summary(
     assert f"Output:       {output_dir / 'local'}" in out
 
 
+def test_generate_records_explicit_local_build_parameters(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--cc",
+                "clang-19",
+                "--cxx",
+                "clang++-19",
+                "--library-cflags=-fsanitize=fuzzer-no-link,address",
+                "--library-cxxflags=-fsanitize=fuzzer-no-link,address",
+                "--harness-cflags=-fsanitize=fuzzer,address",
+                "--harness-cxxflags=-fsanitize=fuzzer,address",
+            ]
+        )
+
+    assert rc == 0
+    assert json.loads((output_dir / "stats.json").read_text())["build_parameters"] == {
+        "cc": "clang-19",
+        "cxx": "clang++-19",
+        "library_cflags": "-fsanitize=fuzzer-no-link,address",
+        "library_cxxflags": "-fsanitize=fuzzer-no-link,address",
+        "harness_cflags": "-fsanitize=fuzzer,address",
+        "harness_cxxflags": "-fsanitize=fuzzer,address",
+    }
+
+
 def test_generate_success_project_name_override(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:

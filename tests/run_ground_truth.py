@@ -35,11 +35,11 @@ class LibSpec:
 
 
 LIBS = [
-#     LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
-#     LibSpec(
-#         "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
-#     ),
-#    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
+    #     LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
+    #     LibSpec(
+    #         "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
+    #     ),
+    #    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
     # LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
     LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
     # LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
@@ -59,7 +59,18 @@ def _generate(lib: LibSpec) -> bool:
     project_output = _OUTPUT_DIR / lib.project_name
     if project_output.exists():
         shutil.rmtree(project_output)
-    rc = main(["generate", lib.url, "--agent", _AGENT, "--output", str(project_output), "--environment", "oss-fuzz"])
+    rc = main(
+        [
+            "generate",
+            lib.url,
+            "--agent",
+            _AGENT,
+            "--output",
+            str(project_output),
+            "--environment",
+            "oss-fuzz",
+        ]
+    )
     return rc == 0
 
 

@@ -64,6 +64,9 @@ class BuildExplorationResult:
     exit_code: int
     duration_seconds: float
     llm_used: bool = False
+    # The validated install tree, including when the analyzed source lives outside the
+    # generated workspace and the build script therefore cannot be copied verbatim.
+    install_dir: Path | None = None
     # Set only when the source was cloned to the standard workdir/src layout, meaning
     # the script's paths are $SCRIPT_DIR-relative and it can be copied verbatim into
     # generated output directories (preserving any agent fixes).

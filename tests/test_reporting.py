@@ -154,9 +154,7 @@ def test_format_diagnostic_distinguishes_agent_origin() -> None:
     deterministic = build_diagnostic(
         Phase.STATIC_LIBRARY_BUILD, step="build", message="x", origin="deterministic"
     )
-    agent = build_diagnostic(
-        Phase.AGENT_LIBRARY_REPAIR, step="repair", message="x", origin="agent"
-    )
+    agent = build_diagnostic(Phase.AGENT_LIBRARY_REPAIR, step="repair", message="x", origin="agent")
     deterministic_text = format_diagnostic(deterministic)
     agent_text = format_diagnostic(agent)
     assert deterministic_text != agent_text

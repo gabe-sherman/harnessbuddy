@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
@@ -35,10 +36,15 @@ class EnvironmentExecutor(Protocol):
     """Runs the two generate pipeline stages in a specific target environment."""
 
     def run_library_build(
-        self, analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
+        self,
+        analysis: AnalysisResult,
+        workdir: Path,
+        *,
+        timeout: int = 300,
+        parameters: BuildParameters | None = None,
     ) -> BuildExplorationResult: ...
 
-    def run_harness_compile(
+    def run_harness_compile(  # noqa: PLR0913 -- paths and build configuration are independent inputs
         self,
         install_dir: Path,
         workdir: Path,
@@ -46,6 +52,7 @@ class EnvironmentExecutor(Protocol):
         *,
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
+        parameters: BuildParameters | None = None,
     ) -> HarnessExplorationResult: ...
 
     def sync_artifacts_after_agent_fix(

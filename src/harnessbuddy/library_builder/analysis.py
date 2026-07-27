@@ -19,9 +19,9 @@ _VCS_DIRS: frozenset[str] = frozenset({".git", ".hg", ".svn"})
 
 _BUILD_SYSTEM_CHECKS: list[tuple[BuildSystem, list[str]]] = [
     (BuildSystem.CMAKE, ["CMakeLists.txt"]),
-    (BuildSystem.MESON, ["meson.build"]),
     (BuildSystem.AUTOTOOLS, ["configure.ac", "configure.in", "configure"]),
     (BuildSystem.MAKEFILE, ["Makefile", "makefile"]),
+    (BuildSystem.MESON, ["meson.build"]),
 ]
 
 

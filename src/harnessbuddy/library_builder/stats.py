@@ -115,6 +115,7 @@ class RunStats:
     # The literal command (FR-010) that the shared verification script was invoked with,
     # so a person can reproduce the pass/fail result themselves.
     verification_command: str | None = None
+    build_parameters: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -125,6 +126,7 @@ class RunStats:
             "environment": self.environment.value,
             "compile_commands_path": self.compile_commands_path,
             "verification_command": self.verification_command,
+            "build_parameters": self.build_parameters,
         }
 
 

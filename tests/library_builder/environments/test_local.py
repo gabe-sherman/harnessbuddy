@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from harnessbuddy.core.subprocesses import RunResult
+from harnessbuddy.library_builder.build_parameters import BuildParameters
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.environments.local import LocalExecutor
 from harnessbuddy.library_builder.models import (
@@ -100,20 +101,23 @@ def test_run_library_build_invokes_check_local_build_sh(tmp_path: Path) -> None:
     assert result.command == command
 
 
-def test_run_library_build_writes_stub_compile_harnesses_sh_before_verifying(
+def test_run_library_build_refreshes_stale_harness_compiler_before_verifying(
     tmp_path: Path,
 ) -> None:
-    """A stub compile_harnesses.sh must exist before check_local_build.sh runs, since
-    that script always runs build_library.sh && compile_harnesses.sh together (T006)."""
+    """A reused workspace must not validate with obsolete library-only compiler flags."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
-
-    seen_stub_exists = []
-
-    def _fake_verify(_command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        seen_stub_exists.append((Path(cwd) / "compile_harnesses.sh").exists())
-        return _VERIFY_OK
+    (workdir / "compile_harness.sh").write_text('CFLAGS="${CFLAGS:--fsanitize=fuzzer-no-link}"\n')
+    (workdir / "compile_harnesses.sh").write_text("#!/bin/bash\n")
+    parameters = BuildParameters(
+        cc="clang",
+        cxx="clang++",
+        library_cflags="-fsanitize=fuzzer-no-link,address",
+        library_cxxflags="-fsanitize=fuzzer-no-link,address",
+        harness_cflags="-fsanitize=fuzzer,address",
+        harness_cxxflags="-fsanitize=fuzzer,address",
+    )
 
     with (
         patch(
@@ -126,13 +130,13 @@ def test_run_library_build_writes_stub_compile_harnesses_sh_before_verifying(
         ),
         patch(
             "harnessbuddy.library_builder.environments.verification.run_command_streaming",
-            side_effect=_fake_verify,
+            return_value=_VERIFY_OK,
         ),
     ):
-        LocalExecutor().run_library_build(_analysis(source), workdir)
+        LocalExecutor().run_library_build(_analysis(source), workdir, parameters=parameters)
 
-    assert seen_stub_exists == [True]
-    assert (workdir / "compile_harnesses.sh").exists()
+    compiler = (workdir / "compile_harness.sh").read_text()
+    assert 'CFLAGS="-fsanitize=fuzzer,address"' in compiler and "${CFLAGS:-" not in compiler
 
 
 def test_run_library_build_verification_failure_fails_result(tmp_path: Path) -> None:
@@ -214,6 +218,39 @@ def test_run_harness_compile_tags_environment_local(tmp_path: Path) -> None:
 
     assert result.environment is Environment.LOCAL
     assert result.succeeded is True
+
+
+def test_run_harness_compile_publishes_the_configured_harness_flags(tmp_path: Path) -> None:
+    """The published compiler retains the caller's harness-link configuration."""
+    install_dir = tmp_path / "install"
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+    parameters = BuildParameters(
+        cc="clang",
+        cxx="clang++",
+        library_cflags="-fsanitize=fuzzer-no-link,address",
+        library_cxxflags="-fsanitize=fuzzer-no-link,address",
+        harness_cflags="-fsanitize=fuzzer,address -DHARNESS_FLAG",
+        harness_cxxflags="-fsanitize=fuzzer,address -DHARNESS_FLAG",
+    )
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.harness_explorer.run_command",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.verification.run_command_streaming",
+            return_value=_VERIFY_OK,
+        ),
+    ):
+        LocalExecutor().run_harness_compile(
+            install_dir, tmp_path, Language.C, parameters=parameters
+        )
+
+    compiler = (tmp_path / "compile_harness.sh").read_text()
+    assert 'CFLAGS="-fsanitize=fuzzer,address -DHARNESS_FLAG"' in compiler
 
 
 def test_run_harness_compile_invokes_check_local_build_sh(tmp_path: Path) -> None:

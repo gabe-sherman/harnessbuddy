@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from harnessbuddy.library_builder.environments.base import Environment
 
 if TYPE_CHECKING:
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
@@ -26,43 +27,54 @@ class LocalExecutor:
         """The host is always available; nothing to check."""
 
     def run_library_build(
-        self, analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
+        self,
+        analysis: AnalysisResult,
+        workdir: Path,
+        *,
+        timeout: int = 300,
+        parameters: BuildParameters | None = None,
     ) -> BuildExplorationResult:
+        from harnessbuddy.library_builder.build_parameters import BuildParameters
         from harnessbuddy.library_builder.environments import verification
         from harnessbuddy.library_builder.exploration import explore
-        from harnessbuddy.library_builder.local.generation import (
-            _COMPILE_HARNESS_SH_STUB,
-            _COMPILE_HARNESSES_SH_STUB,
+        from harnessbuddy.library_builder.scripts import (
+            build_harness_script,
+            build_harnesses_script,
+            write_default_fuzzer,
         )
-        from harnessbuddy.library_builder.scripts import write_default_fuzzer
 
         workdir = workdir.resolve()
-        exploration_result = explore(
-            analysis, workdir, timeout=timeout, environment=Environment.LOCAL
-        )
+        parameters = parameters or BuildParameters.from_args(object())
+        with parameters.library_environment():
+            exploration_result = explore(
+                analysis, workdir, timeout=timeout, environment=Environment.LOCAL
+            )
         if not exploration_result.command:
             # No real build attempt was made (e.g. unknown build system) — nothing for
             # the shared verification script to check.
             return exploration_result
 
-        batch_path = workdir / "compile_harnesses.sh"
-        if not batch_path.exists():
-            # The stub compiles whatever's in harness_src/ (research.md #3) — write the
-            # real default fuzzer stub now so check_local_build.sh's out/ non-empty check
-            # (agents/scripts/check_local_build.sh) has something to find even before
-            # harness-link discovery ever runs. Written unconditionally (even when the
-            # probe below already failed) since a later repair agent's own verification
-            # run still needs it to exist.
-            harness_src_dir = workdir / "harness_src"
-            harness_src_dir.mkdir(exist_ok=True)
-            write_default_fuzzer(harness_src_dir, analysis.language)
-            compiler_path = workdir / "compile_harness.sh"
-            compiler_path.write_text(_COMPILE_HARNESS_SH_STUB)
-            compiler_path.chmod(
-                compiler_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        # The verifier runs both scripts in a reused workspace, so refresh them instead
+        # of trusting artifacts emitted by an earlier HarnessBuddy version or invocation.
+        harness_src_dir = workdir / "harness_src"
+        harness_src_dir.mkdir(exist_ok=True)
+        write_default_fuzzer(harness_src_dir, analysis.language)
+        compiler_path = workdir / "compile_harness.sh"
+        compiler_path.write_text(
+            build_harness_script(
+                None,
+                local_cflags=parameters.harness_cflags,
+                local_cxxflags=parameters.harness_cxxflags,
             )
-            batch_path.write_text(_COMPILE_HARNESSES_SH_STUB)
-            batch_path.chmod(batch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+        compiler_path.chmod(
+            compiler_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        )
+        batch_path = workdir / "compile_harnesses.sh"
+        batch_path.write_text(
+            build_harnesses_script(harness_dir_name="harness_src", oss_fuzz=False)
+        )
+        batch_path.chmod(batch_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         if not exploration_result.succeeded:
             # The probe above already failed against this exact build_library.sh —
@@ -73,7 +85,8 @@ class LocalExecutor:
                 exploration_result, command=verification.local_verification_command(workdir)
             )
 
-        result = verification.run_local_verification(workdir)
+        with parameters.harness_environment():
+            result = verification.run_local_verification(workdir)
         return dataclasses.replace(
             exploration_result,
             succeeded=result.passed,
@@ -84,7 +97,7 @@ class LocalExecutor:
             duration_seconds=result.duration_seconds,
         )
 
-    def run_harness_compile(
+    def run_harness_compile(  # noqa: PLR0913 -- paths and build configuration are independent inputs
         self,
         install_dir: Path,
         workdir: Path,
@@ -92,19 +105,23 @@ class LocalExecutor:
         *,
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
+        parameters: BuildParameters | None = None,
     ) -> HarnessExplorationResult:
+        from harnessbuddy.library_builder.build_parameters import BuildParameters
         from harnessbuddy.library_builder.environments import verification
         from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 
         workdir = workdir.resolve()
-        harness_result = explore_harness_compilation(
-            install_dir,
-            workdir,
-            language,
-            extra_include_paths=extra_include_paths,
-            extra_library_paths=extra_library_paths,
-            environment=Environment.LOCAL,
-        )
+        parameters = parameters or BuildParameters.from_args(object())
+        with parameters.harness_environment():
+            harness_result = explore_harness_compilation(
+                install_dir,
+                workdir,
+                language,
+                extra_include_paths=extra_include_paths,
+                extra_library_paths=extra_library_paths,
+                environment=Environment.LOCAL,
+            )
         if not harness_result.static_libs:
             # No install artifacts to link against — nothing for the shared
             # verification script to check.
@@ -119,7 +136,8 @@ class LocalExecutor:
                 harness_result, command=verification.local_verification_command(workdir)
             )
 
-        result = verification.run_local_verification(workdir)
+        with parameters.harness_environment():
+            result = verification.run_local_verification(workdir)
         return dataclasses.replace(
             harness_result,
             succeeded=result.passed,
@@ -161,6 +179,7 @@ class LocalExecutor:
             stderr="",
             exit_code=0,
             duration_seconds=0.0,
+            install_dir=workdir / "install",
             environment=Environment.LOCAL,
             compile_commands_path=compile_commands_path,
             compile_commands_error=compile_commands_error,
