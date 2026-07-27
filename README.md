@@ -74,7 +74,8 @@ compiler/flag settings.
       zip \
       xz-utils \
       file \
-      bear
+      bear \
+      cloc
   ```
 - Docker, if you want to validate against the `oss-fuzz` environment
   (`--environment oss-fuzz`)
