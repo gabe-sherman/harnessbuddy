@@ -147,6 +147,11 @@ def test_autotools_setup_autogen(tmp_path: Path) -> None:  # noqa: ARG001
     assert result.autotools_setup == AutotoolsSetup.AUTOGEN
 
 
+def test_autotools_setup_bootstrap(tmp_path: Path) -> None:  # noqa: ARG001
+    result = _analysis("autotools_bootstrap_repo")
+    assert result.autotools_setup == AutotoolsSetup.BOOTSTRAP
+
+
 def test_autotools_setup_autoreconf(tmp_path: Path) -> None:  # noqa: ARG001
     result = _analysis("autotools_repo")
     assert result.autotools_setup == AutotoolsSetup.AUTORECONF

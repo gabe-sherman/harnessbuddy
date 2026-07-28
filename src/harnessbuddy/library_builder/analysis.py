@@ -71,12 +71,17 @@ def analyze(source: RepoSource) -> AnalysisResult:
 def _detect_autotools_setup(root: Path) -> AutotoolsSetup:
     """Detect how to bootstrap autotools for this repository.
 
-    Priority: configure script present > autogen.sh > autoreconf from configure.ac.
+    Priority: configure script present > autogen.sh > bootstrap > autoreconf from
+    configure.ac. Only reached once configure.ac/configure.in/configure has already
+    established that this is an autotools tree, so a bare `bootstrap` here is the
+    gnulib-style autotools wrapper rather than some other project's setup script.
     """
     if (root / "configure").exists():
         return AutotoolsSetup.CONFIGURE
     if (root / "autogen.sh").exists():
         return AutotoolsSetup.AUTOGEN
+    if (root / "bootstrap").exists():
+        return AutotoolsSetup.BOOTSTRAP
     return AutotoolsSetup.AUTORECONF
 
 

@@ -65,7 +65,11 @@ def write_dockerfile(output_path: Path, analysis: AnalysisResult, *, include_bea
     apt_packages: list[str] = []
     if include_bear:
         apt_packages.append("bear")
-    if analysis.autotools_setup in {AutotoolsSetup.AUTOGEN, AutotoolsSetup.AUTORECONF}:
+    if analysis.autotools_setup in {
+        AutotoolsSetup.AUTOGEN,
+        AutotoolsSetup.BOOTSTRAP,
+        AutotoolsSetup.AUTORECONF,
+    }:
         apt_packages.extend(_AUTOTOOLS_PACKAGES)
     apt_packages.extend(analysis.system_packages)
     if apt_packages:

@@ -108,11 +108,16 @@ def test_write_dockerfile_with_ref(tmp_path: Path) -> None:
     assert "RUN git -C $SRC/src checkout v1.3.2\n" in content
 
 
+@pytest.mark.parametrize(
+    "fixture", ["autotools_repo", "autotools_autogen_repo", "autotools_bootstrap_repo"]
+)
 def test_write_dockerfile_autotools_apt_packages_present_with_and_without_bear(
-    tmp_path: Path,
+    tmp_path: Path, fixture: str
 ) -> None:
+    """Every setup variant that generates configure in-image needs the autotools
+    toolchain installed; only a pre-generated configure can go without."""
     (tmp_path / "a").mkdir()
-    write_dockerfile(tmp_path / "a", _analysis("autotools_repo"), include_bear=True)
+    write_dockerfile(tmp_path / "a", _analysis(fixture), include_bear=True)
     content = (tmp_path / "a" / "Dockerfile").read_text()
     assert "autoconf" in content
     assert "bear" in content

@@ -16,6 +16,13 @@ _HOST_ENV_FALLBACKS = (
     '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
 )
 
+# Autotools setup variants that bootstrap by running a script in the source tree, mapped
+# to that script's name. Both generate configure; they differ only in filename.
+_AUTOTOOLS_BOOTSTRAP_SCRIPTS: dict[AutotoolsSetup | None, str] = {
+    AutotoolsSetup.AUTOGEN: "autogen.sh",
+    AutotoolsSetup.BOOTSTRAP: "bootstrap",
+}
+
 
 def build_library_script(
     build_system: BuildSystem,
@@ -101,9 +108,10 @@ def _build_body(
             f"ninja -C {build_dir} install\n"
         )
     if build_system == BuildSystem.AUTOTOOLS:
-        if autotools_setup == AutotoolsSetup.AUTOGEN:
-            # sometimes autogen already runs configure, run distclean to reset directory state
-            setup_step = f"(cd {source_dir} && ./autogen.sh && make distclean)\n"
+        bootstrap_script = _AUTOTOOLS_BOOTSTRAP_SCRIPTS.get(autotools_setup)
+        if bootstrap_script is not None:
+            # sometimes the script already runs configure, run distclean to reset directory state
+            setup_step = f"(cd {source_dir} && ./{bootstrap_script} && make distclean || true)\n"
         elif autotools_setup == AutotoolsSetup.AUTORECONF:
             setup_step = f"(cd {source_dir} && autoreconf -fiv)\n"
         else:

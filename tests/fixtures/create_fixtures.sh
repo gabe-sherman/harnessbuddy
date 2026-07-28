@@ -74,6 +74,23 @@ cat > "$FIXTURES/autotools_autogen_repo/mylib.h" <<'EOF'
 void mylib_hello(void);
 EOF
 
+# autotools_bootstrap_repo — configure.ac + bootstrap, no configure/autogen.sh → BOOTSTRAP
+mkdir -p "$FIXTURES/autotools_bootstrap_repo"
+cat > "$FIXTURES/autotools_bootstrap_repo/configure.ac" <<'EOF'
+AC_INIT([mylib], [1.0])
+AM_INIT_AUTOMAKE
+AC_OUTPUT
+EOF
+cat > "$FIXTURES/autotools_bootstrap_repo/bootstrap" <<'EOF'
+#!/bin/sh
+autoreconf -fiv
+EOF
+chmod +x "$FIXTURES/autotools_bootstrap_repo/bootstrap"
+cat > "$FIXTURES/autotools_bootstrap_repo/mylib.h" <<'EOF'
+#pragma once
+void mylib_hello(void);
+EOF
+
 # makefile_repo — Makefile, C header
 mkdir -p "$FIXTURES/makefile_repo"
 cat > "$FIXTURES/makefile_repo/Makefile" <<'EOF'

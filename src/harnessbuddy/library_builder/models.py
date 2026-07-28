@@ -18,6 +18,7 @@ class BuildSystem(Enum):
 class AutotoolsSetup(Enum):
     CONFIGURE = "configure"  # configure script already present
     AUTOGEN = "autogen"  # autogen.sh present, must run before configure
+    BOOTSTRAP = "bootstrap"  # bootstrap present (gnulib convention), same role as autogen.sh
     AUTORECONF = "autoreconf"  # only configure.ac / configure.in, need autoreconf -fiv
 
 

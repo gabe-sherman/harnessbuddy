@@ -36,6 +36,7 @@ _ALL_BUILD_SYSTEM_VARIANTS = [
     (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTORECONF),
     (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE),
     (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTOGEN),
+    (BuildSystem.AUTOTOOLS, AutotoolsSetup.BOOTSTRAP),
     (BuildSystem.MAKEFILE, None),
 ]
 
@@ -359,6 +360,7 @@ def test_linux_host_whole_archive_uses_linux_flags_for_local_environment() -> No
         (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTORECONF, "$SCRIPT_DIR/src/configure"),
         (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE, "$SCRIPT_DIR/src/configure"),
         (BuildSystem.AUTOTOOLS, AutotoolsSetup.AUTOGEN, "$SCRIPT_DIR/src/configure"),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.BOOTSTRAP, "$SCRIPT_DIR/src/configure"),
         (BuildSystem.MAKEFILE, None, "make -C $SCRIPT_DIR/src"),
     ],
 )
@@ -375,6 +377,7 @@ def test_build_library_script_autotools_configure_has_no_setup_step() -> None:
     )
     assert "autoreconf" not in script
     assert "autogen.sh" not in script
+    assert "./bootstrap" not in script
 
 
 def test_build_library_script_autotools_autogen_runs_autogen() -> None:
@@ -382,6 +385,14 @@ def test_build_library_script_autotools_autogen_runs_autogen() -> None:
         BuildSystem.AUTOTOOLS, _OSS_FUZZ_PATHS, autotools_setup=AutotoolsSetup.AUTOGEN
     )
     assert "./autogen.sh" in script
+
+
+def test_build_library_script_autotools_bootstrap_runs_bootstrap() -> None:
+    script = build_library_script(
+        BuildSystem.AUTOTOOLS, _OSS_FUZZ_PATHS, autotools_setup=AutotoolsSetup.BOOTSTRAP
+    )
+    assert "./bootstrap" in script
+    assert "./autogen.sh" not in script
 
 
 def test_build_library_script_autotools_autoreconf_runs_autoreconf() -> None:
