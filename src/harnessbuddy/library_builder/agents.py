@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -273,6 +274,49 @@ def _post_agent_validation_errors(
     return host_artifact_check()
 
 
+# Where every generated scaffold's setup.sh clones the library, and therefore the only source
+# location a published build_library.sh can rely on.
+_SCAFFOLD_SOURCE_DIR = "$SCRIPT_DIR/src"
+
+
+def _repaired_script_path(analysis: AnalysisResult, workdir: Path) -> Path | None:
+    """The agent-repaired build_library.sh to publish, or None when it cannot be reused.
+
+    A *generated* script only earns `script_path` under the standard workdir/src layout, since
+    otherwise the template bakes in this session's absolute source path
+    (`write_build_library_script`). A *repaired* one is judged on its own text instead: the
+    library-builder skill requires the agent to work through `$SCRIPT_DIR`/`$BUILD_PREFIX` and to
+    leave a script that "must succeed standalone against a freshly cloned source tree", so a fix
+    made against a non-standard layout is normally portable anyway -- and the layout gate alone
+    discarded it, silently regenerating from the template. For an undetected build system that
+    template is an empty stub, so the agent's script was the *only* thing that could ever build
+    the library, and the published scaffold could not (harnessbuddy#reuse-agent-fix).
+
+    What a published script actually needs is to find its source where the generated scaffold puts
+    it -- `setup.sh` clones to `$SCRIPT_DIR/src` -- so that reference, not the input layout, is the
+    test. Merely *naming* this session's path is not disqualifying on its own: agents commonly
+    resolve `$SCRIPT_DIR/src` first and keep the session checkout as a fallback, which travels
+    fine. Reuse is refused only when the session path is the sole source the script knows.
+    """
+    script_path = workdir / "build_library.sh"
+    if is_standard_source_layout(analysis, workdir):
+        return script_path
+    try:
+        script = script_path.read_text()
+    except OSError:
+        return None
+    session_path = str(analysis.source_path.resolve())
+    if _SCAFFOLD_SOURCE_DIR not in script and session_path in script:
+        print(
+            f"Warning: keeping the generated build_library.sh -- the agent's fix resolves its "
+            f"source only as {session_path}, which will not exist wherever this is published. "
+            f'Fixes must reach the source through "{_SCAFFOLD_SOURCE_DIR}".',
+            file=sys.stderr,
+        )
+        return None
+    return script_path
+
+
 def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
     analysis: AnalysisResult,
     exploration: BuildExplorationResult,
@@ -321,9 +365,7 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
         llm_used=True,
-        script_path=(
-            workdir / "build_library.sh" if is_standard_source_layout(analysis, workdir) else None
-        ),
+        script_path=_repaired_script_path(analysis, workdir) if succeeded else None,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,

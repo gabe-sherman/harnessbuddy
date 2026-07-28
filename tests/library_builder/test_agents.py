@@ -665,3 +665,113 @@ def test_harness_agent_success_reparses_fixed_script(tmp_path: Path) -> None:
     assert result.transitive_link_flags == ["-lresolv"]
     assert result.static_libs == [Path("libcares.a")]
     assert result.script_path == workdir / "compile_harness.sh"
+
+
+# build_library.sh reuse after a repair — a fix must not be silently discarded
+
+
+_PORTABLE_REPAIRED_SCRIPT = (
+    "#!/bin/bash\nset -euo pipefail\n"
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
+    'perl "$SCRIPT_DIR/src/Configure" no-shared --prefix="$BUILD_PREFIX/install"\n'
+    "make -j\nmake install_dev\n"
+)
+
+
+def _repaired_workdir(tmp_path: Path, script: str | None) -> Path:
+    """A workdir that passes the agent's post-run install check, holding `script` if given."""
+    workdir = tmp_path / "work"
+    (workdir / "install" / "lib").mkdir(parents=True)
+    (workdir / "install" / "include").mkdir(parents=True)
+    (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
+    (workdir / "install" / "include" / "foo.h").write_text("stub")
+    if script is not None:
+        (workdir / "build_library.sh").write_text(script)
+    return workdir
+
+
+def _repair(tmp_path: Path, workdir: Path, *, exit_code: int = 0) -> BuildExplorationResult:
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text="fixed the build", exit_code=exit_code, duration_seconds=1.0
+        ),
+    ):
+        return invoke_library_builder_agent(
+            _analysis(tmp_path), _failed_cmake_exploration(tmp_path), workdir
+        )
+
+
+def test_library_agent_publishes_a_portable_repaired_script(tmp_path: Path) -> None:
+    """A repair made against a non-standard source layout is still reusable when portable.
+
+    The old layout-only gate dropped it here and let generation regenerate from the template —
+    which for an undetected build system is an empty stub, so the published scaffold could not
+    build the library at all even though the agent had just built it.
+    """
+    workdir = _repaired_workdir(tmp_path, _PORTABLE_REPAIRED_SCRIPT)
+    result = _repair(tmp_path, workdir)
+    assert result.succeeded is True
+    assert result.script_path == workdir / "build_library.sh"
+
+
+def test_library_agent_publishes_a_script_that_falls_back_to_the_session_path(
+    tmp_path: Path,
+) -> None:
+    """Resolving $SCRIPT_DIR/src first and keeping the session checkout as a fallback travels fine.
+
+    This is the shape agents actually produce against a non-standard layout, so *mentioning* the
+    session path must not disqualify a script -- only relying on it exclusively does.
+    """
+    workdir = _repaired_workdir(
+        tmp_path,
+        f'if [ -d "$SCRIPT_DIR/src" ]; then\n  SOURCE_DIR="$SCRIPT_DIR/src"\n'
+        f'else\n  SOURCE_DIR="{tmp_path.resolve()}"\nfi\n'
+        f'perl "$SOURCE_DIR/Configure" no-shared\n',
+    )
+    assert _repair(tmp_path, workdir).script_path == workdir / "build_library.sh"
+
+
+def test_library_agent_withholds_a_script_knowing_only_the_session_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one thing that really rules out reuse: the session path as the sole source."""
+    workdir = _repaired_workdir(
+        tmp_path, f'cmake -S "{tmp_path.resolve()}" -B "$BUILD_PREFIX/build"\n'
+    )
+    result = _repair(tmp_path, workdir)
+    assert result.succeeded is True
+    assert result.script_path is None
+    assert "will not exist wherever this is published" in capsys.readouterr().err
+
+
+def test_library_agent_withholds_a_script_it_never_wrote(tmp_path: Path) -> None:
+    workdir = _repaired_workdir(tmp_path, None)
+    assert _repair(tmp_path, workdir).script_path is None
+
+
+def test_library_agent_withholds_the_script_when_the_repair_failed(tmp_path: Path) -> None:
+    """An unvalidated script must not be published: install/ is absent, so the fix is unproven."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "build_library.sh").write_text(_PORTABLE_REPAIRED_SCRIPT)
+    result = _repair(tmp_path, workdir)
+    assert result.succeeded is False
+    assert result.script_path is None
+
+
+def test_library_agent_keeps_publishing_under_the_standard_layout(tmp_path: Path) -> None:
+    """The workdir/src layout is portable by construction and stays unconditionally reusable."""
+    workdir = _repaired_workdir(tmp_path, _PORTABLE_REPAIRED_SCRIPT)
+    source = workdir / "src"
+    source.mkdir()
+    analysis = replace(_analysis(tmp_path), source_path=source)
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(combined_text="fixed", exit_code=0, duration_seconds=1.0),
+    ):
+        result = invoke_library_builder_agent(
+            analysis, _failed_cmake_exploration(tmp_path), workdir
+        )
+    assert result.script_path == workdir / "build_library.sh"
