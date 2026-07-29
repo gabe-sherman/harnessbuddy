@@ -69,7 +69,6 @@ on a different machine or in a fresh container.
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
    - Write `agent_report.json` (see below), listing both package names, before exiting.
-   - Exit with a non-zero status code to signal incomplete execution.
    - Do not proceed further.
 7. Once any required packages are installed, run the verification command given in the
    failure context below (not build_library.sh directly) to confirm the fix works in the
@@ -114,22 +113,33 @@ on the reading side. This is the only machine-readable report file you should wr
 
 ## Stopping conditions
 
+You cannot signal an outcome through your process exit code — the runner invokes you via
+`claude --print`, which exits 0 whenever the CLI itself ran, no matter how you decided to
+stop. The `ACTION REQUIRED` line and `agent_report.json` are the only signals the caller
+reads, so a stop that needs human action is detected *only* if you print that exact
+marker.
+
 **Success** — the verification command exits 0. Write `agent_report.json` first, then
-print a short success summary and exit 0.
+print a short success summary.
+
+**Blocked on human action** (a package that must be installed) — print the exact
+`ACTION REQUIRED:` line from step 6 and write `agent_report.json` with the package names.
 
 **Unresolvable failure** — if the verification command still fails after your fix
-attempt, or if you cannot determine a fix, stop immediately. Print to stdout:
+attempt, or if you cannot determine a fix, stop immediately. Write `agent_report.json`
+first, then print to stdout:
 - What you diagnosed as the root cause
 - What fix(es) you attempted (if any)
 - The exact error from the build output
 
-Write `agent_report.json` first, then exit with a non-zero status code. Do not retry
-indefinitely or attempt speculative fixes beyond what the evidence supports.
+Do not retry indefinitely or attempt speculative fixes beyond what the evidence supports.
+The caller detects this case by checking `install/lib` and `install/include` itself, so no
+marker is needed — but put the diagnosis in `summary` so it reaches the failure report.
 
 ## Important: non-interactive execution
 
 This agent may be run non-interactively (e.g. via `claude --print`). In that
 mode there is no user to respond to mid-run prompts. Never pause to ask the
 user a question. If human input is required (e.g. to install packages), write
-all necessary context to stdout, write any helper scripts to disk, and exit
-with a non-zero status so the caller can detect and surface the situation.
+all necessary context to stdout, write any helper scripts to disk, and print the
+`ACTION REQUIRED` marker so the caller can detect and surface the situation.

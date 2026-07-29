@@ -737,6 +737,16 @@ def _agent_stop_diagnostic(
     from harnessbuddy.library_builder.agents import LLMBudgetError
 
     message = exc.report.summary if exc.report and exc.report.summary else str(exc)
+    if exc.report and (exc.report.missing_apt_packages or exc.report.missing_brew_packages):
+        apt_hint = " ".join(exc.report.missing_apt_packages) or "(none mapped)"
+        brew_hint = " ".join(exc.report.missing_brew_packages) or "(none mapped)"
+        message = (
+            f"{message}\n\n"
+            f"Missing system packages:\n"
+            f"  apt:  {apt_hint}\n"
+            f"  brew: {brew_hint}\n"
+            "Install these packages and re-run."
+        )
     step = (
         "LLM usage/rate limit"
         if isinstance(exc, LLMBudgetError)

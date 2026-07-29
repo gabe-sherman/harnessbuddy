@@ -72,8 +72,7 @@ won't exist on a different machine or in a fresh container.
      `agent_report.json` fields), print:
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
-     Write `agent_report.json`, exit with a non-zero status code, and do not proceed
-     further.
+     Write `agent_report.json`, and do not proceed further.
 5. Once you've made a fix, run the verification command given in the failure context below
    (not compile_harness.sh directly) to confirm it now succeeds in the selected target
    environment and a binary appears in out/.
@@ -121,22 +120,33 @@ reading side.
 
 ## Stopping conditions
 
+You cannot signal an outcome through your process exit code — the runner invokes you via
+`claude --print`, which exits 0 whenever the CLI itself ran, no matter how you decided to
+stop. The `ACTION REQUIRED` line and `agent_report.json` are the only signals the caller
+reads, so a stop that needs human action is detected *only* if you print that exact
+marker.
+
 **Success** — the verification command exits 0. Write `agent_report.json` first, then
-print a short success summary and exit 0.
+print a short success summary.
+
+**Blocked on human action** (a library that must be installed) — print the exact
+`ACTION REQUIRED:` line from step 4 and write `agent_report.json` with the package names.
 
 **Unresolvable failure** — if the verification command still fails after your fix
-attempt, or if you cannot determine a fix, stop immediately. Print to stdout:
+attempt, or if you cannot determine a fix, stop immediately. Write `agent_report.json`
+first, then print to stdout:
 - What you diagnosed as the root cause
 - What fix(es) you attempted (if any)
 - The exact error from the build output
 
-Write `agent_report.json` first, then exit with a non-zero status code. Do not retry
-indefinitely or attempt speculative fixes beyond what the evidence supports.
+Do not retry indefinitely or attempt speculative fixes beyond what the evidence supports.
+The caller detects this case by checking `out/` for a linked binary itself, so no marker is
+needed — but put the diagnosis in `summary` so it reaches the failure report.
 
 ## Important: non-interactive execution
 
 This agent may be run non-interactively (e.g. via `claude --print`). In that
 mode there is no user to respond to mid-run prompts. Never pause to ask the
 user a question. If human input is required (e.g. to install packages), write
-all necessary context to stdout, write any helper scripts to disk, and exit
-with a non-zero status so the caller can detect and surface the situation.
+all necessary context to stdout, write any helper scripts to disk, and print the
+`ACTION REQUIRED` marker so the caller can detect and surface the situation.

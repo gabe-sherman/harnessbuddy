@@ -165,10 +165,18 @@ class LLMBudgetError(Exception):
 def _raise_for_agent_failure(
     exit_code: int, combined_output: str, summary: AgentRunSummary, report: AgentReport | None
 ) -> None:
-    """Raise LLMBudgetError or BuildFailureError if agent output signals either condition."""
-    if exit_code == 0:
-        return
-    if _BUDGET_PATTERN.search(combined_output):
+    """Raise LLMBudgetError or BuildFailureError if agent output signals either condition.
+
+    The two conditions are detected differently because they are emitted by different
+    layers. A budget/rate limit comes from the agent CLI itself, which does fail the
+    process, so it stays gated on a non-zero exit code -- that gate is also what keeps
+    _BUDGET_PATTERN's looser alternatives (a bare "429", "rate limit") from matching a
+    build log that merely mentions them. ACTION REQUIRED is emitted by the *model*, which
+    has no way to set the process exit code: `claude --print` exits 0 whenever the CLI ran,
+    however the agent decided to stop. Gating it on exit_code made it unreachable in
+    practice, so the marker is honored on its own.
+    """
+    if _BUDGET_PATTERN.search(combined_output) and exit_code != 0:
         raise LLMBudgetError(combined_output, summary, report)
     if _ACTION_REQUIRED in combined_output:
         raise BuildFailureError(combined_output, summary, report)
@@ -180,6 +188,8 @@ def _determine_outcome(exit_code: int, combined_text: str) -> str:
         return "budget_limited"
     if exit_code == -1:
         return "timed_out"
+    if _ACTION_REQUIRED in combined_text:
+        return "action_required"
     return "succeeded" if exit_code == 0 else "failed"
 
 
