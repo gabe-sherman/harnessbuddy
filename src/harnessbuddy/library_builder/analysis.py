@@ -108,7 +108,7 @@ def _detect_headers(root: Path) -> list[Path]:
 def _detect_language(root: Path) -> Language:
     """Determine the dominant C/C++ language by running cloc, falling back to headers."""
     result = subprocess.run(
-        ["cloc", "--json", str(root)],
+        ["cloc", "--json", str(root) , "--timeout",  "120"],
         capture_output=True,
         text=True,
         timeout=60,
