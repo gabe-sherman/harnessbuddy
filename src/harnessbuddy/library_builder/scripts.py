@@ -93,7 +93,7 @@ def _build_body(
             '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
             f"  -DCMAKE_INSTALL_PREFIX={install_dir} \\\n"
             "  -DBUILD_SHARED_LIBS=OFF\n"
-            f"cmake --build {build_dir} -- -j$(nproc)\n"
+            f'JOBS=$(nproc); cmake --build {build_dir} -- -j$(( JOBS > 4 ? 4 : JOBS ))\n'
             f"cmake --install {build_dir}\n"
         )
     if build_system == BuildSystem.MESON:
