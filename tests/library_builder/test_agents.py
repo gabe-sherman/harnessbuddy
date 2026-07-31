@@ -207,6 +207,7 @@ def test_action_required_raises_build_failure_error(tmp_path: Path) -> None:
                 exit_code=1,
                 duration_seconds=1.0,
                 cost_usd=0.02,
+                model_text=action_required_text,
             ),
         ),
         pytest.raises(BuildFailureError) as exc_info,
@@ -336,6 +337,7 @@ def test_harness_action_required_raises_build_failure_error(tmp_path: Path) -> N
                 exit_code=1,
                 duration_seconds=1.0,
                 cost_usd=0.04,
+                model_text=action_required_text,
             ),
         ),
         pytest.raises(BuildFailureError) as exc_info,
@@ -775,3 +777,64 @@ def test_library_agent_keeps_publishing_under_the_standard_layout(tmp_path: Path
             analysis, _failed_cmake_exploration(tmp_path), workdir
         )
     assert result.script_path == workdir / "build_library.sh"
+
+
+# ACTION REQUIRED is read from the model's own text, not from its whole transcript
+
+
+_SKILL_QUOTE_IN_TRANSCRIPT = (
+    "Reading /repo/agents/library_builder/SKILL.md\n"
+    "68\t   - Say clearly, in your own reply text, what is needed:\n"
+    '69\t     "ACTION REQUIRED: Missing system packages detected. Please review '
+    "agent_report.json\n"
+    '70\t      and install the listed packages, then re-run this agent."\n'
+)
+
+
+def test_marker_quoted_in_tool_output_does_not_fail_a_verified_build(tmp_path: Path) -> None:
+    """The OpenSSL regression: reading a file that documents the marker is not a stop signal.
+
+    The agent repaired the build, verification exited 0 and the artifacts were on disk -- but it
+    had also read the skill that quotes `ACTION REQUIRED` four times, and a transcript-wide
+    substring match reported action_required and raised BuildFailureError.
+    """
+    workdir = _repaired_workdir(tmp_path, _PORTABLE_REPAIRED_SCRIPT)
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text=f"{_SKILL_QUOTE_IN_TRANSCRIPT}\nVERIFY_EXIT=0",
+            exit_code=0,
+            duration_seconds=1.0,
+            model_text="Build fixed -- verification exits 0.",
+        ),
+    ):
+        result = invoke_library_builder_agent(
+            _analysis(tmp_path), _failed_cmake_exploration(tmp_path), workdir
+        )
+    assert result.succeeded is True
+    assert "outcome: succeeded" in (workdir / "agent_library_build.log").read_text()
+
+
+def test_marker_quoted_in_tool_output_does_not_fail_a_verified_harness(tmp_path: Path) -> None:
+    """Same channel discipline on the harness-builder side, which shares the detection code."""
+    workdir = tmp_path / "work"
+    (workdir / "out").mkdir(parents=True)
+    (workdir / "out" / "default_fuzzer").write_text("stub binary")
+    (workdir / "compile_harness.sh").write_text(
+        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libcares.a"\n)\n\nEXTRA_LINK_FLAGS="-lresolv"\n'
+    )
+    with patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming",
+        return_value=AgentStreamResult(
+            combined_text=_SKILL_QUOTE_IN_TRANSCRIPT,
+            exit_code=0,
+            duration_seconds=1.0,
+            model_text="Linked successfully.",
+        ),
+    ):
+        result = invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `foo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+        )
+    assert result.succeeded is True

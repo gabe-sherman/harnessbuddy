@@ -163,41 +163,56 @@ class LLMBudgetError(Exception):
 
 
 def _raise_for_agent_failure(
-    exit_code: int, combined_output: str, summary: AgentRunSummary, report: AgentReport | None
+    result: AgentStreamResult, summary: AgentRunSummary, report: AgentReport | None
 ) -> None:
     """Raise LLMBudgetError or BuildFailureError if agent output signals either condition.
 
     The two conditions are detected differently because they are emitted by different
-    layers. A budget/rate limit comes from the agent CLI itself, which does fail the
-    process, so it stays gated on a non-zero exit code -- that gate is also what keeps
-    _BUDGET_PATTERN's looser alternatives (a bare "429", "rate limit") from matching a
-    build log that merely mentions them. ACTION REQUIRED is emitted by the *model*, which
-    has no way to set the process exit code: `claude --print` exits 0 whenever the CLI ran,
-    however the agent decided to stop. Gating it on exit_code made it unreachable in
-    practice, so the marker is honored on its own.
+    layers, so they are read from different channels of the stream.
+
+    A budget/rate limit comes from the agent CLI itself, not the model, and surfaces
+    anywhere in the transcript (an unparsed stderr line, an error event) -- so it is
+    matched against combined_text, and does fail the process, so it stays gated on a
+    non-zero exit code. That gate is also what keeps _BUDGET_PATTERN's looser
+    alternatives (a bare "429", "rate limit") from matching a build log that merely
+    mentions them.
+
+    ACTION REQUIRED is emitted by the *model*, which has no way to set the process exit
+    code: `claude --print` exits 0 whenever the CLI ran, however the agent decided to
+    stop. Gating it on exit_code made it unreachable in practice, so the marker is
+    honored on its own -- which makes it matter *where* the marker is read from. It is
+    matched only against model_text, what the model actually wrote. Against
+    combined_text, an agent that merely *read* a file quoting the marker failed the run:
+    the library-builder SKILL.md documents the marker four times, and an OpenSSL repair
+    that verified clean and produced working artifacts was reported as action_required
+    purely because the agent had read its own instructions off disk.
     """
-    if _BUDGET_PATTERN.search(combined_output) and exit_code != 0:
-        raise LLMBudgetError(combined_output, summary, report)
-    if _ACTION_REQUIRED in combined_output:
-        raise BuildFailureError(combined_output, summary, report)
+    if _BUDGET_PATTERN.search(result.combined_text) and result.exit_code != 0:
+        raise LLMBudgetError(result.combined_text, summary, report)
+    if _ACTION_REQUIRED in result.model_text:
+        raise BuildFailureError(result.combined_text, summary, report)
 
 
-def _determine_outcome(exit_code: int, combined_text: str) -> str:
-    """Classify an agent invocation's outcome for the persisted/printed summary."""
-    if _BUDGET_PATTERN.search(combined_text):
+def _determine_outcome(result: AgentStreamResult) -> str:
+    """Classify an agent invocation's outcome for the persisted/printed summary.
+
+    Reads each signal from the same channel _raise_for_agent_failure does, so the printed
+    outcome can't disagree with whether an exception was raised.
+    """
+    if _BUDGET_PATTERN.search(result.combined_text):
         return "budget_limited"
-    if exit_code == -1:
+    if result.exit_code == -1:
         return "timed_out"
-    if _ACTION_REQUIRED in combined_text:
+    if _ACTION_REQUIRED in result.model_text:
         return "action_required"
-    return "succeeded" if exit_code == 0 else "failed"
+    return "succeeded" if result.exit_code == 0 else "failed"
 
 
 def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -> AgentRunSummary:
     """Write the persisted transcript+summary report and print the summary to the terminal."""
     summary = AgentRunSummary(
         backend=tool,
-        outcome=_determine_outcome(result.exit_code, result.combined_text),
+        outcome=_determine_outcome(result),
         duration_seconds=result.duration_seconds,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
@@ -352,7 +367,7 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     result = run_agent_streaming(cmd, workdir, timeout, tool)
     summary = _report_agent_run(workdir / "agent_library_build.log", tool, result)
     report = read_agent_report(workdir)
-    _raise_for_agent_failure(result.exit_code, result.combined_text, summary, report)
+    _raise_for_agent_failure(result, summary, report)
 
     succeeded = result.exit_code == 0
     stderr = ""
@@ -460,7 +475,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
     summary = _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
     report = read_agent_report(paths.workdir)
-    _raise_for_agent_failure(result.exit_code, result.combined_text, summary, report)
+    _raise_for_agent_failure(result, summary, report)
 
     succeeded = result.exit_code == 0
     stderr = ""

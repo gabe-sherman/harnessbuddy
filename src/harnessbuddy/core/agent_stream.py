@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 AgentActivityKind = Literal[
-    "status", "file_read", "file_edit", "command_run", "tool_result", "raw_fallback"
+    "model_text", "status", "file_read", "file_edit", "command_run", "tool_result", "raw_fallback"
 ]
 
 
@@ -21,12 +21,30 @@ class AgentActivityEvent:
 
 @dataclass
 class AgentStreamResult:
+    """One agent invocation's output, split into two channels.
+
+    `combined_text` is the whole rendered transcript — every event, including tool
+    results (file contents the agent read, output of commands it ran) and our own
+    narration lines. It's what gets persisted for a human to read.
+
+    `model_text` is only what the *model itself* wrote as its response: Claude `text`
+    content blocks and Codex `agent_message` items. Match on this, not on
+    `combined_text`, when looking for a marker the model was instructed to *print* —
+    e.g. `ACTION REQUIRED`. Searching the full transcript makes any file quoting the
+    marker (its own SKILL.md, notably) trip it, failing a build that succeeded.
+
+    Thinking/reasoning blocks are deliberation, not output, so they are deliberately
+    excluded from `model_text` too: an agent weighing whether to print a marker must
+    not be read as having printed it.
+    """
+
     combined_text: str
     exit_code: int
     duration_seconds: float
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    model_text: str = ""
 
 
 _CLAUDE_READ_TOOLS = {"Read"}
@@ -63,7 +81,7 @@ def _tool_result_text(content: Any) -> str:
 def _claude_content_block_event(block: dict[str, Any]) -> AgentActivityEvent | None:
     block_type = block.get("type")
     if block_type == "text":
-        return AgentActivityEvent("status", block.get("text", ""))
+        return AgentActivityEvent("model_text", block.get("text", ""))
     if block_type == "thinking":
         thinking = block.get("thinking") or ""
         return AgentActivityEvent("status", f"Thinking: {thinking}") if thinking else None
@@ -115,7 +133,7 @@ def _codex_item_event(item: dict[str, Any]) -> AgentActivityEvent | None:
     if item_type == "agent_message":
         # Codex's equivalent of a Claude plain-text assistant content block — the
         # model's actual response text, not an internal reasoning trace.
-        return AgentActivityEvent("status", item.get("text", ""))
+        return AgentActivityEvent("model_text", item.get("text", ""))
     if item_type == "reasoning":
         # Codex's equivalent of Claude's "thinking" content block.
         text = item.get("text") or ""
@@ -224,6 +242,7 @@ def run_agent_streaming(
 
     start = time.monotonic()
     texts: list[str] = []
+    model_texts: list[str] = []
     acc = _StreamAccumulator()
     proc = subprocess.Popen(
         command,
@@ -239,6 +258,8 @@ def run_agent_streaming(
             for event in parse_line(line):
                 print(event.text, flush=True)
                 texts.append(event.text)
+                if event.kind == "model_text":
+                    model_texts.append(event.text)
             _apply_line_stats(acc, tool, line)
         proc.wait(timeout=timeout)
         exit_code = proc.returncode
@@ -254,6 +275,7 @@ def run_agent_streaming(
         cost_usd=acc.cost_usd,
         input_tokens=acc.input_tokens,
         output_tokens=acc.output_tokens,
+        model_text="\n".join(model_texts),
     )
 
 

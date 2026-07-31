@@ -776,10 +776,12 @@ def test_generate_agent_report_summary_reaches_stats_on_library_action_required(
                 }
             )
         )
+        marker = "ACTION REQUIRED: install libssl-dev"
         return AgentStreamResult(
-            combined_text="ACTION REQUIRED: install libssl-dev",
+            combined_text=marker,
             exit_code=1,
             duration_seconds=1.0,
+            model_text=marker,
         )
 
     with (
@@ -894,10 +896,12 @@ def test_generate_agent_report_summary_reaches_stats_on_harness_action_required(
                 }
             )
         )
+        marker = "ACTION REQUIRED: install libfoo-dev"
         return AgentStreamResult(
-            combined_text="ACTION REQUIRED: install libfoo-dev",
+            combined_text=marker,
             exit_code=1,
             duration_seconds=1.0,
+            model_text=marker,
         )
 
     with (
@@ -1054,10 +1058,12 @@ def test_generate_library_missing_package_reaches_state_then_next_run_output(
                 }
             )
         )
+        marker = "ACTION REQUIRED: install libssl-dev"
         return AgentStreamResult(
-            combined_text="ACTION REQUIRED: install libssl-dev",
+            combined_text=marker,
             exit_code=1,
             duration_seconds=1.0,
+            model_text=marker,
         )
 
     with (
@@ -1251,10 +1257,12 @@ def test_generate_harness_missing_package_reaches_state_then_next_run_output(
                 }
             )
         )
+        marker = "ACTION REQUIRED: install libfoo-dev"
         return AgentStreamResult(
-            combined_text="ACTION REQUIRED: install libfoo-dev",
+            combined_text=marker,
             exit_code=1,
             duration_seconds=1.0,
+            model_text=marker,
         )
 
     with (

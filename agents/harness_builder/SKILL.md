@@ -69,9 +69,11 @@ won't exist on a different machine or in a fresh container.
    EXTRA_LINK_FLAGS yourself, since you cannot verify a fix you cannot compile.
      Instead, identify the bare library name and report it via `missing_libs` (see
      below), determine the actual apt and brew package names independently (see
-     `agent_report.json` fields), print:
+     `agent_report.json` fields), and say in your own reply text:
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
+     Write that line yourself — not through `echo` or any other command, and not only
+     inside a file. The caller reads the marker from your response text only.
      Write `agent_report.json`, and do not proceed further.
 5. Once you've made a fix, run the verification command given in the failure context below
    (not compile_harness.sh directly) to confirm it now succeeds in the selected target
@@ -123,18 +125,23 @@ reading side.
 You cannot signal an outcome through your process exit code — the runner invokes you via
 `claude --print`, which exits 0 whenever the CLI itself ran, no matter how you decided to
 stop. The `ACTION REQUIRED` line and `agent_report.json` are the only signals the caller
-reads, so a stop that needs human action is detected *only* if you print that exact
+reads, so a stop that needs human action is detected *only* if you write that exact
 marker.
 
-**Success** — the verification command exits 0. Write `agent_report.json` first, then
-print a short success summary.
+The caller scans your response text for the marker — not the command output or file
+contents in your transcript. So the marker counts only when *you* write it, and quoting
+it while explaining something (including quoting this document) does not accidentally
+signal a stop.
 
-**Blocked on human action** (a library that must be installed) — print the exact
+**Success** — the verification command exits 0. Write `agent_report.json` first, then
+give a short success summary.
+
+**Blocked on human action** (a library that must be installed) — write the exact
 `ACTION REQUIRED:` line from step 4 and write `agent_report.json` with the package names.
 
 **Unresolvable failure** — if the verification command still fails after your fix
 attempt, or if you cannot determine a fix, stop immediately. Write `agent_report.json`
-first, then print to stdout:
+first, then report:
 - What you diagnosed as the root cause
 - What fix(es) you attempted (if any)
 - The exact error from the build output
@@ -147,6 +154,6 @@ needed — but put the diagnosis in `summary` so it reaches the failure report.
 
 This agent may be run non-interactively (e.g. via `claude --print`). In that
 mode there is no user to respond to mid-run prompts. Never pause to ask the
-user a question. If human input is required (e.g. to install packages), write
-all necessary context to stdout, write any helper scripts to disk, and print the
-`ACTION REQUIRED` marker so the caller can detect and surface the situation.
+user a question. If human input is required (e.g. to install packages), put all
+necessary context in your reply, write any helper scripts to disk, and write the
+`ACTION REQUIRED` marker yourself so the caller can detect and surface the situation.

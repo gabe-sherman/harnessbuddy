@@ -47,10 +47,10 @@ class _FakeProcess:
 # --- Claude ---
 
 
-def test_parse_claude_line_text_block_is_status() -> None:
+def test_parse_claude_line_text_block_is_model_text() -> None:
     events = [e for line in _claude_lines() for e in _parse_claude_line(line)]
-    status_events = [e for e in events if e.kind == "status"]
-    assert any("failing build script" in e.text for e in status_events)
+    model_events = [e for e in events if e.kind == "model_text"]
+    assert any("failing build script" in e.text for e in model_events)
 
 
 def test_parse_claude_line_empty_thinking_emits_nothing() -> None:
@@ -143,6 +143,33 @@ def test_parse_claude_result_line_extracts_token_usage() -> None:
     assert output_tokens == 812
 
 
+def test_claude_stream_model_text_holds_only_the_models_own_text(tmp_path: Path) -> None:
+    # model_text is the channel marker detection reads (see AgentStreamResult): it must
+    # carry the model's text blocks and nothing else, so a file the agent read or a
+    # command it ran can never be mistaken for something the agent said.
+    fake_proc = _FakeProcess([line + "\n" for line in _claude_lines()])
+    with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
+        result = run_agent_streaming(["claude", "--print"], tmp_path, 60, "claude")
+    assert result.model_text == (
+        "I'll start by reading the failing build script.\n"
+        "The build now succeeds after disabling shared libraries."
+    )
+    # The excluded material is still in the persisted transcript.
+    assert "Built target foo" in result.combined_text
+    assert "Thinking: " in result.combined_text
+    assert "Reading /work/build_library.sh" in result.combined_text
+
+
+def test_codex_stream_model_text_holds_only_the_models_own_text(tmp_path: Path) -> None:
+    fake_proc = _FakeProcess([line + "\n" for line in _codex_lines()])
+    with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
+        result = run_agent_streaming(["codex", "exec"], tmp_path, 60, "codex")
+    assert "hello world" in result.model_text
+    assert "Thinking: " not in result.model_text
+    assert "Running: " not in result.model_text
+    assert "Warning: " not in result.model_text
+
+
 def test_claude_stream_extracts_cost_and_token_usage(tmp_path: Path) -> None:
     fake_proc = _FakeProcess([line + "\n" for line in _claude_lines()])
     with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
@@ -171,12 +198,12 @@ def test_parse_codex_line_file_change_is_file_edit() -> None:
     assert "build_library.sh" in file_edits[0].text
 
 
-def test_parse_codex_line_agent_message_is_status() -> None:
+def test_parse_codex_line_agent_message_is_model_text() -> None:
     # codex_stream_sample.jsonl's "agent_message" item is the model's actual
     # response text — Codex's equivalent of Claude's plain-text content block.
     events = [e for line in _codex_lines() for e in _parse_codex_line(line)]
-    status_events = [e for e in events if e.kind == "status"]
-    assert any("hello world" in e.text for e in status_events)
+    model_events = [e for e in events if e.kind == "model_text"]
+    assert any("hello world" in e.text for e in model_events)
 
 
 def test_parse_codex_line_reasoning_is_status() -> None:
