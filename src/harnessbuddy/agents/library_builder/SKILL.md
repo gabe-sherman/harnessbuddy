@@ -59,18 +59,16 @@ on a different machine or in a fresh container.
    the core static library. Only escalate to package installation if the missing dependency
    is critical to the library's core functionality (not just for optional functionality).
 6. If a required package cannot be avoided:
-   - Determine the actual installable package name for both Debian/Ubuntu (`apt-get`) and
-     Homebrew (`brew`) from your own knowledge. These are frequently different from each
-     other and from the library name itself — e.g. OpenLDAP is `libldap2-dev` on apt but
-     `openldap` on brew. Do not guess a single name and reuse it for both; work out each
-     independently. If uncertain of the exact package name, say so in `summary` rather
+   - Determine the actual installable Debian/Ubuntu (`apt-get`) package name from your own
+     knowledge. It is frequently different from the library name itself — e.g. OpenLDAP is
+     `libldap2-dev`. If uncertain of the exact package name, say so in `summary` rather
      than asserting it confidently. Do not install anything yourself.
    - Say clearly, in your own reply text, what is needed:
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
      Write that line yourself — not through `echo` or any other command, and not only
      inside a file. The caller reads the marker from your response text only.
-   - Write `agent_report.json` (see below), listing both package names, before exiting.
+   - Write `agent_report.json` (see below), listing the package names, before exiting.
    - Do not proceed further.
 7. Once any required packages are installed, run the verification command given in the
    failure context below (not build_library.sh directly) to confirm the fix works in the
@@ -88,7 +86,6 @@ Before exiting — on **every** outcome, success or stop-for-human-action — wr
 {
   "summary": "Disabled optional SSL support via -DWITH_SSL=OFF; libssl-dev was unavailable.",
   "missing_apt_packages": ["libssl-dev", "libz-dev"],
-  "missing_brew_packages": ["openssl", "zlib"],
   "extra_include_paths": ["./src/"],
   "extra_library_paths": ["./src/build"]
 }
@@ -98,11 +95,9 @@ Before exiting — on **every** outcome, success or stop-for-human-action — wr
   include this, on both success and failure.
 - `missing_apt_packages` (array of strings): Debian/Ubuntu `apt-get install` package
   names still needed (e.g. `"libssl-dev"`). Empty array if none. Correctness is of
-  utmost importance — do not list a package unless you are sure it exists.
-- `missing_brew_packages` (array of strings): Homebrew `brew install` formula names for
-  the same dependencies (e.g. `"openssl"`). Often a different string than the apt
-  package — work out both independently rather than reusing one for the other. Empty
-  array if none.
+  utmost importance — do not list a package unless you are sure it exists. Every name here
+  reaches the generated `setup.sh` and Dockerfile, so this is how a package you needed gets
+  installed wherever the output is used.
 - `extra_include_paths` (array of strings): relative paths, outside `install/include`,
   that a downstream harness-compilation step should add to its `-I` search path if you
   discovered the build needs one. Empty array if none.

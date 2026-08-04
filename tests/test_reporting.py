@@ -7,7 +7,6 @@ from harnessbuddy.core.reporting import (
     Phase,
     PhaseExecution,
     PhaseReporter,
-    RunReport,
     build_diagnostic,
     format_diagnostic,
     format_phase_end_banner,
@@ -66,31 +65,6 @@ def test_phase_execution_double_transition_raises() -> None:
     execution.mark_succeeded()
     with pytest.raises(ValueError, match="succeeded"):
         execution.mark_failed()
-
-
-# RunReport
-
-
-def test_run_report_add_phase_preserves_order() -> None:
-    report = RunReport()
-    first = PhaseExecution(phase=Phase.INGESTION, started_at=1.0)
-    second = PhaseExecution(phase=Phase.STATIC_ANALYSIS, started_at=2.0)
-    report.add_phase(first)
-    report.add_phase(second)
-    assert report.phases == [first, second]
-
-
-def test_run_report_add_diagnostic_preserves_order() -> None:
-    report = RunReport()
-    first = build_diagnostic(
-        Phase.STATIC_LIBRARY_BUILD, step="build", message="a", origin="deterministic"
-    )
-    second = build_diagnostic(
-        Phase.HARNESS_COMPILE_PROBE, step="probe", message="b", origin="deterministic"
-    )
-    report.add_diagnostic(first)
-    report.add_diagnostic(second)
-    assert report.diagnostics == [first, second]
 
 
 # summarize_message
@@ -281,19 +255,3 @@ def test_phase_reporter_auto_fails_on_exception(capsys: pytest.CaptureFixture[st
 def test_phase_reporter_does_not_swallow_exception() -> None:
     with pytest.raises(RuntimeError, match="boom"), PhaseReporter(Phase.STATIC_LIBRARY_BUILD):
         raise RuntimeError("boom")
-
-
-def test_phase_reporter_adds_execution_to_run_report() -> None:
-    report = RunReport()
-    with PhaseReporter(Phase.STATIC_LIBRARY_BUILD, run_report=report) as reporter:
-        reporter.succeed()
-    assert report.phases == [reporter.execution]
-
-
-def test_phase_reporter_set_log_path() -> None:
-    from pathlib import Path
-
-    with PhaseReporter(Phase.STATIC_LIBRARY_BUILD) as reporter:
-        reporter.set_log_path(Path("/tmp/foo.log"))
-        reporter.succeed()
-    assert reporter.execution.log_path == Path("/tmp/foo.log")

@@ -4,17 +4,23 @@ import json
 import logging
 import os
 import re
-import stat
 from pathlib import Path
 
+from harnessbuddy.core.files import write_executable
 from harnessbuddy.core.subprocesses import Runner, run_command
 from harnessbuddy.library_builder.environments.base import Environment
-from harnessbuddy.library_builder.models import HarnessExplorationResult, Language
+from harnessbuddy.library_builder.models import (
+    HarnessExplorationResult,
+    Language,
+    LinkConfiguration,
+)
 from harnessbuddy.library_builder.scripts import (
+    HARNESS_SOURCE_DIR,
     build_harness_script,
     build_harnesses_script,
     write_default_fuzzer,
 )
+from harnessbuddy.library_builder.timeouts import HARNESS_PROBE_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +44,6 @@ _LIB_PATTERNS: dict[str, re.Pattern[str]] = {
 # Matches operator new/delete, exception-handling (__cxa_), and personality routine.
 _CXX_ABI_RE = re.compile(r"operator (?:new|delete)\b|__cxa_|__gxx_personality")
 
-# Mirrors scripts.py's build_harness_script format, used to re-derive STATIC_LIBS /
-# EXTRA_LINK_FLAGS from a (possibly agent-edited) compile_harness.sh after a fix, since
-# an agent may hand-edit these variables directly rather than us regenerating them.
-_STATIC_LIBS_BLOCK_RE = re.compile(r"STATIC_LIBS=\((.*?)\n\)", re.DOTALL)
-_STATIC_LIB_ENTRY_RE = re.compile(r'"\$INSTALL_DIR/lib/([^"]+)"')
-_EXTRA_LINK_FLAGS_RE = re.compile(r'^EXTRA_LINK_FLAGS=(?:"([^"]*)")?\s*$', re.MULTILINE)
-_EXTRA_LIB_PATHS_RE = re.compile(r'^EXTRA_LIB_PATHS=(?:"([^"]*)")?\s*$', re.MULTILINE)
-_BREW_LIB_PREFIX = "-L$(brew --prefix)/lib "
-
 
 def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is a distinct required input
     install_dir: Path,
@@ -60,23 +57,22 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
 ) -> HarnessExplorationResult:
     """Test harness compilation against install artifacts to discover transitive deps.
 
-    Uses --whole-archive (or macOS equivalent) to force all library symbols in, which
-    surfaces every undefined transitive dependency. Retries up to _MAX_ATTEMPTS times,
-    accumulating resolved -l flags from linker errors, seeded with _DEFAULT_LINK_FLAGS
-    (flags needed regardless of whether linking surfaces them as undefined symbols).
-    Returns the result regardless of success; callers use HarnessExplorationResult.succeeded
-    to decide behaviour.
+    Uses --whole-archive to force all library symbols in, which surfaces every undefined
+    transitive dependency. Retries up to _MAX_ATTEMPTS times, accumulating resolved -l
+    flags from linker errors, seeded with _DEFAULT_LINK_FLAGS (flags needed regardless of
+    whether linking surfaces them as undefined symbols). Returns the result regardless of
+    success; callers use HarnessExplorationResult.succeeded to decide behaviour.
 
     extra_include_paths/extra_library_paths are fixed inputs (e.g. from a prior agent's
     AgentReport) threaded unchanged into every returned HarnessExplorationResult.
 
-    environment selects the generated script variant (Environment.OSS_FUZZ uses the base
-    image's own $OUT/$LIB_FUZZING_ENGINE instead of local defaults) and is recorded on the
-    returned result. run defaults to running the command as a host subprocess; callers
-    running this inside a container pass a run primitive that wraps the command in a
-    `docker run` invocation instead. For Environment.OSS_FUZZ, each attempt runs the base
-    image's own `compile` entrypoint (not just the generated script directly), since that's
-    what populates $LIB_FUZZING_ENGINE before compile_harness.sh links against it.
+    The generated scripts are environment-independent, but entering them is not:
+    environment.harness_probe_command decides how each attempt starts the build, and its
+    docstring explains why the container goes through OSS-Fuzz's `compile` instead of running
+    compile_harnesses.sh directly. environment is also recorded on the returned result. run
+    defaults to running the command as a host subprocess; callers running this inside a
+    container pass a run primitive that wraps the command in a `docker run` invocation
+    instead.
     """
     extra_include_paths = extra_include_paths or []
     extra_library_paths = extra_library_paths or []
@@ -104,13 +100,8 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
             environment=environment,
         )
 
-    oss_fuzz = environment is Environment.OSS_FUZZ
-    # Matches the harness source directory name each generator uses (local/generation.py's
-    # harness_src/ vs. oss_fuzz/generation.py's harness_source/), so a container-validated
-    # script's $SCRIPT_DIR-relative HARNESS_DIR still resolves once copied verbatim (FR-008).
-    harness_dir_name = "harness_source" if oss_fuzz else "harness_src"
     use_cpp = language == Language.CPP
-    harness_src_dir = workdir / harness_dir_name
+    harness_src_dir = workdir / HARNESS_SOURCE_DIR
     harness_src_dir.mkdir(exist_ok=True)
     # _materialize_workspace/LocalExecutor.run_library_build already wrote this stub (so the
     # atomic gate's non-empty-/out check has something to find before discovery ever runs) —
@@ -128,44 +119,30 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     last_stdout = ""
     last_stderr = ""
     last_exit = -1
+    diagnostic = ""
 
     for _ in range(_MAX_ATTEMPTS):
-        intermediate = HarnessExplorationResult(
-            succeeded=False,
-            command=[],
-            static_libs=static_libs,
-            include_dir=include_dir,
-            transitive_link_flags=extra_flags,
-            stdout="",
-            stderr="",
-            exit_code=-1,
-            extra_include_paths=extra_include_paths,
-            extra_library_paths=extra_library_paths,
-        )
-        script_path.write_text(
+        write_executable(
+            script_path,
             build_harness_script(
-                intermediate,
+                LinkConfiguration(
+                    static_libs=static_libs,
+                    transitive_link_flags=extra_flags,
+                    extra_library_paths=extra_library_paths,
+                    extra_include_paths=extra_include_paths,
+                ),
                 whole_archive=True,
-                oss_fuzz=oss_fuzz,
-                local_cflags=os.environ.get("CFLAGS"),
-                local_cxxflags=os.environ.get("CXXFLAGS"),
-            )
+                harness_cflags=os.environ.get("CFLAGS"),
+                harness_cxxflags=os.environ.get("CXXFLAGS"),
+            ),
         )
-        script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        batch_script_path.write_text(
-            build_harnesses_script(harness_dir_name=harness_dir_name, oss_fuzz=oss_fuzz)
-        )
-        batch_script_path.chmod(
-            batch_script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        )
-        command = ["bash", "-c", "compile"] if oss_fuzz else ["bash", batch_script_path.name]
-        result = runner(command, workdir, 60)
+        write_executable(batch_script_path, build_harnesses_script())
+        command = environment.harness_probe_command
+        result = runner(command, workdir, HARNESS_PROBE_TIMEOUT_SECONDS)
         last_stdout = result.stdout
         last_stderr = result.stderr
         last_exit = result.exit_code
-        # Some Runner implementations (docker-streaming runners) merge stderr into stdout
-        # and never populate .stderr — scan both so detection isn't blind to those.
-        diagnostic = last_stdout + last_stderr
+        diagnostic = result.output
 
         if result.exit_code == 0:
             return HarnessExplorationResult(
@@ -206,7 +183,7 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
         stdout=last_stdout,
         stderr=last_stderr,
         exit_code=last_exit,
-        missing_system_libs=_extract_missing_system_libs(last_stdout + last_stderr),
+        missing_system_libs=extract_missing_system_libs(diagnostic),
         extra_include_paths=extra_include_paths,
         extra_library_paths=extra_library_paths,
         environment=environment,
@@ -245,7 +222,7 @@ def _requires_cxx(stderr: str) -> bool:
     )
 
 
-def _extract_missing_system_libs(stderr: str) -> list[str]:
+def extract_missing_system_libs(stderr: str) -> list[str]:
     libs: list[str] = []
     # macOS ld: library 'zstd' not found
     for m in re.finditer(r"ld: library '([^']+)' not found", stderr):
@@ -273,48 +250,8 @@ def _symbol_to_flag(symbol: str) -> str | None:
     return None
 
 
-def _validate_harness_artifacts(workdir: Path) -> list[str]:
+def validate_harness_artifacts(workdir: Path) -> list[str]:
     out_dir = workdir / "out"
     if not out_dir.exists() or not any(out_dir.iterdir()):
         return [f"no compiled harness binary found in {out_dir}"]
     return []
-
-
-def reparse_link_config(
-    script_text: str, static_libs: list[Path], transitive_link_flags: list[str]
-) -> tuple[list[Path], list[str]]:
-    """Re-derive STATIC_LIBS and EXTRA_LINK_FLAGS from compile_harness.sh's text.
-
-    An agent fixing a harness link failure edits these variables directly rather than
-    going through build_harness_script, so the structured HarnessExplorationResult it's
-    handed can go stale. Falls back to the given values wherever the expected format
-    isn't found (e.g. the agent restructured the script beyond these two variables).
-    """
-    block_match = _STATIC_LIBS_BLOCK_RE.search(script_text)
-    if block_match:
-        names = _STATIC_LIB_ENTRY_RE.findall(block_match.group(1))
-        if names:
-            static_libs = [Path(name) for name in names]
-
-    flags_match = _EXTRA_LINK_FLAGS_RE.search(script_text)
-    if flags_match:
-        raw = (flags_match.group(1) or "").removeprefix(_BREW_LIB_PREFIX).strip()
-        transitive_link_flags = raw.split() if raw else []
-
-    return static_libs, transitive_link_flags
-
-
-def reparse_lib_paths(script_text: str, extra_library_paths: list[str]) -> list[str]:
-    """Re-derive extra library paths from an EXTRA_LIB_PATHS="-Lpath ..." line.
-
-    Mirrors reparse_link_config's EXTRA_LINK_FLAGS handling: falls back to the given
-    paths wherever the expected format isn't found in the (possibly agent-edited)
-    compile_harness.sh text.
-    """
-    match = _EXTRA_LIB_PATHS_RE.search(script_text)
-    if not match:
-        return extra_library_paths
-    raw = (match.group(1) or "").strip()
-    if not raw:
-        return []
-    return [flag.removeprefix("-L") for flag in raw.split()]

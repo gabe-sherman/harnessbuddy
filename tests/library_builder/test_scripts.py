@@ -5,7 +5,6 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -13,17 +12,18 @@ from harnessbuddy.library_builder.models import (
     AutotoolsSetup,
     BuildPaths,
     BuildSystem,
-    HarnessExplorationResult,
+    LinkConfiguration,
 )
 from harnessbuddy.library_builder.scripts import (
+    HARNESS_SOURCE_DIR,
     build_harness_script,
     build_harnesses_script,
     build_library_script,
 )
 
-# The paths generate_oss_fuzz's workspace materialization uses (oss_fuzz/generation.py),
-# shared by every build_library.sh content test below since the command text these
-# tests assert on is driven entirely by build_system/autotools_setup, not by paths.
+# The paths workspace materialization uses, shared by every build_library.sh content test
+# below since the command text these tests assert on is driven entirely by
+# build_system/autotools_setup, not by paths.
 _OSS_FUZZ_PATHS = BuildPaths(
     source_dir="$SCRIPT_DIR/src",
     build_dir="$BUILD_PREFIX/build",
@@ -59,7 +59,6 @@ def test_build_library_script_skips_when_artifacts_already_present(tmp_path: Pat
             build_dir=str(tmp_path / "build"),
             install_dir=str(install_dir),
         ),
-        host_fallbacks=True,
     )
     script_path = tmp_path / "build_library.sh"
     script_path.write_text(script)
@@ -79,7 +78,6 @@ def test_build_library_script_builds_when_artifacts_missing(tmp_path: Path) -> N
             build_dir=str(tmp_path / "build"),
             install_dir=str(tmp_path / "install"),
         ),
-        host_fallbacks=True,
     )
     script_path = tmp_path / "build_library.sh"
     script_path.write_text(script)
@@ -96,16 +94,10 @@ def _harness(
     transitive_link_flags: list[str] | None = None,
     extra_include_paths: list[str] | None = None,
     extra_library_paths: list[str] | None = None,
-) -> HarnessExplorationResult:
-    return HarnessExplorationResult(
-        succeeded=True,
-        command=[],
+) -> LinkConfiguration:
+    return LinkConfiguration(
         static_libs=static_libs if static_libs is not None else [Path("libfoo.a")],
-        include_dir=Path("/tmp/install/include"),
         transitive_link_flags=transitive_link_flags or [],
-        stdout="",
-        stderr="",
-        exit_code=0,
         extra_include_paths=extra_include_paths or [],
         extra_library_paths=extra_library_paths or [],
     )
@@ -153,7 +145,7 @@ def test_single_harness_compiler_uses_configured_defaults_without_environment_ov
     compiler.write_text(
         build_harness_script(
             _harness(),
-            local_cflags="-fsanitize=fuzzer,address -fprofile-instr-generate",
+            harness_cflags="-fsanitize=fuzzer,address -fprofile-instr-generate",
         )
     )
     compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
@@ -177,13 +169,16 @@ def test_single_harness_compiler_uses_configured_defaults_without_environment_ov
 
 
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang is required for libFuzzer linking")
-def test_single_harness_compiler_ignores_ambient_library_flags(tmp_path: Path) -> None:
-    """A prepared compiler must retain libFuzzer main when its caller built with no-link flags."""
+def test_single_harness_compiler_uses_its_baked_flags_in_a_bare_environment(
+    tmp_path: Path,
+) -> None:
+    """The generated compiler has to work when run from a fresh shell with nothing exported
+    — that is how the gate and a user of the shipped output both run it."""
     compiler = tmp_path / "compile_harness.sh"
     compiler.write_text(
         build_harness_script(
             _harness(static_libs=[]),
-            local_cflags="-fsanitize=fuzzer -DHARNESSBUDDY_TEST",
+            harness_cflags="-fsanitize=fuzzer -DHARNESSBUDDY_TEST",
         )
     )
     compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
@@ -198,7 +193,7 @@ def test_single_harness_compiler_ignores_ambient_library_flags(tmp_path: Path) -
         "  return (int)(data == 0 && size != 0);\n"
         "}\n"
     )
-    environment = {**os.environ, "CC": "clang", "CFLAGS": "-fsanitize=fuzzer-no-link"}
+    environment = {k: v for k, v in os.environ.items() if k not in {"CC", "CFLAGS"}}
 
     result = subprocess.run(
         ["bash", str(compiler), str(harness), str(tmp_path / "candidate")],
@@ -211,6 +206,14 @@ def test_single_harness_compiler_ignores_ambient_library_flags(tmp_path: Path) -
     assert result.returncode == 0, result.stderr
 
 
+def test_single_harness_compiler_lets_the_environment_override_its_flags() -> None:
+    """The precedence that makes one script text work in both places: in the container the
+    base image's CFLAGS carry the sanitizer configuration, and they must win over anything
+    baked in at generation time."""
+    script = build_harness_script(_harness(), harness_cflags="-fsanitize=fuzzer")
+    assert 'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"' in script
+
+
 def test_batch_compiler_builds_every_supported_harness_into_requested_output_directory(
     tmp_path: Path,
 ) -> None:
@@ -218,7 +221,7 @@ def test_batch_compiler_builds_every_supported_harness_into_requested_output_dir
     compiler.write_text(build_harness_script(_harness()))
     compiler.chmod(compiler.stat().st_mode | stat.S_IXUSR)
     batch = tmp_path / "compile_harnesses.sh"
-    batch.write_text(build_harnesses_script(harness_dir_name="harness_source", oss_fuzz=False))
+    batch.write_text(build_harnesses_script())
     batch.chmod(batch.stat().st_mode | stat.S_IXUSR)
     fake_compiler = tmp_path / "fake-clang"
     _fake_compiler(fake_compiler)
@@ -250,7 +253,7 @@ def test_batch_compiler_builds_every_supported_harness_into_requested_output_dir
 
 def test_batch_compiler_rejects_harnesses_that_would_overwrite_each_other(tmp_path: Path) -> None:
     batch = tmp_path / "compile_harnesses.sh"
-    batch.write_text(build_harnesses_script(harness_dir_name="harness_source", oss_fuzz=False))
+    batch.write_text(build_harnesses_script())
     batch.chmod(batch.stat().st_mode | stat.S_IXUSR)
     harness_dir = tmp_path / "agent-output"
     harness_dir.mkdir()
@@ -304,47 +307,164 @@ def test_extra_library_paths_ordered_before_extra_link_flags_var() -> None:
     assert "$EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS" in script
 
 
-def test_oss_fuzz_variant_with_both_extra_paths_produces_same_flags() -> None:
+def test_extra_paths_are_the_same_in_every_environment() -> None:
+    """There is one script text: the environment shows up only in which values the
+    fallbacks resolve to at run time, never in what is generated."""
     script = build_harness_script(
         _harness(
             extra_include_paths=["/usr/include/foo"],
             extra_library_paths=["/usr/lib/x86_64-linux-gnu"],
         ),
-        oss_fuzz=True,
     )
     assert 'EXTRA_LIB_PATHS="-L/usr/lib/x86_64-linux-gnu"\n' in script
     assert '"-I$INSTALL_DIR/include" "-I/usr/include/foo" "$HARNESS_SOURCE"' in script
     assert script.count("$EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS") == 2
 
 
-def test_macos_whole_archive_with_extra_library_paths_does_not_corrupt_brew_prefix() -> None:
-    with patch("harnessbuddy.library_builder.scripts.sys.platform", "darwin"):
-        script = build_harness_script(
-            _harness(transitive_link_flags=["-lzstd"], extra_library_paths=["/opt/homebrew/lib"]),
-            whole_archive=True,
-        )
-    assert 'EXTRA_LINK_FLAGS="-L$(brew --prefix)/lib -lzstd"\n' in script
-    assert 'EXTRA_LIB_PATHS="-L/opt/homebrew/lib"\n' in script
-    assert "-Wl,-all_load" in script
-
-
-def test_oss_fuzz_whole_archive_uses_linux_flags_even_on_macos_host() -> None:
-    """The generated script always runs inside the Linux base-builder container, so
-    oss_fuzz=True must use --whole-archive regardless of the host OS running
-    HarnessBuddy itself."""
-    with patch("harnessbuddy.library_builder.scripts.sys.platform", "darwin"):
-        script = build_harness_script(_harness(), whole_archive=True, oss_fuzz=True)
+def test_whole_archive_uses_the_linux_linker_flags() -> None:
+    """Every generated script runs on Linux: on the host HarnessBuddy targets, and in the
+    base-builder container."""
+    script = build_harness_script(_harness(), whole_archive=True)
     assert "-Wl,--whole-archive" in script
     assert "-Wl,--no-whole-archive" in script
     assert "-all_load" not in script
 
 
-def test_linux_host_whole_archive_uses_linux_flags_for_local_environment() -> None:
-    with patch("harnessbuddy.library_builder.scripts.sys.platform", "linux"):
-        script = build_harness_script(_harness(), whole_archive=True)
-    assert "-Wl,--whole-archive" in script
-    assert "-Wl,--no-whole-archive" in script
-    assert "-all_load" not in script
+def test_whole_archive_leaves_the_extra_paths_alone() -> None:
+    script = build_harness_script(
+        _harness(transitive_link_flags=["-lzstd"], extra_library_paths=["/opt/lib"]),
+        whole_archive=True,
+    )
+    assert 'EXTRA_LINK_FLAGS="-lzstd"\n' in script
+    assert 'EXTRA_LIB_PATHS="-L/opt/lib"\n' in script
+
+
+# environment-independence: the fallbacks that let one script text serve both environments
+
+
+def test_harness_script_falls_back_to_libfuzzer_when_no_engine_is_set() -> None:
+    """The in-container probe runs the script directly rather than through OSS-Fuzz's
+    `compile`, which is what would otherwise have set $LIB_FUZZING_ENGINE — so the fallback
+    is load-bearing inside the container, not just on the host."""
+    script = build_harness_script(_harness())
+    assert 'LIB_FUZZING_ENGINE="${LIB_FUZZING_ENGINE:--fsanitize=fuzzer}"' in script
+    assert script.count('"$LIB_FUZZING_ENGINE"') == 2
+
+
+def test_batch_script_prefers_the_container_out_directory_when_set() -> None:
+    script = build_harnesses_script()
+    assert 'OUT_DIR="${2:-${OUT:-$SCRIPT_DIR/out}}"' in script
+
+
+def test_batch_script_reads_the_one_harness_directory_name() -> None:
+    assert f"$SCRIPT_DIR/{HARNESS_SOURCE_DIR}" in build_harnesses_script()
+
+
+@pytest.mark.parametrize("variable", ["CC", "CXX", "CFLAGS", "CXXFLAGS"])
+def test_library_script_lets_the_environment_win_over_its_baked_settings(variable: str) -> None:
+    """The baked values reproduce the validated build from a bare shell; the base image's
+    own sanitizer configuration still takes precedence in the container."""
+    script = build_library_script(BuildSystem.CMAKE, _OSS_FUZZ_PATHS, cflags="-O2")
+    assert f'{variable}="${{{variable}:-' in script
+
+
+def test_library_script_bakes_the_configured_compiler_settings() -> None:
+    script = build_library_script(
+        BuildSystem.CMAKE, _OSS_FUZZ_PATHS, cc="gcc", cxx="g++", cflags="-O2 -g"
+    )
+    assert 'CC="${CC:-gcc}"' in script
+    assert 'CXX="${CXX:-g++}"' in script
+    assert 'CFLAGS="${CFLAGS:--O2 -g}"' in script
+
+
+# --library-configure-arg — configure options reach the configure step, not CFLAGS
+
+
+@pytest.mark.parametrize(
+    ("build_system", "autotools_setup"),
+    [
+        (BuildSystem.CMAKE, None),
+        (BuildSystem.MESON, None),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE),
+        (BuildSystem.MAKEFILE, None),
+    ],
+)
+def test_configure_args_land_at_the_configure_step(
+    build_system: BuildSystem, autotools_setup: AutotoolsSetup | None
+) -> None:
+    script = build_library_script(
+        build_system,
+        _OSS_FUZZ_PATHS,
+        autotools_setup=autotools_setup,
+        configure_args=("-DBUILD_TESTING=OFF",),
+    )
+    assert "CONFIGURE_ARGS=('-DBUILD_TESTING=OFF')" in script
+    # The options reach the build system's own configuration, not the compiler's flags —
+    # --library-cflags would have turned this one into a preprocessor define that silently
+    # does nothing.
+    body = script[script.index("# build system:") :]
+    assert '"${CONFIGURE_ARGS[@]}"' in body
+    flag_lines = [line for line in script.splitlines() if line.startswith(("CFLAGS=", "CXXFLAGS="))]
+    assert all("-DBUILD_TESTING=OFF" not in line for line in flag_lines)
+
+
+def test_configure_args_survive_a_value_containing_a_space(tmp_path: Path) -> None:
+    """A single space-separated string would word-split this into two options."""
+    script = build_library_script(
+        BuildSystem.CMAKE, _OSS_FUZZ_PATHS, configure_args=("-DCMAKE_C_FLAGS=-O2 -g",)
+    )
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        script[: script.index("if compgen")] + 'printf "%s\n" "${CONFIGURE_ARGS[@]}"\n'
+    )
+    result = subprocess.run(["bash", str(probe)], capture_output=True, text=True, timeout=10)
+    assert result.stdout == "-DCMAKE_C_FLAGS=-O2 -g\n"
+
+
+def test_configure_args_can_be_overridden_from_the_environment(tmp_path: Path) -> None:
+    script = build_library_script(
+        BuildSystem.CMAKE, _OSS_FUZZ_PATHS, configure_args=("-DBUILD_TESTING=OFF",)
+    )
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        script[: script.index("if compgen")] + 'printf "%s\n" "${CONFIGURE_ARGS[@]}"\n'
+    )
+    result = subprocess.run(
+        ["bash", str(probe)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "EXTRA_CONFIGURE_ARGS": "-DFOO=bar -DBAZ=qux"},
+    )
+    assert result.stdout == "-DFOO=bar\n-DBAZ=qux\n"
+
+
+def test_no_configure_args_leaves_the_array_out_entirely() -> None:
+    script = build_library_script(BuildSystem.CMAKE, _OSS_FUZZ_PATHS)
+    assert "CONFIGURE_ARGS" not in script
+
+
+# job cap — every build system, not just cmake
+
+
+@pytest.mark.parametrize(
+    ("build_system", "autotools_setup"),
+    [
+        (BuildSystem.CMAKE, None),
+        (BuildSystem.MESON, None),
+        (BuildSystem.AUTOTOOLS, AutotoolsSetup.CONFIGURE),
+        (BuildSystem.MAKEFILE, None),
+    ],
+)
+def test_every_build_system_caps_parallelism(
+    build_system: BuildSystem, autotools_setup: AutotoolsSetup | None
+) -> None:
+    """Builds run in containers and CI with memory limits far below what -j$(nproc) implies
+    on a large host, so the cap has to apply everywhere rather than only to cmake."""
+    script = build_library_script(build_system, _OSS_FUZZ_PATHS, autotools_setup=autotools_setup)
+    assert 'if [ "$JOBS" -gt 4 ]; then JOBS=4; fi' in script
+    assert '-j"$JOBS"' in script
+    assert "-j$(nproc)" not in script
 
 
 # build_library.sh content for the oss-fuzz workspace's SCRIPT_DIR/BUILD_PREFIX layout —

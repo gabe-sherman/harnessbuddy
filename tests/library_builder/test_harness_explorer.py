@@ -8,8 +8,6 @@ from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.harness_explorer import (
     explore_harness_compilation,
     lib_names_from_link_flags,
-    reparse_lib_paths,
-    reparse_link_config,
 )
 from harnessbuddy.library_builder.models import Language
 
@@ -22,89 +20,6 @@ def test_lib_names_from_link_flags_strips_prefix() -> None:
 
 def test_lib_names_from_link_flags_empty_list() -> None:
     assert lib_names_from_link_flags([]) == []
-
-
-# reparse_link_config
-
-
-def test_reparse_extracts_added_flag() -> None:
-    script = (
-        "STATIC_LIBS=(\n"
-        '    "$INSTALL_DIR/lib/libcares.a"\n'
-        ")\n"
-        "\n"
-        'EXTRA_LINK_FLAGS="-lresolv"\n'
-        "\n"
-        'for harness in "$HARNESS_DIR"/*; do\n'
-    )
-    static_libs, flags = reparse_link_config(script, [Path("libcares.a")], [])
-    assert flags == ["-lresolv"]
-    assert static_libs == [Path("libcares.a")]
-
-
-def test_reparse_extracts_reordered_static_libs() -> None:
-    script = (
-        "STATIC_LIBS=(\n"
-        '    "$INSTALL_DIR/lib/libbar.a"\n'
-        '    "$INSTALL_DIR/lib/libfoo.a"\n'
-        ")\n"
-        "\n"
-        "EXTRA_LINK_FLAGS=\n"
-    )
-    static_libs, flags = reparse_link_config(
-        script, [Path("libfoo.a"), Path("libbar.a")], ["-lold"]
-    )
-    assert static_libs == [Path("libbar.a"), Path("libfoo.a")]
-    assert flags == []
-
-
-def test_reparse_strips_brew_prefix_on_darwin() -> None:
-    script = 'EXTRA_LINK_FLAGS="-L$(brew --prefix)/lib -lzstd"\n'
-    _static_libs, flags = reparse_link_config(script, [], [])
-    assert flags == ["-lzstd"]
-
-
-def test_reparse_falls_back_when_format_not_found() -> None:
-    script = "# agent rewrote this script entirely\necho hello\n"
-    static_libs, flags = reparse_link_config(script, [Path("libfoo.a")], ["-lold"])
-    assert static_libs == [Path("libfoo.a")]
-    assert flags == ["-lold"]
-
-
-def test_reparse_falls_back_when_static_libs_block_empty() -> None:
-    script = "STATIC_LIBS=(\n)\n\nEXTRA_LINK_FLAGS=\n"
-    static_libs, _flags = reparse_link_config(script, [Path("libfoo.a")], [])
-    assert static_libs == [Path("libfoo.a")]
-
-
-# reparse_link_config — EXTRA_LIB_PATHS extraction
-
-
-def test_reparse_lib_paths_extracts_added_path() -> None:
-    script = (
-        'STATIC_LIBS=(\n    "$INSTALL_DIR/lib/libfoo.a"\n)\n\n'
-        'EXTRA_LIB_PATHS="-L/usr/lib/x86_64-linux-gnu"\n'
-    )
-    lib_paths = reparse_lib_paths(script, [])
-    assert lib_paths == ["/usr/lib/x86_64-linux-gnu"]
-
-
-def test_reparse_lib_paths_extracts_multiple_paths() -> None:
-    script = 'EXTRA_LIB_PATHS="-L/opt/lib -L/usr/lib/x86_64-linux-gnu"\n'
-    lib_paths = reparse_lib_paths(script, [])
-    assert lib_paths == ["/opt/lib", "/usr/lib/x86_64-linux-gnu"]
-
-
-def test_reparse_lib_paths_falls_back_when_empty() -> None:
-    script = "EXTRA_LIB_PATHS=\n"
-    lib_paths = reparse_lib_paths(script, ["/fallback"])
-    assert lib_paths == []
-
-
-def test_reparse_lib_paths_falls_back_when_format_not_found() -> None:
-    script = "# agent rewrote this script entirely\necho hello\n"
-    lib_paths = reparse_lib_paths(script, ["/fallback"])
-    assert lib_paths == ["/fallback"]
 
 
 # explore_harness_compilation — C -> C++ probe upgrade on C++ ABI leakage
@@ -133,8 +48,8 @@ def test_upgrades_to_cxx_on_known_abi_symbol(tmp_path: Path) -> None:
         result = explore_harness_compilation(install_dir, tmp_path, Language.C)
 
     assert result.succeeded is True
-    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
-    assert not (tmp_path / "harness_src" / "default_fuzzer.c").exists()
+    assert (tmp_path / "harness_source" / "default_fuzzer.cc").exists()
+    assert not (tmp_path / "harness_source" / "default_fuzzer.c").exists()
 
 
 def test_upgrades_to_cxx_on_arbitrary_demangled_symbol(tmp_path: Path) -> None:
@@ -162,8 +77,8 @@ def test_upgrades_to_cxx_on_arbitrary_demangled_symbol(tmp_path: Path) -> None:
         result = explore_harness_compilation(install_dir, tmp_path, Language.C)
 
     assert result.succeeded is True
-    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
-    assert not (tmp_path / "harness_src" / "default_fuzzer.c").exists()
+    assert (tmp_path / "harness_source" / "default_fuzzer.cc").exists()
+    assert not (tmp_path / "harness_source" / "default_fuzzer.c").exists()
 
 
 def test_upgrades_to_cxx_on_mangled_itanium_symbol(tmp_path: Path) -> None:
@@ -190,7 +105,7 @@ def test_upgrades_to_cxx_on_mangled_itanium_symbol(tmp_path: Path) -> None:
         result = explore_harness_compilation(install_dir, tmp_path, Language.C)
 
     assert result.succeeded is True
-    assert (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+    assert (tmp_path / "harness_source" / "default_fuzzer.cc").exists()
 
 
 def test_does_not_upgrade_to_cxx_on_plain_c_symbol(tmp_path: Path) -> None:
@@ -211,8 +126,8 @@ def test_does_not_upgrade_to_cxx_on_plain_c_symbol(tmp_path: Path) -> None:
         result = explore_harness_compilation(install_dir, tmp_path, Language.C)
 
     assert result.succeeded is False
-    assert (tmp_path / "harness_src" / "default_fuzzer.c").exists()
-    assert not (tmp_path / "harness_src" / "default_fuzzer.cc").exists()
+    assert (tmp_path / "harness_source" / "default_fuzzer.c").exists()
+    assert not (tmp_path / "harness_source" / "default_fuzzer.cc").exists()
 
 
 # explore_harness_compilation — default link flags
@@ -298,10 +213,11 @@ def test_script_path_unset_on_failure(tmp_path: Path) -> None:
     assert result.script_path is None
 
 
-# explore_harness_compilation — oss-fuzz runs the `compile` entrypoint, not the bare script
+# explore_harness_compilation — one script text, but a per-environment way into it
 
 
-def test_oss_fuzz_command_runs_compile_entrypoint(tmp_path: Path) -> None:
+def _probe_commands(tmp_path: Path, environment: Environment) -> list[list[str]]:
+    """Run one successful probe attempt, returning the commands the runner was handed."""
     install_dir = tmp_path / "install"
     (install_dir / "lib").mkdir(parents=True)
     (install_dir / "lib" / "libfoo.a").write_text("stub")
@@ -314,18 +230,29 @@ def test_oss_fuzz_command_runs_compile_entrypoint(tmp_path: Path) -> None:
         return RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1)
 
     result = explore_harness_compilation(
-        install_dir,
-        tmp_path,
-        Language.C,
-        environment=Environment.OSS_FUZZ,
-        run=fake_runner,
+        install_dir, tmp_path, Language.C, environment=environment, run=fake_runner
     )
-
     assert result.succeeded is True
-    assert seen_commands == [["bash", "-c", "compile"]]
+    return seen_commands
 
 
-def test_local_command_runs_bare_script(tmp_path: Path) -> None:
+def test_probe_enters_through_compile_in_the_oss_fuzz_environment(tmp_path: Path) -> None:
+    """The generated scripts are environment-independent; entering them is not. In the
+    container the probe goes through OSS-Fuzz's own `compile`, because that is what resolves
+    SANITIZER_FLAGS into CFLAGS/CXXFLAGS and exports LIB_FUZZING_ENGINE=-fsanitize=fuzzer.
+    Running compile_harnesses.sh directly there links against the /usr/lib/libFuzzingEngine.a
+    the image's ENV names but compile_libfuzzer has not created — and patching only the engine
+    flag yields a target with no sanitizer instrumentation at all."""
+    assert _probe_commands(tmp_path, Environment.OSS_FUZZ) == [["bash", "-c", "compile"]]
+
+
+def test_probe_runs_the_batch_script_directly_on_the_host(tmp_path: Path) -> None:
+    """There is no `compile` on a host and nothing for it to assemble, so the generated
+    script is entered directly."""
+    assert _probe_commands(tmp_path, Environment.LOCAL) == [["bash", "compile_harnesses.sh"]]
+
+
+def test_probe_runs_the_batch_script_in_the_local_environment(tmp_path: Path) -> None:
     install_dir = tmp_path / "install"
     (install_dir / "lib").mkdir(parents=True)
     (install_dir / "lib" / "libfoo.a").write_text("stub")

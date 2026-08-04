@@ -110,4 +110,12 @@ cat > "$FIXTURES/no_signals_repo/README.md" <<'EOF'
 Not a C/C++ library.
 EOF
 
+# headers_only_repo — C headers but no recognized build system (BuildSystem.UNKNOWN,
+# the case the repair agent exists for)
+mkdir -p "$FIXTURES/headers_only_repo"
+cat > "$FIXTURES/headers_only_repo/mylib.h" <<'EOF'
+#pragma once
+void mylib_hello(void);
+EOF
+
 echo "Fixtures created in $FIXTURES"

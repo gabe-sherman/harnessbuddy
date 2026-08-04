@@ -13,7 +13,6 @@ ground_truth_test_output/
 zlib_feature_test/
 scripts/ci.sh
 
-# Beads / Dolt files (added by bd init) — kept local only, not tracked in git
 .beads/
 .dolt/
 *.db
@@ -26,3 +25,5 @@ plans/
 STATUS.md
 .specify/
 .devcontainer
+
+.beads/proxieddb/

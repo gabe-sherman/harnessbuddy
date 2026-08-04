@@ -36,12 +36,12 @@ class LibSpec:
 
 LIBS = [
     #     LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
-    #     LibSpec(
-    #         "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
-    #     ),
-    #    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
+        #  LibSpec(
+        #      "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
+        #  ),
+    LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
     # LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
-    LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
+    # LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
     # LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
     # LibSpec("https://github.com/ImageMagick/ImageMagick", "imagemagick", BuildSystem.CMAKE, None),
     # LibSpec("https://github.com/htop-dev/htop.git", "htop", BuildSystem.AUTOTOOLS, None),
@@ -54,9 +54,14 @@ LIBS = [
 _AGENT = "claude"
 
 
+def _project_dir(project_name: str) -> Path:
+    """Where generate writes this library's project: <output>/<project_name>/."""
+    return _OUTPUT_DIR / project_name
+
+
 def _generate(lib: LibSpec) -> bool:
-    """Run `harnessbuddy generate` for lib into output/<project_name>, returning success."""
-    project_output = _OUTPUT_DIR / lib.project_name
+    """Run `harnessbuddy generate` for lib, returning success."""
+    project_output = _project_dir(lib.project_name)
     if project_output.exists():
         shutil.rmtree(project_output)
     rc = main(
@@ -66,7 +71,7 @@ def _generate(lib: LibSpec) -> bool:
             "--agent",
             _AGENT,
             "--output",
-            str(project_output),
+            str(_OUTPUT_DIR),
             "--environment",
             "oss-fuzz",
         ]
@@ -84,7 +89,7 @@ def _docker_build_and_compile(project_name: str) -> bool:
     harnesses = list(_REAL_HARNESSES_DIR.glob(f"{project_name}*"))
     if not harnesses:
         raise ValueError("no ground-truth harness for %s, skipping docker check", project_name)
-    oss_fuzz_dir = _OUTPUT_DIR / project_name / "oss-fuzz"
+    oss_fuzz_dir = _project_dir(project_name)
     harness_dir = oss_fuzz_dir / "harness_source"
     ext = "c"
     for harness in harnesses:

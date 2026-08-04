@@ -6,15 +6,18 @@ import pytest
 
 from harnessbuddy.core.repos import RepoSource
 from harnessbuddy.library_builder.analysis import analyze
+from harnessbuddy.library_builder.build_parameters import BuildParameters
 from harnessbuddy.library_builder.models import AnalysisResult
-from harnessbuddy.library_builder.oss_fuzz.workspace import (
+from harnessbuddy.library_builder.workspace import (
+    DEFAULT_BASE_IMAGE,
     inject_apt_packages,
+    materialize,
     write_build_sh,
     write_dockerfile,
     write_project_yaml,
 )
 
-_FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "repos"
+_FIXTURES = Path(__file__).parent.parent / "fixtures" / "repos"
 _FAKE_URL = "https://github.com/example/mylib.git"
 
 
@@ -129,9 +132,19 @@ def test_write_dockerfile_autotools_apt_packages_present_with_and_without_bear(
 def test_write_build_sh_runs_build_then_harness(tmp_path: Path) -> None:
     write_build_sh(tmp_path)
     content = (tmp_path / "build.sh").read_text()
-    assert '"$SRC/build_library.sh"' in content
-    assert '"$SRC/compile_harnesses.sh"' in content
-    assert content.index('"$SRC/build_library.sh"') < content.index('"$SRC/compile_harnesses.sh"')
+    assert '"$SCRIPT_DIR/build_library.sh"' in content
+    assert '"$SCRIPT_DIR/compile_harnesses.sh"' in content
+    assert content.index('"$SCRIPT_DIR/build_library.sh"') < content.index(
+        '"$SCRIPT_DIR/compile_harnesses.sh"'
+    )
+
+
+def test_write_build_sh_resolves_its_own_directory_rather_than_srcs(tmp_path: Path) -> None:
+    """build.sh runs in three places: under OSS-Fuzz's `compile` (where $SRC is set), under
+    the build gate, and by a user in the generated output directory. $SCRIPT_DIR is the one
+    reference that resolves in all three."""
+    write_build_sh(tmp_path)
+    assert "$SRC" not in (tmp_path / "build.sh").read_text()
 
 
 def test_write_build_sh_is_executable(tmp_path: Path) -> None:
@@ -145,10 +158,14 @@ def test_write_build_sh_has_stage_markers_in_order(tmp_path: Path) -> None:
     User Story 3), even though verification is a single atomic pass/fail result."""
     write_build_sh(tmp_path)
     content = (tmp_path / "build.sh").read_text()
-    assert content.index("=== build_library.sh ===") < content.index('"$SRC/build_library.sh"')
-    assert content.index('"$SRC/build_library.sh"') < content.index("=== compile_harnesses.sh ===")
+    assert content.index("=== build_library.sh ===") < content.index(
+        '"$SCRIPT_DIR/build_library.sh"'
+    )
+    assert content.index('"$SCRIPT_DIR/build_library.sh"') < content.index(
+        "=== compile_harnesses.sh ==="
+    )
     assert content.index("=== compile_harnesses.sh ===") < content.index(
-        '"$SRC/compile_harnesses.sh"'
+        '"$SCRIPT_DIR/compile_harnesses.sh"'
     )
 
 
@@ -180,9 +197,9 @@ def test_inject_apt_packages_dedupes_against_existing_packages(tmp_path: Path) -
     """The build phase may report a package (e.g. via missing_apt_packages) that the
     harness phase's linker-dependency discovery later reports again under the same apt
     name — the merge must not duplicate it."""
-    analysis = _analysis("cmake_repo")
-    analysis.system_packages = ["libzstd-dev"]
-    write_dockerfile(tmp_path, analysis, include_bear=True)
+    write_dockerfile(
+        tmp_path, _analysis("cmake_repo"), include_bear=True, system_packages=["libzstd-dev"]
+    )
     inject_apt_packages(tmp_path, ["libzstd-dev"])
     content = (tmp_path / "Dockerfile").read_text()
     assert content.count("libzstd-dev") == 1
@@ -221,3 +238,51 @@ def test_inject_apt_packages_inserts_a_line_when_none_exists(tmp_path: Path) -> 
     env_index = next(i for i, line in enumerate(lines) if line.startswith("ENV FUZZING_LANGUAGE"))
     assert apt_index == env_index + 1
     assert "libzstd-dev" in lines[apt_index]
+
+
+# --base-image (T57)
+
+
+def test_write_dockerfile_uses_the_default_base_image(tmp_path: Path) -> None:
+    write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=False)
+    assert (tmp_path / "Dockerfile").read_text().startswith(f"FROM {DEFAULT_BASE_IMAGE}\n")
+
+
+def test_write_dockerfile_honours_an_explicit_base_image(tmp_path: Path) -> None:
+    write_dockerfile(
+        tmp_path, _analysis("cmake_repo"), include_bear=False, base_image="example.com/base:v1"
+    )
+    assert (tmp_path / "Dockerfile").read_text().startswith("FROM example.com/base:v1\n")
+
+
+# materialize — one layout, written before any build is attempted
+
+
+def test_materialize_writes_the_whole_project_layout(tmp_path: Path) -> None:
+    materialize(tmp_path, _analysis("cmake_repo"), parameters=BuildParameters.defaults())
+    for name in (
+        "project.yaml",
+        "Dockerfile",
+        "build.sh",
+        "compile_harness.sh",
+        "compile_harnesses.sh",
+    ):
+        assert (tmp_path / name).is_file(), name
+    assert list((tmp_path / "harness_source").glob("default_fuzzer.*"))
+
+
+def test_materialize_gives_an_unknown_build_system_a_runnable_gate(tmp_path: Path) -> None:
+    """The gate a repair agent is told to run compiles harness_source/ — so that scaffold
+    has to exist even when no build system was identified and no build was ever attempted."""
+    materialize(tmp_path, _analysis("headers_only_repo"), parameters=BuildParameters.defaults())
+    assert (tmp_path / "compile_harnesses.sh").is_file()
+    assert list((tmp_path / "harness_source").glob("default_fuzzer.*"))
+
+
+def test_materialize_is_idempotent(tmp_path: Path) -> None:
+    analysis = _analysis("cmake_repo")
+    materialize(tmp_path, analysis, parameters=BuildParameters.defaults())
+    first = {p.name: p.read_text() for p in tmp_path.rglob("*") if p.is_file()}
+    materialize(tmp_path, analysis, parameters=BuildParameters.defaults())
+    second = {p.name: p.read_text() for p in tmp_path.rglob("*") if p.is_file()}
+    assert first == second

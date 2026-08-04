@@ -1,0 +1,292 @@
+"""Publishing the verified workspace as the output directory.
+
+There is one output shape, whichever environment verified it: the workspace copied
+verbatim (so the shipped scripts are the ones that passed, including any repair an agent
+applied) plus what only makes sense outside the workspace — `setup.sh` to reproduce the
+checkout, the built `install/` tree, a self-contained `compile_commands.json`, and a
+README stating which environment was actually exercised.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from harnessbuddy.core.files import copy_executable, write_executable
+from harnessbuddy.library_builder import workspace
+from harnessbuddy.library_builder.environments.base import Environment
+from harnessbuddy.library_builder.models import (
+    AnalysisResult,
+    BuildExplorationResult,
+    GenerationResult,
+    HarnessExplorationResult,
+)
+from harnessbuddy.library_builder.scripts import HARNESS_SOURCE_DIR
+
+# Copied from the workspace verbatim. build_library.sh, compile_harness.sh and
+# compile_harnesses.sh are the validated scripts; the rest is the OSS-Fuzz project around
+# them.
+_COPIED_SCRIPTS = ("build.sh", "build_library.sh", "compile_harness.sh", "compile_harnesses.sh")
+_COPIED_FILES = ("project.yaml",)
+
+# Concrete build products and run metadata: useful in the output directory, never part of
+# the docker build context, since the container rebuilds from its own fresh clone.
+_DOCKERIGNORE = ("install/\n", "compile_commands.json\n", "stats.json\n", "logs/\n", "out/\n")
+
+
+@dataclass(frozen=True)
+class GenerationInputs:
+    """Everything generation needs beyond the workspace itself.
+
+    Grouped because these all answer the same question — what did this run actually do —
+    and every one of them appears in the README as well as in a generated file.
+    """
+
+    analysis: AnalysisResult
+    build: BuildExplorationResult
+    harness: HarnessExplorationResult
+    system_packages: list[str]
+    environment: Environment
+    agent_backend: str | None
+
+
+def generate(workspace_dir: Path, output_path: Path, inputs: GenerationInputs) -> GenerationResult:
+    """Copy the verified workspace to output_path and add the host-side resources.
+
+    The output is itself an OSS-Fuzz project and a standalone host build tree at once:
+    `docker build .` works, and so does `setup.sh` followed by `build_library.sh`.
+    """
+    output_path.mkdir(parents=True)
+    files: list[Path] = [
+        *_copy_project_files(workspace_dir, output_path, inputs.system_packages),
+        *_copy_harness_source(workspace_dir, output_path),
+        _write_setup_sh(output_path, inputs.analysis, inputs.system_packages),
+        _write_dockerignore(output_path),
+    ]
+    _copy_install_tree(inputs.build, output_path)
+    compile_commands = _copy_compile_commands(inputs.build, workspace_dir, output_path)
+    if compile_commands is not None:
+        files.append(compile_commands)
+    files.append(write_readme(output_path, inputs))
+
+    return GenerationResult(
+        project_name=inputs.analysis.project_name,
+        output_path=output_path,
+        files=files,
+    )
+
+
+def _copy_project_files(
+    workspace_dir: Path, output_path: Path, system_packages: list[str]
+) -> list[Path]:
+    """Copy the scripts and project files the workspace validated, verbatim.
+
+    The Dockerfile is the one exception: the shipped copy must not depend on `bear`, which
+    exists in the workspace image only so compile_commands.json can be captured.
+    """
+    copied = [copy_executable(workspace_dir / name, output_path / name) for name in _COPIED_SCRIPTS]
+    for name in _COPIED_FILES:
+        shutil.copy2(workspace_dir / name, output_path / name)
+        copied.append(output_path / name)
+
+    dockerfile = output_path / "Dockerfile"
+    dockerfile.write_text(
+        workspace.strip_bear_dependency((workspace_dir / "Dockerfile").read_text())
+    )
+    workspace.inject_apt_packages(output_path, system_packages)
+    copied.append(dockerfile)
+    return copied
+
+
+def _copy_harness_source(workspace_dir: Path, output_path: Path) -> list[Path]:
+    """Copy harness_source/* verbatim, including whichever default_fuzzer extension
+    harness-link discovery settled on."""
+    source_dir = workspace_dir / HARNESS_SOURCE_DIR
+    destination_dir = output_path / HARNESS_SOURCE_DIR
+    destination_dir.mkdir()
+    copied: list[Path] = []
+    for entry in sorted(source_dir.iterdir()):
+        destination = destination_dir / entry.name
+        shutil.copy2(entry, destination)
+        copied.append(destination)
+    return copied
+
+
+def _copy_install_tree(build: BuildExplorationResult, output_path: Path) -> None:
+    """Publish the built library — the artifact a user links their first harness against.
+
+    Shipped for every environment: `compile_harness.sh` links against `install/`, so an
+    output directory without it hands the user a script that cannot run.
+    """
+    install_dir = build.install_dir
+    if install_dir is None or not install_dir.is_dir():
+        return
+    shutil.copytree(install_dir, output_path / "install", symlinks=True)
+
+
+def _copy_compile_commands(
+    build: BuildExplorationResult, workspace_dir: Path, output_path: Path
+) -> Path | None:
+    """Copy compile_commands.json into the output directory, rewritten to point at it.
+
+    The captured file describes the workspace build, so its paths live under
+    `.harnessbuddy/<project>/`. Tooling that consumes the shipped file (`extract-features`
+    chdirs into each entry's `directory`) would then depend on the workspace surviving.
+    Rewriting the prefix on copy makes the output directory self-contained.
+    """
+    if build.compile_commands_path is None or not build.compile_commands_path.is_file():
+        return None
+    destination = output_path / "compile_commands.json"
+    destination.write_text(
+        rewrite_compile_commands_prefix(
+            build.compile_commands_path.read_text(),
+            source_prefix=str(workspace_dir.resolve()),
+            target_prefix=str(output_path.resolve()),
+        )
+    )
+    return destination
+
+
+def _write_dockerignore(output_path: Path) -> Path:
+    """Keep the concrete build products out of the docker build context.
+
+    The Dockerfile copies only harness_source/ and the scripts — the image rebuilds the
+    library from its own clone — so sending install/ (hundreds of MB for a large library)
+    would only slow every build down.
+    """
+    path = output_path / ".dockerignore"
+    path.write_text("".join(_DOCKERIGNORE))
+    return path
+
+
+def _write_setup_sh(
+    output_path: Path, analysis: AnalysisResult, system_packages: list[str]
+) -> Path:
+    """Write setup.sh — clone the library and install its build dependencies.
+
+    The host counterpart of the Dockerfile's clone and apt layers, so it uses the same
+    `apt-get update && apt-get install` form. `sudo` is resolved when the script runs
+    rather than baked in at generation time: the generating host's uid says nothing about
+    the consuming host's.
+    """
+    lines = [
+        "#!/bin/bash\n",
+        "set -euo pipefail\n",
+        "\n",
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n',
+        "\n",
+        f'git clone --recursive {analysis.clone_url} "$SCRIPT_DIR/src"\n',
+    ]
+    if analysis.repo_ref is not None:
+        lines.append(f'git -C "$SCRIPT_DIR/src" checkout {analysis.repo_ref}\n')
+    lines.append("\n")
+    if system_packages:
+        lines += [
+            'if [ "$(id -u)" -eq 0 ]; then\n',
+            '  SUDO=""\n',
+            "else\n",
+            '  SUDO="sudo"\n',
+            "fi\n",
+            "$SUDO apt-get update\n",
+            f"$SUDO apt-get install -y --no-install-recommends {' '.join(system_packages)}\n",
+        ]
+    else:
+        lines.append("# No build dependencies were discovered for this library.\n")
+    return write_executable(output_path / "setup.sh", "".join(lines))
+
+
+def rewrite_compile_commands_prefix(text: str, *, source_prefix: str, target_prefix: str) -> str:
+    """Rewrite every path under source_prefix to sit under target_prefix instead.
+
+    compile_commands.json paths get rewritten twice over a run that verifies in a
+    container: the container's /src back to the host workspace on capture (see
+    environments/oss_fuzz.py), and the workspace to the output directory here.
+    """
+    entries = json.loads(text)
+    for entry in entries:
+        for key in ("directory", "file"):
+            value = entry.get(key)
+            if isinstance(value, str):
+                entry[key] = _rewrite_path(value, source_prefix, target_prefix)
+        arguments = entry.get("arguments")
+        if isinstance(arguments, list):
+            entry["arguments"] = [
+                _rewrite_path(a, source_prefix, target_prefix) if isinstance(a, str) else a
+                for a in arguments
+            ]
+        command = entry.get("command")
+        if isinstance(command, str):
+            entry["command"] = _rewrite_path(command, source_prefix, target_prefix)
+    return json.dumps(entries, indent=2)
+
+
+def _rewrite_path(value: str, source_prefix: str, target_prefix: str) -> str:
+    return value.replace(source_prefix, target_prefix)
+
+
+def write_readme(output_path: Path, inputs: GenerationInputs) -> Path:
+    """Write README.md — what to run, and what this run actually proved.
+
+    The directory provisions both environments but only one was exercised, so the README
+    says which. Without that, a single merged directory implies both the host scripts and
+    the Dockerfile were verified, and one of them was not.
+    """
+    analysis = inputs.analysis
+    verified, unverified = (
+        ("oss-fuzz (in the container)", "The host scripts (setup.sh, build_library.sh) are")
+        if inputs.environment is Environment.OSS_FUZZ
+        else (
+            "local (on the host)",
+            "The container path (Dockerfile, build.sh under `compile`) is",
+        )
+    )
+    harness_stub = f"{HARNESS_SOURCE_DIR}/default_fuzzer.*"
+    text = f"""# {analysis.project_name} — fuzzing build
+
+Prepared by HarnessBuddy. This directory is both an OSS-Fuzz project and a standalone
+host build tree.
+
+## What this run verified
+
+- **Verified: {verified}.** {unverified} generated but was not executed by this run.
+- Build system: {analysis.build_system.value}
+- Repository: {analysis.clone_url} (ref: {analysis.repo_ref or "default branch"})
+- Repair agent: {inputs.agent_backend or "none"}
+- Verified with: `{" ".join(inputs.harness.command or inputs.build.command) or "n/a"}`
+
+## Run it on the host
+
+```bash
+./setup.sh              # clone the library and install its build dependencies
+./build_library.sh      # build and install it into install/
+./compile_harnesses.sh  # compile every harness in {HARNESS_SOURCE_DIR}/ into out/
+```
+
+`install/` already holds the library this run built, so `compile_harnesses.sh` works
+without re-running the first two steps.
+
+## Run it as an OSS-Fuzz project
+
+```bash
+docker build -t {analysis.project_name}:fuzz .
+docker run --rm --entrypoint bash {analysis.project_name}:fuzz -c compile
+```
+
+Or copy this directory into `oss-fuzz/projects/{analysis.project_name}` and use
+`infra/helper.py build_fuzzers {analysis.project_name}`.
+
+## Write a real harness
+
+`{harness_stub}` is a stub: it returns 0 without calling the library. Drop your own
+harness source into `{HARNESS_SOURCE_DIR}/` — `compile_harnesses.sh` compiles every
+`.c`/`.cc`/`.cpp`/`.cxx` file in there and names each binary after its source.
+
+Note that the link line was proven against the stub, so it confirms the static archives
+and their system dependencies link — not that the installed headers in `install/include`
+are usable.
+"""
+    path = output_path / "README.md"
+    path.write_text(text)
+    return path

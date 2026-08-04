@@ -7,7 +7,7 @@ against the library's static artifacts, producing a binary in out/.
 
 The failure context will be appended below. It includes:
 - The install directory containing static libraries (install/lib/*.a) and headers (install/include/)
-- The work directory containing compile_harness.sh and harness_src/
+- The work directory containing compile_harness.sh and harness_source/
 - The static libraries already discovered
 - Any link flags already auto-resolved from known symbol patterns
 - Any missing system libraries already reported by the linker
@@ -61,15 +61,15 @@ won't exist on a different machine or in a fresh container.
      archive already in install/lib, or a different link order resolves it): make the
      fix yourself — edit EXTRA_LINK_FLAGS, include paths, or static library link order
    directly in compile_harness.sh — and verify it. Still report the flag in
-     `missing_libs`/`missing_apt_packages`/`missing_brew_packages` in `agent_report.json`
-     (see below), even though it already worked here — HarnessBuddy needs the package
-     name recorded for portability to environments that don't already have it.
+     `missing_libs`/`missing_apt_packages` in `agent_report.json` (see below), even though
+     it already worked here — HarnessBuddy needs the package name recorded for portability
+     to environments that don't already have it.
    - **If the library isn't resolvable on this machine at all** (nothing to link
      against; installing a system package is unavoidable): do not edit
    EXTRA_LINK_FLAGS yourself, since you cannot verify a fix you cannot compile.
      Instead, identify the bare library name and report it via `missing_libs` (see
-     below), determine the actual apt and brew package names independently (see
-     `agent_report.json` fields), and say in your own reply text:
+     below), determine the actual apt package name (see `agent_report.json` fields), and
+     say in your own reply text:
      "ACTION REQUIRED: Missing system packages detected. Please review agent_report.json
       and install the listed packages, then re-run this agent."
      Write that line yourself — not through `echo` or any other command, and not only
@@ -90,7 +90,6 @@ with this shape:
   "summary": "libfoo.a alone is missing zlib symbols; linked against the system zlib at /usr/lib/x86_64-linux-gnu instead of requesting a new package.",
   "missing_libs": [],
   "missing_apt_packages": [],
-  "missing_brew_packages": [],
   "extra_include_paths": ["./src"],
   "extra_library_paths": ["./src/build"]
 }
@@ -105,11 +104,9 @@ with this shape:
 - `missing_apt_packages` (array of strings): Debian/Ubuntu `apt-get install` package
   names that provide the libraries above (e.g. `"libldap2-dev"` for `-lldap`), reported
   alongside every entry in `missing_libs` — including ones already present on this
-  machine, for portability to environments that aren't.
-- `missing_brew_packages` (array of strings): Homebrew `brew install` formula names for
-  the same dependencies (e.g. `"openldap"` for `-lldap`). Often a different string than
-  the apt package or the library name itself — work out each independently rather than
-  reusing one name across all three.
+  machine, for portability to environments that aren't. Every name here reaches the
+  generated `setup.sh` and Dockerfile, so this is how the package gets installed wherever
+  the output is used.
 - `extra_include_paths` (array of strings): relative paths, outside `install/include`,
   that you added to the harness compile command's `-I` search path to make the fix work.
   Empty array if none.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -207,18 +208,12 @@ class _StaticLibraryBuildChecks:
     def test_build_library_script_written(self, real_library_build: LibBuild) -> None:
         assert (real_library_build.workdir / "build_library.sh").exists()
 
-    def test_result_command_is_bash_script(self, real_library_build: LibBuild) -> None:
-        # The reported "reproduce with" command is the shared verification script for
-        # the environment the build actually ran in (spec 011), not build_library.sh
-        # itself.
+    def test_result_command_is_the_build_invocation(self, real_library_build: LibBuild) -> None:
+        """The library stage's pass/fail comes from its own probe, so that is the command it
+        reports. The shared gate runs once, after the harness stage."""
         cmd = real_library_build.library_result.command
-        assert cmd[0] == "bash"
-        expected_script = (
-            "check_docker_build.sh"
-            if real_library_build.environment is Environment.OSS_FUZZ
-            else "check_local_build.sh"
-        )
-        assert Path(cmd[1]).name == expected_script
+        assert cmd[0] in {"bash", "bear"}
+        assert "build_library.sh" in cmd
 
     def test_static_library_build_phase_log_written(self, real_library_build: LibBuild) -> None:
         """FR-004: a real build's full raw output must be retrievable via a per-phase
@@ -336,10 +331,12 @@ class TestCurlBuild:
     ids=lambda lib: lib.project_name,
 )
 class TestZlibBuild:
-    def test_library_path_in_compile_harnesses_script(self, real_library_build: LibBuild) -> None:
-        compile_harnesses_source = real_library_build.workdir / "compile_harnesses.sh"
-        assert compile_harnesses_source.exists()
-        assert "libz.a" in compile_harnesses_source.read_text()
+    def test_discovered_archive_reaches_the_harness_compiler(
+        self, real_library_build: LibBuild
+    ) -> None:
+        compiler = real_library_build.workdir / "compile_harness.sh"
+        assert compiler.exists()
+        assert "libz.a" in compiler.read_text()
 
 
 @pytest.mark.build_matrix
@@ -350,10 +347,12 @@ class TestZlibBuild:
     ids=lambda lib: lib.project_name,
 )
 class TestLibtiffBuild:
-    def test_system_package_inclusion(self, real_library_build: LibBuild) -> None:
-        compile_harnesses_source = real_library_build.workdir / "compile_harnesses.sh"
-        assert compile_harnesses_source.exists()
-        assert "-llzma" in compile_harnesses_source.read_text()
+    def test_transitive_link_flag_reaches_the_harness_compiler(
+        self, real_library_build: LibBuild
+    ) -> None:
+        compiler = real_library_build.workdir / "compile_harness.sh"
+        assert compiler.exists()
+        assert "-llzma" in compiler.read_text()
 
 
 # real build failure
@@ -367,3 +366,76 @@ def test_broken_cmake_not_succeeded(broken_cmake_build: tuple) -> None:
 def test_broken_cmake_exit_code_nonzero(broken_cmake_build: tuple) -> None:
     result, _ = broken_cmake_build
     assert result.exit_code != 0
+
+
+# --library-configure-arg against a real library
+#
+# c-ares sits in _AGENTIC_LIBS for one reason: -DBUILD_SHARED_LIBS=OFF alone does not make it
+# install a static library, so the deterministic build has nothing to link and the repair agent
+# gets called. Its own -DCARES_STATIC is the switch that does, which makes it the honest test of
+# whether a caller-supplied configure option actually reaches the configure step: supply it and
+# the same library builds deterministically, with no agent in the loop at all.
+
+
+@pytest.mark.build_matrix
+class TestConfigureArgsAgainstARealLibrary:
+    _SPEC = next(lib for lib in LIBS if lib.project_name == "c-ares")
+    _STATIC_FLAG = "-DCARES_STATIC=ON"
+
+    @pytest.fixture(scope="class")
+    def source(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        src = tmp_path_factory.mktemp("cares_src")
+        subprocess.run(
+            ["git", "clone", "--depth=1", self._SPEC.url, str(src)],
+            check=True,
+            capture_output=True,
+        )
+        return src
+
+    def _build(self, source: Path, workdir: Path, *configure_args: str) -> BuildExplorationResult:
+        """Build through the executor directly, so no repair agent can mask the outcome."""
+        from harnessbuddy.library_builder.build_parameters import BuildParameters
+
+        analysis = analyze(
+            RepoSource(source_path=source, clone_url=self._SPEC.url, project_name="c-ares")
+        )
+        assert analysis.build_system is BuildSystem.CMAKE
+        parameters = dataclasses.replace(
+            BuildParameters.defaults(), library_configure_args=configure_args
+        )
+        return LocalExecutor().run_library_build(analysis, workdir, parameters=parameters)
+
+    def test_the_build_has_no_static_library_without_the_configure_arg(
+        self, source: Path, tmp_path: Path
+    ) -> None:
+        """The premise the positive case rests on. cmake succeeds and installs headers and
+        binaries either way — what is missing is the *.a the harness has to link, which is why
+        this shows up as a failed build rather than a failed configure."""
+        result = self._build(source, tmp_path / "without")
+
+        assert result.succeeded is False
+        assert not list((tmp_path / "without" / "install" / "lib").glob("*.a"))
+        assert "no static libraries" in result.output
+
+    def test_the_configure_arg_makes_the_same_library_build(
+        self, source: Path, tmp_path: Path
+    ) -> None:
+        workdir = tmp_path / "with"
+        result = self._build(source, workdir, self._STATIC_FLAG)
+
+        assert result.succeeded is True, result.output[-2000:]
+        assert [path.name for path in (workdir / "install" / "lib").glob("*.a")] == ["libcares.a"]
+        assert result.llm_used is False
+
+    def test_the_shipped_script_carries_the_configure_arg(
+        self, source: Path, tmp_path: Path
+    ) -> None:
+        """The option has to survive into build_library.sh, not just into the one cmake
+        invocation this run made: that script is what the gate re-runs from nothing and what
+        generation publishes."""
+        workdir = tmp_path / "shipped"
+        self._build(source, workdir, self._STATIC_FLAG)
+
+        script = (workdir / "build_library.sh").read_text()
+        assert f"CONFIGURE_ARGS=('{self._STATIC_FLAG}')" in script
+        assert '-DBUILD_SHARED_LIBS=OFF "${CONFIGURE_ARGS[@]}"' in script

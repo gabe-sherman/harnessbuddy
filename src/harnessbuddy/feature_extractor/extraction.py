@@ -29,7 +29,7 @@ _REQUIRED_FIELDS = (
     "warnings",
 )
 
-_LANGUAGE_BY_VALUE = {lang.value: lang for lang in Language if lang != Language.UNKNOWN}
+_LANGUAGE_BY_VALUE = {lang.value: lang for lang in Language}
 
 
 class FeatureArtifactError(Exception):

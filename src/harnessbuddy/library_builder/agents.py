@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import re
-import sys
-from collections.abc import Callable
 from pathlib import Path
 
 from harnessbuddy.core.agent_stream import (
@@ -12,46 +10,23 @@ from harnessbuddy.core.agent_stream import (
     run_agent_streaming,
     write_agent_report,
 )
+from harnessbuddy.core.resources import skill_instructions
+
+# Imported as modules rather than by name: these are the shared definitions of "the
+# artifacts are there", and binding them here would make this module's copy diverge from
+# the one every other caller (and every test) sees.
+from harnessbuddy.library_builder import exploration, harness_explorer
 from harnessbuddy.library_builder.environments import verification
 from harnessbuddy.library_builder.environments.base import Environment
-from harnessbuddy.library_builder.exploration import (
-    _validate_install_artifacts,
-    is_standard_source_layout,
-    read_agent_report,
-)
-from harnessbuddy.library_builder.harness_explorer import (
-    _extract_missing_system_libs,
-    _validate_harness_artifacts,
-    reparse_lib_paths,
-    reparse_link_config,
-)
+from harnessbuddy.library_builder.exploration import read_agent_report
 from harnessbuddy.library_builder.models import (
-    AgentReport,
+    AgentStopReason,
     AnalysisResult,
     BuildExplorationResult,
     HarnessExplorationResult,
     HarnessPaths,
 )
-
-_SKILL_PATH: Path = (
-    Path(__file__).parent.parent.parent.parent / "agents" / "library_builder" / "SKILL.md"
-)
-
-_INLINE_INSTRUCTIONS: str = (
-    "Fix the failed C/C++ static library build. "
-    "Modify build_library.sh in the work directory so that "
-    "install/lib/*.a and install/include/* are populated after running it."
-)
-
-_HARNESS_SKILL_PATH: Path = (
-    Path(__file__).parent.parent.parent.parent / "agents" / "harness_builder" / "SKILL.md"
-)
-
-_HARNESS_INLINE_INSTRUCTIONS: str = (
-    "Fix the failed harness link probe. Modify compile_harness.sh in the work directory "
-    "so that compiling and linking the probe harness against the installed static "
-    "libraries succeeds and produces a binary in out/."
-)
+from harnessbuddy.library_builder.scripts import HARNESS_SOURCE_DIR
 
 
 def _verification_command(
@@ -67,13 +42,15 @@ def _verification_command(
     path to reference. Delegates to environments/verification.py so this is the exact
     same command construction the pipeline itself uses to gate pass/fail.
     """
-    if environment is Environment.OSS_FUZZ:
-        return " ".join(verification.docker_verification_command(workdir, project_name))
-    return " ".join(verification.local_verification_command(workdir))
+    return " ".join(
+        verification.verification_command(
+            workdir, environment=environment, project_name=project_name
+        )
+    )
 
 
 _LOCAL_PACKAGE_POLICY = (
-    "workdir is a directory on this actual host machine. Do not run apt-get/brew/dnf "
+    "workdir is a directory on this actual host machine. Do not run apt-get/dnf "
     "install yourself here, even for a package you're fully confident about — that would "
     "make an irreversible change to the user's system. Follow the missing-package steps "
     "above: disable the optional feature if possible, otherwise report it in "
@@ -92,10 +69,10 @@ _OSS_FUZZ_PACKAGE_POLICY = (
     "MAY add packages directly: append to (or add a new) `RUN apt-get install -y "
     "--no-install-recommends ...` line in workdir/Dockerfile, then re-run the verification "
     "command yourself to confirm it works. Still report every package you add via "
-    "missing_apt_packages/missing_brew_packages in agent_report.json — HarnessBuddy needs "
-    "both names recorded even though you resolved apt yourself, for portability to "
-    "brew/other hosts. Only stop and request human action if you cannot determine a "
-    "correct apt package name at all."
+    "missing_apt_packages in agent_report.json — HarnessBuddy needs every package "
+    "recorded even though you resolved it yourself, so the generated setup.sh installs it "
+    "too. Only stop and request human action if you cannot determine a correct apt "
+    "package name at all."
 )
 
 
@@ -137,35 +114,8 @@ _BUDGET_PATTERN = re.compile(
 )
 
 
-class BuildFailureError(Exception):
-    """Agent output contained ACTION_REQUIRED, signaling a user-resolvable roadblock."""
-
-    def __init__(self, output: str, summary: AgentRunSummary, report: AgentReport | None) -> None:
-        super().__init__(
-            f"Agent requires user action. Review the output below, resolve the issue, "
-            f"then retry.\n\n{output}"
-        )
-        self.output = output
-        self.summary = summary
-        self.report = report
-
-
-class LLMBudgetError(Exception):
-    """Agent exited because it hit a usage limit (Claude 5-hour limit or Codex quota)."""
-
-    def __init__(self, output: str, summary: AgentRunSummary, report: AgentReport | None) -> None:
-        super().__init__(
-            f"Agent hit a usage or rate limit. Review the output below and retry later.\n\n{output}"
-        )
-        self.output = output
-        self.summary = summary
-        self.report = report
-
-
-def _raise_for_agent_failure(
-    result: AgentStreamResult, summary: AgentRunSummary, report: AgentReport | None
-) -> None:
-    """Raise LLMBudgetError or BuildFailureError if agent output signals either condition.
+def _stop_reason(result: AgentStreamResult) -> AgentStopReason | None:
+    """The reason the agent stopped without a fix, or None if it did not stop that way.
 
     The two conditions are detected differently because they are emitted by different
     layers, so they are read from different channels of the stream.
@@ -188,23 +138,25 @@ def _raise_for_agent_failure(
     purely because the agent had read its own instructions off disk.
     """
     if _BUDGET_PATTERN.search(result.combined_text) and result.exit_code != 0:
-        raise LLMBudgetError(result.combined_text, summary, report)
+        return AgentStopReason.BUDGET_LIMITED
     if _ACTION_REQUIRED in result.model_text:
-        raise BuildFailureError(result.combined_text, summary, report)
+        return AgentStopReason.ACTION_REQUIRED
+    return None
 
 
 def _determine_outcome(result: AgentStreamResult) -> str:
     """Classify an agent invocation's outcome for the persisted/printed summary.
 
-    Reads each signal from the same channel _raise_for_agent_failure does, so the printed
-    outcome can't disagree with whether an exception was raised.
+    Reads each signal through _stop_reason, so the printed outcome can't disagree with the
+    stop reason recorded on the result.
     """
     if _BUDGET_PATTERN.search(result.combined_text):
-        return "budget_limited"
+        return AgentStopReason.BUDGET_LIMITED.value
     if result.exit_code == -1:
         return "timed_out"
-    if _ACTION_REQUIRED in result.model_text:
-        return "action_required"
+    stop_reason = _stop_reason(result)
+    if stop_reason is not None:
+        return stop_reason.value
     return "succeeded" if result.exit_code == 0 else "failed"
 
 
@@ -225,13 +177,13 @@ def _report_agent_run(report_path: Path, tool: str, result: AgentStreamResult) -
 
 def build_library_prompt(
     analysis: AnalysisResult,
-    exploration: BuildExplorationResult,
+    build_result: BuildExplorationResult,
     workdir: Path,
     environment: Environment,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed library build."""
-    instructions = _SKILL_PATH.read_text() if _SKILL_PATH.exists() else _INLINE_INSTRUCTIONS
-    stdout_tail = "\n".join(exploration.stdout.splitlines()[-200:])
+    instructions = skill_instructions("library_builder")
+    stdout_tail = "\n".join(build_result.stdout.splitlines()[-200:])
     verify_command = _verification_command(
         environment,
         workdir=workdir,
@@ -242,8 +194,8 @@ def build_library_prompt(
         f"## Build failure context\n\n"
         f"- source_dir: {analysis.source_path}\n"
         f"- build_system: {analysis.build_system.value}\n"
-        f"- command: {' '.join(exploration.command)}\n"
-        f"- exit_code: {exploration.exit_code}\n"
+        f"- command: {' '.join(build_result.command)}\n"
+        f"- exit_code: {build_result.exit_code}\n"
         f"- build_library.sh: {workdir / 'build_library.sh'}\n"
         f"- install_dir: {workdir / 'install'}\n"
         f"- build_dir: {workdir / 'build'}\n\n"
@@ -274,77 +226,9 @@ def construct_codex_command(prompt: str) -> list[str]:
     return cmd
 
 
-_DOCKER_VERIFICATION_SUCCESS_MARKER = "OK: docker build and in-container compile succeeded"
-
-
-def _post_agent_validation_errors(
-    environment: Environment, combined_text: str, host_artifact_check: Callable[[], list[str]]
-) -> list[str]:
-    """Validation errors to apply on top of an agent's own exit_code == 0 claim.
-
-    check_docker_build.sh's docker run is deliberately unmounted (research.md #1, #2), to
-    mirror real OSS-Fuzz build semantics — so install/out artifacts never land on
-    Environment.OSS_FUZZ's host workdir, and host_artifact_check (which looks for them,
-    correct for Environment.LOCAL) can't apply there. Instead, confirm the agent's own
-    transcript shows check_docker_build.sh's success marker, as defense-in-depth against a
-    false claim of success.
-    """
-    if environment is Environment.OSS_FUZZ:
-        if _DOCKER_VERIFICATION_SUCCESS_MARKER in combined_text:
-            return []
-        return [
-            "agent exited 0 but its transcript never shows check_docker_build.sh's own "
-            f'success marker ("{_DOCKER_VERIFICATION_SUCCESS_MARKER}")'
-        ]
-    return host_artifact_check()
-
-
-# Where every generated scaffold's setup.sh clones the library, and therefore the only source
-# location a published build_library.sh can rely on.
-_SCAFFOLD_SOURCE_DIR = "$SCRIPT_DIR/src"
-
-
-def _repaired_script_path(analysis: AnalysisResult, workdir: Path) -> Path | None:
-    """The agent-repaired build_library.sh to publish, or None when it cannot be reused.
-
-    A *generated* script only earns `script_path` under the standard workdir/src layout, since
-    otherwise the template bakes in this session's absolute source path
-    (`write_build_library_script`). A *repaired* one is judged on its own text instead: the
-    library-builder skill requires the agent to work through `$SCRIPT_DIR`/`$BUILD_PREFIX` and to
-    leave a script that "must succeed standalone against a freshly cloned source tree", so a fix
-    made against a non-standard layout is normally portable anyway -- and the layout gate alone
-    discarded it, silently regenerating from the template. For an undetected build system that
-    template is an empty stub, so the agent's script was the *only* thing that could ever build
-    the library, and the published scaffold could not (harnessbuddy#reuse-agent-fix).
-
-    What a published script actually needs is to find its source where the generated scaffold puts
-    it -- `setup.sh` clones to `$SCRIPT_DIR/src` -- so that reference, not the input layout, is the
-    test. Merely *naming* this session's path is not disqualifying on its own: agents commonly
-    resolve `$SCRIPT_DIR/src` first and keep the session checkout as a fallback, which travels
-    fine. Reuse is refused only when the session path is the sole source the script knows.
-    """
-    script_path = workdir / "build_library.sh"
-    if is_standard_source_layout(analysis, workdir):
-        return script_path
-    try:
-        script = script_path.read_text()
-    except OSError:
-        return None
-    session_path = str(analysis.source_path.resolve())
-    if _SCAFFOLD_SOURCE_DIR not in script and session_path in script:
-        print(
-            f"Warning: keeping the generated build_library.sh -- the agent's fix resolves its "
-            f"source only as {session_path}, which will not exist wherever this is published. "
-            f'Fixes must reach the source through "{_SCAFFOLD_SOURCE_DIR}".',
-            file=sys.stderr,
-        )
-        return None
-    return script_path
-
-
 def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params are distinct required inputs
     analysis: AnalysisResult,
-    exploration: BuildExplorationResult,
+    build_result: BuildExplorationResult,
     workdir: Path,
     *,
     tool: str = "claude",
@@ -356,7 +240,7 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     Streams agent output to the terminal. CWD is set to workdir, where build_library.sh
     lives; the agent can still read and modify the repo's build files via source_dir.
     """
-    prompt = build_library_prompt(analysis, exploration, workdir, environment)
+    prompt = build_library_prompt(analysis, build_result, workdir, environment)
     if tool == "claude":
         cmd = construct_claude_command(prompt)
     elif tool == "codex":
@@ -365,18 +249,14 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     result = run_agent_streaming(cmd, workdir, timeout, tool)
-    summary = _report_agent_run(workdir / "agent_library_build.log", tool, result)
+    _report_agent_run(workdir / "agent_library_build.log", tool, result)
     report = read_agent_report(workdir)
-    _raise_for_agent_failure(result, summary, report)
+    stop_reason = _stop_reason(result)
 
-    succeeded = result.exit_code == 0
+    succeeded = result.exit_code == 0 and stop_reason is None
     stderr = ""
     if succeeded:
-        validation_errors = _post_agent_validation_errors(
-            environment,
-            result.combined_text,
-            lambda: _validate_install_artifacts(workdir / "install"),
-        )
+        validation_errors = exploration.validate_install_artifacts(workdir / "install")
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
@@ -390,17 +270,20 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
         llm_used=True,
-        script_path=_repaired_script_path(analysis, workdir) if succeeded else None,
+        script_path=(workdir / "build_library.sh") if succeeded else None,
+        agent_stop_reason=stop_reason,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         transcript_path=workdir / "agent_library_build.log",
         agent_summary=report.summary if report else None,
         missing_apt_packages=report.missing_apt_packages if report else [],
-        missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=report.extra_library_paths if report else [],
         environment=environment,
+        compile_commands_error=(
+            None if succeeded else "not captured: the agent did not produce a passing build"
+        ),
     )
 
 
@@ -412,17 +295,12 @@ def build_harness_prompt(
     environment: Environment,
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed harness link probe."""
-    instructions = (
-        _HARNESS_SKILL_PATH.read_text()
-        if _HARNESS_SKILL_PATH.exists()
-        else _HARNESS_INLINE_INSTRUCTIONS
-    )
+    instructions = skill_instructions("harness_builder")
     # Some Runners (the oss-fuzz docker-streaming one) merge stderr into stdout and never
     # populate .stderr, so harness.stderr alone can be empty even when the failure's real
     # diagnostic text is sitting in .stdout — concatenate both, matching the same
     # combined-stream handling harness_explorer.py already relies on internally.
-    output_tail = "\n".join((harness.stdout + harness.stderr).splitlines()[-200:])
-    harness_dir_name = "harness_source" if environment is Environment.OSS_FUZZ else "harness_src"
+    output_tail = "\n".join(harness.output.splitlines()[-200:])
     verify_command = _verification_command(
         environment,
         workdir=workdir,
@@ -435,7 +313,7 @@ def build_harness_prompt(
         f"- install_dir: {install_dir}\n"
         f"- workdir: {workdir}\n"
         f"- compile_harness.sh: {workdir / 'compile_harness.sh'}\n"
-        f"- harness_src: {workdir / harness_dir_name}\n"
+        f"- harness_source: {workdir / HARNESS_SOURCE_DIR}\n"
         f"- static_libs: {', '.join(p.name for p in harness.static_libs) or '(none)'}\n"
         f"- auto_resolved_link_flags: {' '.join(harness.transitive_link_flags) or '(none)'}\n"
         f"- missing_system_libs (linker-reported): "
@@ -462,7 +340,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     """Spawn a Claude Code or Codex subprocess to diagnose and fix a failed harness link probe.
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
-    and modify compile_harness.sh and harness_src/ directly.
+    and modify compile_harness.sh and harness_source/ directly.
     """
     prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir, environment)
     if tool == "claude":
@@ -473,44 +351,36 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         raise ValueError(f"unknown agent tool: {tool!r}")
 
     result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
-    summary = _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
+    _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
     report = read_agent_report(paths.workdir)
-    _raise_for_agent_failure(result, summary, report)
+    stop_reason = _stop_reason(result)
 
-    succeeded = result.exit_code == 0
+    succeeded = result.exit_code == 0 and stop_reason is None
     stderr = ""
     missing_system_libs = harness.missing_system_libs
+    # The agent edits compile_harness.sh directly, and after a successful fix that script
+    # is what ships — so its text, not these lists, is the link configuration of record.
+    # They are carried forward only to describe what was tried.
     static_libs = harness.static_libs
     transitive_link_flags = harness.transitive_link_flags
     extra_library_paths = harness.extra_library_paths
     script_path = paths.workdir / "compile_harness.sh"
     if succeeded:
-        validation_errors = _post_agent_validation_errors(
-            environment,
-            result.combined_text,
-            lambda: _validate_harness_artifacts(paths.workdir),
-        )
+        validation_errors = harness_explorer.validate_harness_artifacts(paths.workdir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
-        else:
-            # The agent edits STATIC_LIBS/EXTRA_LINK_FLAGS/EXTRA_LIB_PATHS in the script
-            # directly rather than through us, so re-derive them instead of trusting the
-            # pre-fix values.
-            script_text = script_path.read_text()
-            static_libs, transitive_link_flags = reparse_link_config(
-                script_text, static_libs, transitive_link_flags
-            )
-            extra_library_paths = reparse_lib_paths(script_text, extra_library_paths)
     if not succeeded:
         # A validation-only failure (agent claimed done but out/ is empty) carries no new
         # linker stderr to re-parse, so preserve the pre-agent list rather than discarding it.
         missing_system_libs = list(
-            dict.fromkeys(missing_system_libs + _extract_missing_system_libs(stderr))
+            dict.fromkeys(
+                missing_system_libs + harness_explorer.extract_missing_system_libs(stderr)
+            )
         )
 
     # The agent reports the bare library name it couldn't resolve (e.g. "ldap") alongside
-    # the actual apt/brew package names below. Add the matching -l flag ourselves so the
+    # the actual apt package names below. Add the matching -l flag ourselves so the
     # generated script attempts the link once the package is installed.
     report_missing_libs = report.missing_libs if report else []
     if report_missing_libs:
@@ -533,6 +403,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         missing_system_libs=missing_system_libs if not succeeded else [],
         llm_used=True,
         script_path=script_path if succeeded else None,
+        agent_stop_reason=stop_reason,
         duration_seconds=result.duration_seconds,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
@@ -540,7 +411,6 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         transcript_path=paths.workdir / "agent_harness_build.log",
         agent_summary=report.summary if report else None,
         missing_apt_packages=report.missing_apt_packages if report else [],
-        missing_brew_packages=report.missing_brew_packages if report else [],
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=extra_library_paths,
         environment=environment,

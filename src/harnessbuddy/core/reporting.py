@@ -1,7 +1,7 @@
 """Phase reporting and failure diagnostics for the `generate` console output.
 
 See specs/012-clear-build-logging/ for the feature this module implements:
-`Phase`/`PhaseExecution`/`RunReport` track which pipeline stage is running and how it
+`Phase`/`PhaseExecution` track which pipeline stage is running and how it
 ended; `PhaseReporter` brackets a phase's console output with a start/end banner
 (FR-001/FR-002); `FailureDiagnostic` and its builder/formatter turn a phase's failure
 into the concise, located summary described by FR-005/FR-006.
@@ -10,7 +10,7 @@ into the concise, located summary described by FR-005/FR-006.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
@@ -29,6 +29,7 @@ class Phase(Enum):
     AGENT_LIBRARY_REPAIR = "agent_library_repair"
     HARNESS_COMPILE_PROBE = "harness_compile_probe"
     AGENT_HARNESS_REPAIR = "agent_harness_repair"
+    DOCKERFILE_VERIFICATION = "dockerfile_verification"
     OUTPUT_GENERATION = "output_generation"
 
 
@@ -39,6 +40,7 @@ _PHASE_LABELS: dict[Phase, str] = {
     Phase.AGENT_LIBRARY_REPAIR: "Agent-assisted library repair",
     Phase.HARNESS_COMPILE_PROBE: "Harness compile probe",
     Phase.AGENT_HARNESS_REPAIR: "Agent-assisted harness repair",
+    Phase.DOCKERFILE_VERIFICATION: "From-scratch Dockerfile verification",
     Phase.OUTPUT_GENERATION: "Output generation",
 }
 
@@ -66,7 +68,6 @@ class PhaseExecution:
     status: PhaseStatus = "running"
     started_at: float = 0.0
     ended_at: float | None = None
-    log_path: Path | None = None
 
     def mark_succeeded(self) -> None:
         self._transition("succeeded")
@@ -91,23 +92,6 @@ class FailureDiagnostic:
     origin: Literal["deterministic", "agent"]
     log_path: Path | None = None
     exit_code: int | None = None
-
-
-@dataclass
-class RunReport:
-    """Aggregates every `PhaseExecution` (and `FailureDiagnostic`) for one `generate`
-    invocation, in the order phases ran. Printed incrementally by `PhaseReporter` as
-    each phase starts/ends rather than held back to the end; not itself persisted to
-    disk (data-model.md `RunReport`)."""
-
-    phases: list[PhaseExecution] = field(default_factory=list)
-    diagnostics: list[FailureDiagnostic] = field(default_factory=list)
-
-    def add_phase(self, execution: PhaseExecution) -> None:
-        self.phases.append(execution)
-
-    def add_diagnostic(self, diagnostic: FailureDiagnostic) -> None:
-        self.diagnostics.append(diagnostic)
 
 
 def summarize_message(text: str, *, max_lines: int = _DEFAULT_MESSAGE_LINES) -> str:
@@ -210,19 +194,13 @@ class PhaseReporter:
     remember to call `.fail()` themselves.
     """
 
-    def __init__(self, phase: Phase, *, run_report: RunReport | None = None) -> None:
+    def __init__(self, phase: Phase) -> None:
         self.phase = phase
         self.execution = PhaseExecution(phase=phase, started_at=time.monotonic())
-        self._run_report = run_report
 
     def __enter__(self) -> PhaseReporter:
         print(format_phase_start_banner(self.phase))
-        if self._run_report is not None:
-            self._run_report.add_phase(self.execution)
         return self
-
-    def set_log_path(self, log_path: Path | None) -> None:
-        self.execution.log_path = log_path
 
     def succeed(self) -> None:
         self.execution.mark_succeeded()

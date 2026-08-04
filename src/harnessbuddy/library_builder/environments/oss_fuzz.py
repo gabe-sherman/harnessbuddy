@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import re
 import shlex
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING
 from harnessbuddy.core.subprocesses import Runner, RunResult, run_command, run_command_streaming
 from harnessbuddy.library_builder.environments import verification
 from harnessbuddy.library_builder.environments.base import Environment, EnvironmentUnavailableError
-from harnessbuddy.library_builder.oss_fuzz import workspace
+from harnessbuddy.library_builder.timeouts import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +67,14 @@ def _ensure_source_symlink(workdir: Path, analysis: AnalysisResult) -> None:
     a standard layout and write_build_library_script emits the portable $SCRIPT_DIR/src
     path instead of a host-only absolute path.
 
-    $SCRIPT_DIR/src then resolves correctly in both contexts build_library.sh runs in:
-    the bind-mounted exploration probe below (this symlink's target is reachable there
-    via run_library_build's identity extra_mounts bind) and check_docker_build.sh's
-    from-scratch container (where $SCRIPT_DIR/src is the Dockerfile's own fresh git
-    clone, unrelated to any host symlink). Without this, a non-standard-layout source
-    (e.g. ingest_local pointed at an arbitrary path) only builds in the bind-mounted
-    probe — check_docker_build.sh's unmounted container has no way to see the host path
-    baked into build_library.sh and fails with a missing-source-directory error.
+    $SCRIPT_DIR/src then resolves correctly in all three contexts build_library.sh runs in:
+    the bind-mounted exploration probe below (this symlink's target is reachable there via
+    run_library_build's identity extra_mounts bind), the mounted gate
+    (check_build_in_container.sh makes the same identity bind for exactly this reason), and
+    check_dockerfile_from_scratch.sh's unmounted container (where $SCRIPT_DIR/src is the
+    Dockerfile's own fresh git clone, unrelated to any host symlink). Without this, a
+    non-standard-layout source (e.g. ingest_local pointed at an arbitrary path) would bake a
+    host-only absolute path into build_library.sh, which no container can resolve.
     """
     link = workdir / "src"
     source = analysis.source_path.resolve()
@@ -84,7 +85,9 @@ def _ensure_source_symlink(workdir: Path, analysis: AnalysisResult) -> None:
     link.symlink_to(source)
 
 
-def _docker_run_factory(image_tag: str, extra_mounts: list[Path]) -> Runner:
+def _docker_run_factory(
+    image_tag: str, extra_mounts: list[Path], environment_variables: dict[str, str] | None = None
+) -> Runner:
     """Build a Runner that executes command inside image_tag via `docker run --entrypoint bash`.
 
     cwd is bind-mounted at /src — the same path the OSS-Fuzz base image's own project
@@ -108,15 +111,96 @@ def _docker_run_factory(image_tag: str, extra_mounts: list[Path]) -> Runner:
     """
 
     def run(command: list[str], cwd: Path, timeout: int) -> RunResult:
-        docker_command = ["docker", "run", "--rm", "--entrypoint", "bash"]
-        docker_command += ["-v", f"{cwd.resolve()}:{_CONTAINER_SRC_DIR}"]
+        mounts = ["-v", f"{cwd.resolve()}:{_CONTAINER_SRC_DIR}"]
         for mount in dict.fromkeys(str(p.resolve()) for p in extra_mounts):
-            docker_command += ["-v", f"{mount}:{mount}"]
+            mounts += ["-v", f"{mount}:{mount}"]
+        docker_command = ["docker", "run", "--rm", "--entrypoint", "bash"]
+        for name, value in (environment_variables or {}).items():
+            docker_command += ["-e", f"{name}={value}"]
+        docker_command += mounts
         docker_command += ["-w", _CONTAINER_SRC_DIR, image_tag, "-c", shlex.join(command)]
         logger.debug("Running docker command from %s:\n%s", str(cwd), shlex.join(docker_command))
-        return run_command_streaming(docker_command, cwd, timeout)
+        result = run_command_streaming(docker_command, cwd, timeout)
+        _restore_host_ownership(image_tag, mounts, cwd)
+        return result
 
     return run
+
+
+_CHOWN_TIMEOUT_SECONDS = 60
+
+
+def _restore_host_ownership(image_tag: str, mounts: list[str], cwd: Path) -> None:
+    """Give the host user back what the container just wrote into the bind mount.
+
+    The OSS-Fuzz image runs as root, so build/, install/, and out/ come back owned by uid 0
+    inside a directory the host user owns. Deleting a root-owned file needs write permission
+    on its directory, not the file, so the next attempt's rmtree of install/ fails as soon as
+    the build created a subdirectory of its own (install/lib/, say) — which is every build.
+
+    -Rh confines this to the workspace: a non-standard-layout run leaves <workspace>/src as a
+    symlink into the user's own tree, and -h chowns that link rather than following it.
+
+    Best-effort. On Docker Desktop the bind mount already maps to the host user and there is
+    nothing to undo, and a failure here costs a stale-permissions error later rather than
+    invalidating the build that just succeeded.
+    """
+    command = [
+        *["docker", "run", "--rm", *mounts, "--entrypoint", "chown", image_tag],
+        *["-Rh", f"{os.getuid()}:{os.getgid()}", _CONTAINER_SRC_DIR],
+    ]
+    result = run_command(command, cwd, _CHOWN_TIMEOUT_SECONDS)
+    if result.exit_code != 0:
+        logger.debug("Could not restore host ownership of %s: %s", cwd, result.output.strip())
+
+
+# What the base image already sets correctly for a fuzzing build. Forwarding a value equal
+# to one of these would be a no-op; forwarding an empty one would replace the image's
+# sanitizer flags with nothing, which is why only chosen values travel into the container.
+_UNCHOSEN_COMPILER_SETTINGS = {"CC": "clang", "CXX": "clang++", "CFLAGS": "", "CXXFLAGS": ""}
+_UNCHOSEN_HARNESS_FLAGS = "-fsanitize=fuzzer"
+
+
+def _chosen_settings(values: dict[str, str], *, unchosen: dict[str, str]) -> dict[str, str]:
+    return {name: value for name, value in values.items() if value != unchosen.get(name, "")}
+
+
+def _container_build_environment(parameters: BuildParameters) -> dict[str, str]:
+    """The library-build compiler settings to forward into the container."""
+    return _chosen_settings(
+        {
+            "CC": parameters.cc,
+            "CXX": parameters.cxx,
+            "CFLAGS": parameters.library_cflags,
+            "CXXFLAGS": parameters.library_cxxflags,
+        },
+        unchosen=_UNCHOSEN_COMPILER_SETTINGS,
+    )
+
+
+def _container_harness_environment(parameters: BuildParameters) -> dict[str, str]:
+    """The harness-compile settings to forward into the container.
+
+    The default harness flags are dropped rather than forwarded, because replacing CFLAGS with
+    just `-fsanitize=fuzzer` would throw away the sanitizer configuration. Note where that
+    configuration comes from: not the image's ENV CFLAGS, which carry no -fsanitize at all,
+    but `compile`, which appends SANITIZER_FLAGS to whatever CFLAGS it inherits. Forwarding a
+    genuinely chosen --library-cflags therefore still works — `compile` adds the sanitizer
+    flags on top of it rather than replacing it.
+    """
+    return _chosen_settings(
+        {
+            "CC": parameters.cc,
+            "CXX": parameters.cxx,
+            "CFLAGS": parameters.harness_cflags,
+            "CXXFLAGS": parameters.harness_cxxflags,
+        },
+        unchosen={
+            **_UNCHOSEN_COMPILER_SETTINGS,
+            "CFLAGS": _UNCHOSEN_HARNESS_FLAGS,
+            "CXXFLAGS": _UNCHOSEN_HARNESS_FLAGS,
+        },
+    )
 
 
 _TOKEN_PATH_PATTERN = re.compile(r"^(?P<flag>--?[A-Za-z][A-Za-z-]*=?)?(?P<path>/src(?:/.*)?)$")
@@ -224,28 +308,27 @@ def _rewrite_compile_commands_paths(compile_commands_path: Path, host_workdir: P
 
 class OssFuzzExecutor:
     """Runs each pipeline stage against the real OSS-Fuzz project layout, materialized
-    directly in the workspace as soon as its pieces are known (User Story 2), and gates
-    pass/fail via the same check_docker_build.sh script the repair agent uses (FR-001,
-    FR-002).
+    directly in the workspace as soon as its pieces are known (User Story 2).
 
-    Stateful per instance: run_library_build builds a run-scoped image tagged from the
-    project name, used for internal probing (the bind-mounted exploration build,
-    harness-link discovery attempts); run_harness_compile reuses that same image for its
-    discovery loop. The actual pass/fail gate is a single
-    fresh, from-scratch `docker build` + `compile` via check_docker_build.sh, run only once
-    — at the end of run_harness_compile, when its probe already succeeded — since `compile`
-    always runs build_library.sh then compile_harnesses.sh together (via build.sh); running
-    the same gate again after run_library_build alone would silently redo the full library
-    rebuild from scratch (the gate's container is never bind-mounted, so build_library.sh's
-    skip-if-already-built check never applies to it) for no benefit. run_library_build's own
-    pass/fail therefore comes from its bind-mounted probe alone. Either stage skips its
-    reproduce-it command's actual execution when its own probe already failed: a failing
-    probe already proves that from-scratch rebuild+recompile would fail identically.
+    Stateful per instance: run_library_build builds a run-scoped image from the workspace
+    Dockerfile, used for the bind-mounted exploration build and for harness-link
+    discovery's retry loop; run_harness_compile reuses it.
+
+    Each stage's pass/fail comes from its own probe. The shared gate
+    (agents/scripts/check_build.sh, run in the container by
+    check_build_in_container.sh) runs once, after the harness probe succeeds, with the
+    workspace mounted at /src — so everything it builds (install/, out/,
+    compile_commands.json) lands on the host for the next stage and for generation, and a
+    repair agent verifying its own fix leaves those artifacts behind too. That mount is
+    also why a run against an oss-fuzz target finishes with
+    verification.run_from_scratch_docker_verification: a mounted gate can pass while the
+    Dockerfile's own clone or apt layers are broken.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, base_image: str | None = None) -> None:
         self._image_tag: str | None = None
         self._project_name: str | None = None
+        self._base_image = base_image
 
     def check_availability(self) -> None:
         result = run_command(["docker", "info"], Path.cwd(), _AVAILABILITY_TIMEOUT_SECONDS)
@@ -262,20 +345,24 @@ class OssFuzzExecutor:
         analysis: AnalysisResult,
         workdir: Path,
         *,
-        timeout: int = 300,
+        timeout: int = DEFAULT_BUILD_TIMEOUT_SECONDS,
         parameters: BuildParameters | None = None,
     ) -> BuildExplorationResult:
+        from harnessbuddy.library_builder import workspace as workspace_layout
+        from harnessbuddy.library_builder.build_parameters import BuildParameters
         from harnessbuddy.library_builder.exploration import explore, write_build_library_script
         from harnessbuddy.library_builder.models import BuildExplorationResult
 
-        del parameters
         workdir = workdir.resolve()
+        parameters = parameters or BuildParameters.defaults()
         self._project_name = analysis.project_name
-        self._materialize_workspace(workdir, analysis)
+        workspace_layout.materialize(
+            workdir, analysis, parameters=parameters, base_image=self._base_image
+        )
         _ensure_source_symlink(workdir, analysis)
         # Written before _ensure_image: the workspace Dockerfile's COPY of
         # build_library.sh (workspace.write_dockerfile) requires it to already exist.
-        write_build_library_script(analysis, workdir, environment=Environment.OSS_FUZZ)
+        write_build_library_script(analysis, workdir, parameters=parameters)
 
         try:
             self._ensure_image(workdir, analysis)
@@ -297,30 +384,33 @@ class OssFuzzExecutor:
         extra_mounts = (
             [] if _is_within(analysis.source_path, workdir) else [analysis.source_path.resolve()]
         )
-        run = _docker_run_factory(self._image_tag, extra_mounts)
+        # BuildParameters works by setting the host process environment, which `docker run`
+        # does not forward — so the compiler settings are passed explicitly, or --cc/--cxx
+        # and the library flags would be silently ignored for this environment.
+        run = _docker_run_factory(
+            self._image_tag, extra_mounts, _container_build_environment(parameters)
+        )
         exploration_result = explore(
-            analysis, workdir, timeout=timeout, environment=Environment.OSS_FUZZ, run=run
+            analysis,
+            workdir,
+            timeout=timeout,
+            environment=Environment.OSS_FUZZ,
+            run=run,
+            parameters=parameters,
         )
         if exploration_result.compile_commands_path is not None:
             _rewrite_compile_commands_paths(exploration_result.compile_commands_path, workdir)
-        if not exploration_result.command:
-            # No real build attempt was made (e.g. unknown build system) — nothing for
-            # the shared verification script to check.
+        if exploration_result.command:
             return exploration_result
-
-        # Unlike LocalExecutor, the oss-fuzz atomic gate (check_docker_build.sh) always
-        # runs `compile` in a fresh, unmounted container — build_library.sh's
-        # skip-if-already-built check can never fire there (there's no persisted install/
-        # to find), so running the gate once here and again after run_harness_compile
-        # would redo the full library rebuild from scratch twice for no benefit. This
-        # stage's pass/fail comes from the bind-mounted probe above; run_harness_compile's
-        # own atomic gate is the one place `compile` actually runs, validating
-        # build_library.sh and compile_harnesses.sh together in a single pass (matching
-        # spec 011's original "one atomic check" intent). Report the reproduce-it command
-        # for reference without paying to run it here.
+        # No build was attempted (an unidentified build system), so there is no command to
+        # report. Point at the gate, which is what an agent's fix has to satisfy.
         return dataclasses.replace(
             exploration_result,
-            command=verification.docker_verification_command(workdir, analysis.project_name),
+            command=verification.verification_command(
+                workdir,
+                environment=Environment.OSS_FUZZ,
+                project_name=analysis.project_name,
+            ),
         )
 
     def run_harness_compile(  # noqa: PLR0913 -- paths and build configuration are independent inputs
@@ -333,22 +423,20 @@ class OssFuzzExecutor:
         extra_library_paths: list[str] | None = None,
         parameters: BuildParameters | None = None,
     ) -> HarnessExplorationResult:
+        from harnessbuddy.library_builder.build_parameters import BuildParameters
+        from harnessbuddy.library_builder.environments import gate
         from harnessbuddy.library_builder.harness_explorer import explore_harness_compilation
 
-        del parameters
         if self._image_tag is None or self._project_name is None:
             raise RuntimeError(
                 "OssFuzzExecutor.run_harness_compile requires a prior successful "
                 "run_library_build on this instance to establish the run-scoped image"
             )
         workdir = workdir.resolve()
+        parameters = parameters or BuildParameters.defaults()
         # Discovery keeps its fast, direct-exec path against the already-built image for
-        # its internal retry loop (research.md #2) — no docker build per attempt. It does
-        # invoke the base image's `compile` entrypoint each attempt (via
-        # explore_harness_compilation's oss_fuzz branch) since that's what populates
-        # $LIB_FUZZING_ENGINE; build_library.sh's skip-if-already-built check keeps that
-        # cheap rather than requiring a fresh docker build.
-        run = _docker_run_factory(self._image_tag, [])
+        # its internal retry loop (research.md #2) — no docker build per attempt.
+        run = _docker_run_factory(self._image_tag, [], _container_harness_environment(parameters))
         harness_result = explore_harness_compilation(
             install_dir,
             workdir,
@@ -358,140 +446,71 @@ class OssFuzzExecutor:
             environment=Environment.OSS_FUZZ,
             run=run,
         )
-        if not harness_result.static_libs:
-            # No install artifacts to link against — nothing for the shared
-            # verification script to check.
-            return harness_result
-
-        if not harness_result.succeeded:
-            # Discovery above already exhausted its attempts against this install/
-            # output — re-running the shared script would only reconfirm the same
-            # failure at the cost of a second full `docker build` + `compile`. Report
-            # the command a human/agent would use to verify a fix, without paying to
-            # run it again.
-            return dataclasses.replace(
-                harness_result,
-                command=verification.docker_verification_command(workdir, self._project_name),
-            )
-
-        verified = verification.run_docker_verification(workdir, self._project_name)
-        if _is_environment_unavailable(verified.stdout + verified.stderr):
+        gated = gate.apply_to_harness_result(
+            harness_result,
+            workdir,
+            environment=Environment.OSS_FUZZ,
+            project_name=self._project_name,
+        )
+        if gated.llm_used is False and _is_environment_unavailable(gated.output):
             raise EnvironmentUnavailableError(
-                f"Docker became unavailable during verification: {verified.stdout.strip()}",
+                f"Docker became unavailable during verification: {gated.stdout.strip()}",
                 Environment.OSS_FUZZ,
             )
-        return dataclasses.replace(
-            harness_result,
-            succeeded=verified.passed,
-            command=verified.command,
-            stdout=verified.stdout,
-            stderr=verified.stderr,
-            exit_code=0 if verified.passed else 1,
-            duration_seconds=verified.duration_seconds,
-        )
-
-    def sync_artifacts_after_agent_fix(
-        self, analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
-    ) -> BuildExplorationResult:
-        """Re-run the agent-fixed build_library.sh via a mounted docker run against the
-        (possibly rebuilt) dev image, to populate workdir/install and capture
-        compile_commands.json — neither of which check_docker_build.sh's unmounted
-        docker run (used by the agent to verify its own fix) produces on the host.
-
-        _ensure_image is called again here — always rebuilding, cheaply, via Docker's
-        own layer cache — to pick up any Dockerfile edit the agent made (e.g. adding a
-        package), covering both the common case (only build_library.sh changed, so this
-        is a fast cache hit) and the rarer case where run_library_build's own image
-        build never succeeded (so an agent that fixed the Dockerfile itself never left
-        self._image_tag set). self._project_name (set unconditionally at the top of
-        run_library_build, even when its own image build then fails) is the
-        precondition check, not self._image_tag — that would incorrectly reject exactly
-        the rarer case above.
-        """
-        from harnessbuddy.library_builder.exploration import explore
-        from harnessbuddy.library_builder.models import BuildExplorationResult
-
-        if self._project_name is None:
-            raise RuntimeError(
-                "OssFuzzExecutor.sync_artifacts_after_agent_fix requires a prior "
-                "run_library_build on this instance to establish the workspace"
-            )
-        workdir = workdir.resolve()
-        try:
-            self._ensure_image(workdir, analysis)
-        except _ImageBuildError as exc:
-            # The agent's fix was already proven via check_docker_build.sh's own
-            # from-scratch build; a hydration-only rebuild failing here doesn't change
-            # that outcome, just means the harness stage may find install/ still empty.
-            return BuildExplorationResult(
-                build_system=analysis.build_system,
-                succeeded=False,
-                command=exc.command,
-                stdout=exc.result.stdout,
-                stderr=exc.result.stderr,
-                exit_code=exc.result.exit_code,
-                duration_seconds=exc.result.duration_seconds,
-                environment=Environment.OSS_FUZZ,
-            )
-        if self._image_tag is None:
-            raise RuntimeError("_ensure_image did not set an image tag")
-
-        run = _docker_run_factory(self._image_tag, [])
-        result = explore(
-            analysis,
-            workdir,
-            timeout=timeout,
-            environment=Environment.OSS_FUZZ,
-            run=run,
-            regenerate_script=False,
-        )
-        if result.compile_commands_path is not None:
-            _rewrite_compile_commands_paths(result.compile_commands_path, workdir)
-        return result
-
-    def _materialize_workspace(self, workdir: Path, analysis: AnalysisResult) -> None:
-        """Write the real OSS-Fuzz project layout directly into the workspace, as soon
-        as its pieces are known (User Story 2), instead of a separate synthetic
-        representation only assembled at final generation.
-        """
-        workspace.write_project_yaml(workdir, analysis)
-        workspace.write_dockerfile(workdir, analysis, include_bear=True)
-        workspace.write_build_sh(workdir)
-        harness_source_dir = workdir / "harness_source"
-        harness_source_dir.mkdir(exist_ok=True)
-
-        compile_harnesses_path = workdir / "compile_harnesses.sh"
-        if not compile_harnesses_path.exists():
-            from harnessbuddy.library_builder.scripts import write_default_fuzzer
-
-            # The stub compiles whatever's in harness_source/ (research.md #3) — write
-            # the real default fuzzer stub now so check_docker_build.sh's /out non-empty
-            # check has something to find even before harness-link discovery ever runs.
-            write_default_fuzzer(harness_source_dir, analysis.language)
-            workspace.write_compile_harnesses_stub(workdir)
+        return gated
 
     def _ensure_image(self, workdir: Path, analysis: AnalysisResult) -> None:
         """Build a run-scoped image from the workspace's real Dockerfile — used for
         internal probing (the bind-mounted exploration build, harness-link discovery
-        attempts), not the atomic pass/fail gate (research.md #1, #2).
+        attempts). The gate builds its own image through check_build_in_container.sh, from
+        the same Dockerfile and to the same tag.
 
         Always invokes `docker build`, relying on Docker's own layer cache for speed
-        when the Dockerfile is unchanged. A prior version skipped this call whenever
-        analysis.system_packages matched the last build, but that key can't see
-        Dockerfile edits an agent makes directly (e.g. adding a package without also
-        reporting it via agent_report.json) — probes then silently ran against a stale
-        image missing the fix.
+        when the Dockerfile is unchanged. A prior version skipped this call whenever the
+        discovered package list matched the last build, but that key can't see Dockerfile
+        edits an agent makes directly (e.g. adding a package without also reporting it via
+        agent_report.json) — probes then silently ran against a stale image missing the
+        fix.
         """
         tag = f"harnessbuddy-dev/{analysis.project_name}:latest"
         command = ["docker", "build", "-t", tag, "."]
         result = run_command(command, workdir, _IMAGE_BUILD_TIMEOUT_SECONDS)
 
         if result.exit_code != 0:
-            if _is_environment_unavailable(result.stdout + result.stderr):
+            if _is_environment_unavailable(result.output):
                 raise EnvironmentUnavailableError(
                     f"Failed to build the oss-fuzz image: {result.stderr.strip()}",
                     Environment.OSS_FUZZ,
                 )
             raise _ImageBuildError(command, result)
 
+        self._require_compile(tag)
         self._image_tag = tag
+
+    def _require_compile(self, image_tag: str) -> None:
+        """Reject a base image that has no `compile`, before anything tries to build in it.
+
+        Every stage of an oss-fuzz run enters the build through `compile`
+        (Environment.harness_probe_command, check_build.sh, check_dockerfile_from_scratch.sh),
+        so an image without it cannot pass any of them. The workspace Dockerfile is written in
+        terms of $SRC as well, another OSS-Fuzz base-image convention. --base-image therefore
+        selects among OSS-Fuzz base images — ubuntu-24-04, a Focal-based tag, base-builder-go
+        — rather than accepting any image at all.
+
+        Raised as EnvironmentUnavailableError, not a build failure: no edit a repair agent can
+        make to build.sh puts `compile` into the image.
+        """
+        from harnessbuddy.library_builder.workspace import DEFAULT_BASE_IMAGE
+
+        command = ["docker", "run", "--rm", "--entrypoint", "bash", image_tag]
+        command += ["-c", "command -v compile"]
+        if run_command(command, Path.cwd(), _AVAILABILITY_TIMEOUT_SECONDS).exit_code == 0:
+            return
+        raise EnvironmentUnavailableError(
+            f"The base image behind {image_tag} has no `compile` on PATH, so it is not an "
+            "OSS-Fuzz base image. --base-image selects among OSS-Fuzz base images (for example "
+            f"{DEFAULT_BASE_IMAGE}); it cannot take an arbitrary image, because every "
+            "verification stage enters the build through `compile` and the generated Dockerfile "
+            "is written in terms of $SRC.",
+            Environment.OSS_FUZZ,
+        )

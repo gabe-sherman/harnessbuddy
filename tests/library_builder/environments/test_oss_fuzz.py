@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -24,7 +25,7 @@ from harnessbuddy.library_builder.models import (
 _FAKE_URL = "https://github.com/example/testlib.git"
 
 _VERIFY_OK = RunResult(
-    stdout="OK: docker build and in-container compile succeeded",
+    stdout="OK: check_build.sh succeeded inside the container",
     stderr="",
     exit_code=0,
     duration_seconds=0.1,
@@ -32,8 +33,8 @@ _VERIFY_OK = RunResult(
 
 
 def _patch_verification(*, return_value: RunResult = _VERIFY_OK):  # type: ignore[no-untyped-def]
-    """Mock the shared check_docker_build.sh boundary (T014/T015) — a separate
-    subprocess call from the run-scoped image build/bind-mounted probing below."""
+    """Mock the shared gate boundary — a separate subprocess call from the run-scoped image
+    build and the bind-mounted probing below."""
     return patch(
         "harnessbuddy.library_builder.environments.verification.run_command_streaming",
         return_value=return_value,
@@ -42,7 +43,6 @@ def _patch_verification(*, return_value: RunResult = _VERIFY_OK):  # type: ignor
 
 def _analysis(
     source_path: Path,
-    system_packages: list[str] | None = None,
     *,
     build_system: BuildSystem = BuildSystem.CMAKE,
 ) -> AnalysisResult:
@@ -50,12 +50,9 @@ def _analysis(
         project_name="testlib",
         source_path=source_path,
         build_system=build_system,
-        build_files=[],
-        headers=[],
         language=Language.C,
         clone_url=_FAKE_URL,
         repo_ref=None,
-        system_packages=system_packages or [],
     )
 
 
@@ -126,9 +123,7 @@ def test_run_library_build_non_network_probe_failure_returns_failed_result(tmp_p
             duration_seconds=0.1,
         ),
     ):
-        result = OssFuzzExecutor().run_library_build(
-            _analysis(workdir / "src", ["definitely-not-a-real-package"]), workdir
-        )
+        result = OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
     assert result.succeeded is False
     assert result.environment is Environment.OSS_FUZZ
     assert "definitely-not-a-real-package" in result.stderr
@@ -150,7 +145,7 @@ def test_run_library_build_success_tags_environment_oss_fuzz(tmp_path: Path) -> 
             return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -162,7 +157,7 @@ def test_run_library_build_success_tags_environment_oss_fuzz(tmp_path: Path) -> 
 
 def test_run_library_build_does_not_run_shared_verification_script(tmp_path: Path) -> None:
     """run_library_build's pass/fail comes from the bind-mounted probe alone — the shared
-    check_docker_build.sh gate is never invoked here, since its container is always a
+    check_build_in_container.sh gate is never invoked here, since its container is always a
     fresh, unmounted `docker run` (build_library.sh's skip-if-already-built check can't
     fire there), so running it once per stage would redo the full library rebuild from
     scratch twice. The gate only actually runs once, at the end of run_harness_compile,
@@ -179,7 +174,7 @@ def test_run_library_build_does_not_run_shared_verification_script(tmp_path: Pat
             return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification() as mock_verify,
@@ -188,11 +183,11 @@ def test_run_library_build_does_not_run_shared_verification_script(tmp_path: Pat
 
     mock_verify.assert_not_called()
     assert result.succeeded is True
-    assert result.command[1].endswith("check_docker_build.sh")
+    assert result.command == ["bash", "build_library.sh"]
 
 
 def test_run_library_build_skips_verification_when_probe_fails(tmp_path: Path) -> None:
-    """A failing probe short-circuits — check_docker_build.sh's from-scratch `docker
+    """A failing probe short-circuits — check_build_in_container.sh's from-scratch `docker
     build` + `compile` (an uncached recompile of the library) is not paid for twice to
     reconfirm a failure the bind-mounted probe already reproduced."""
     workdir = tmp_path / "work"
@@ -217,7 +212,7 @@ def test_run_library_build_skips_verification_when_probe_fails(tmp_path: Path) -
 
     mock_verify.assert_not_called()
     assert result.succeeded is False
-    assert result.command[1].endswith("check_docker_build.sh")
+    assert result.command == ["bash", "build_library.sh"]
 
 
 def test_run_harness_compile_skips_verification_when_discovery_fails(tmp_path: Path) -> None:
@@ -239,7 +234,7 @@ def test_run_harness_compile_skips_verification_when_discovery_fails(tmp_path: P
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -262,7 +257,7 @@ def test_run_harness_compile_skips_verification_when_discovery_fails(tmp_path: P
 
     mock_verify.assert_not_called()
     assert result.succeeded is False
-    assert result.command[1].endswith("check_docker_build.sh")
+    assert result.command[1].endswith("check_build_in_container.sh")
 
 
 def test_docker_run_invocation_mounts_workdir_and_uses_bash_entrypoint(tmp_path: Path) -> None:
@@ -278,7 +273,7 @@ def test_docker_run_invocation_mounts_workdir_and_uses_bash_entrypoint(tmp_path:
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ) as mock_streaming,
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -442,7 +437,7 @@ def test_run_library_build_rewrites_src_paths_in_captured_compile_commands(
             side_effect=fake_run_command_streaming,
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -485,7 +480,7 @@ def test_ensure_probe_image_dockerfile_includes_bear_with_no_system_packages(
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -495,9 +490,7 @@ def test_ensure_probe_image_dockerfile_includes_bear_with_no_system_packages(
     assert "bear" in dockerfiles["text"]
 
 
-def test_ensure_probe_image_dockerfile_includes_bear_alongside_system_packages(
-    tmp_path: Path,
-) -> None:
+def test_probe_image_uses_the_requested_base_image(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     dockerfiles: dict[str, str] = {}
@@ -511,17 +504,37 @@ def test_ensure_probe_image_dockerfile_includes_bear_alongside_system_packages(
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
     ):
-        OssFuzzExecutor().run_library_build(_analysis(workdir / "src", ["libssl-dev"]), workdir)
+        OssFuzzExecutor(base_image="example.com/base:v1").run_library_build(
+            _analysis(workdir / "src"), workdir
+        )
 
-    assert "bear" in dockerfiles["text"]
-    assert "libssl-dev" in dockerfiles["text"]
-    # Both are provisioned in the same apt-get invocation, not a second RUN line.
-    assert dockerfiles["text"].count("apt-get install") == 1
+    assert dockerfiles["text"].startswith("FROM example.com/base:v1\n")
+
+
+def test_a_base_image_without_compile_is_rejected_as_unavailable(tmp_path: Path) -> None:
+    """--base-image selects among OSS-Fuzz base images, not any image: every verification
+    stage enters the build through `compile`, and the generated Dockerfile is written in terms
+    of $SRC. Reported as unavailable rather than as a build failure, because no edit an agent
+    makes to build.sh puts `compile` into the image."""
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+
+    def docker(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
+        found = "command -v compile" not in command
+        return RunResult(stdout="", stderr="", exit_code=0 if found else 1, duration_seconds=0.1)
+
+    with (
+        patch("harnessbuddy.library_builder.environments.oss_fuzz.run_command", side_effect=docker),
+        pytest.raises(EnvironmentUnavailableError, match="no `compile` on PATH"),
+    ):
+        OssFuzzExecutor(base_image="debian:stable-slim").run_library_build(
+            _analysis(workdir / "src"), workdir
+        )
 
 
 # run_harness_compile — requires a prior successful run_library_build on the same instance
@@ -548,7 +561,7 @@ def test_run_harness_compile_reuses_probe_image_from_library_build(tmp_path: Pat
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -574,7 +587,7 @@ def test_run_harness_compile_reuses_probe_image_from_library_build(tmp_path: Pat
 
 
 def test_run_harness_compile_gates_on_shared_verification_script(tmp_path: Path) -> None:
-    """run_harness_compile's pass/fail comes from check_docker_build.sh (T015, FR-001),
+    """run_harness_compile's pass/fail comes from check_build_in_container.sh (T015, FR-001),
     not from discovery's own direct-exec probe result."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
@@ -591,7 +604,7 @@ def test_run_harness_compile_gates_on_shared_verification_script(tmp_path: Path)
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -618,7 +631,7 @@ def test_run_harness_compile_gates_on_shared_verification_script(tmp_path: Path)
 
     assert result.succeeded is False
     command = mock_verify.call_args[0][0]
-    assert command[1].endswith("check_docker_build.sh")
+    assert command[1].endswith("check_build_in_container.sh")
     assert result.command == command
 
 
@@ -638,7 +651,7 @@ def test_run_harness_compile_skips_verification_without_static_libs(tmp_path: Pa
             return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -650,158 +663,6 @@ def test_run_harness_compile_skips_verification_without_static_libs(tmp_path: Pa
 
     mock_verify.assert_not_called()
     assert result.succeeded is False
-
-
-# sync_artifacts_after_agent_fix — hydrates host install/ and compile_commands.json
-# after a repair agent's fix, since check_docker_build.sh's own docker run (the agent's
-# verification path) is deliberately unmounted and never touches the host.
-
-
-def test_sync_artifacts_after_agent_fix_requires_prior_run_library_build(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError):
-        OssFuzzExecutor().sync_artifacts_after_agent_fix(_analysis(tmp_path / "src"), tmp_path)
-
-
-def test_sync_artifacts_after_agent_fix_populates_install(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    (workdir / "src").mkdir(parents=True)
-    executor = OssFuzzExecutor()
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-        _patch_verification(),
-    ):
-        executor.run_library_build(_analysis(workdir / "src"), workdir)
-
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ) as mock_streaming,
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-    ):
-        result = executor.sync_artifacts_after_agent_fix(_analysis(workdir / "src"), workdir)
-
-    assert result.succeeded is True
-    docker_command = mock_streaming.call_args[0][0]
-    assert docker_command[0] == "docker"
-    assert f"{workdir.resolve()}:/src" in docker_command
-
-
-def test_sync_artifacts_after_agent_fix_rebuilds_image_even_with_unchanged_packages(
-    tmp_path: Path,
-) -> None:
-    """A prior version skipped the `docker build` here whenever analysis.system_packages
-    matched the last build. That key can't see a Dockerfile edit an agent makes directly
-    (e.g. adding a package without also reporting it via agent_report.json), so probing
-    silently ran against an image missing the fix. Guard against reintroducing that skip
-    by asserting `docker build` runs again regardless."""
-    workdir = tmp_path / "work"
-    (workdir / "src").mkdir(parents=True)
-    executor = OssFuzzExecutor()
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ) as mock_build,
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-        _patch_verification(),
-    ):
-        executor.run_library_build(_analysis(workdir / "src"), workdir)
-
-    assert mock_build.call_count == 1
-
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ) as mock_build_again,
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-    ):
-        # Same analysis, same system_packages — the stale cache key would have matched.
-        executor.sync_artifacts_after_agent_fix(_analysis(workdir / "src"), workdir)
-
-    assert mock_build_again.call_count == 1
-    docker_build_command = mock_build_again.call_args[0][0]
-    assert docker_build_command == ["docker", "build", "-t", "harnessbuddy-dev/testlib:latest", "."]
-
-
-def test_sync_artifacts_after_agent_fix_does_not_regenerate_build_library_sh(
-    tmp_path: Path,
-) -> None:
-    """An agent's fix to build_library.sh must survive — regenerating it from the
-    template here would silently discard the fix."""
-    workdir = tmp_path / "work"
-    (workdir / "src").mkdir(parents=True)
-    executor = OssFuzzExecutor()
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-        _patch_verification(),
-    ):
-        executor.run_library_build(_analysis(workdir / "src"), workdir)
-
-    agent_fixed_script = "#!/bin/bash\nset -euo pipefail\n# AGENT_FIX_MARKER\necho hi\n"
-    (workdir / "build_library.sh").write_text(agent_fixed_script)
-
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
-            return_value=[],
-        ),
-    ):
-        executor.sync_artifacts_after_agent_fix(_analysis(workdir / "src"), workdir)
-
-    assert (workdir / "build_library.sh").read_text() == agent_fixed_script
 
 
 # workspace materialization — the workspace is a real, buildable OSS-Fuzz project
@@ -821,7 +682,7 @@ def test_run_library_build_materializes_real_project_layout(tmp_path: Path) -> N
             return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -855,7 +716,7 @@ def test_run_library_build_workspace_dockerfile_has_no_git_clone_bind_mount_quir
             return_value=RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1),
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         _patch_verification(),
@@ -875,7 +736,7 @@ def test_probe_image_build_error_class_removed() -> None:
 
 
 # Docker-gated end-to-end tests (T015, T021) — skipped by default per pyproject.toml's
-# docker marker. Under the new architecture (T012), the atomic check_docker_build.sh gate
+# docker marker. Under the new architecture (T012), the atomic check_build_in_container.sh gate
 # does a from-scratch `git clone <analysis.clone_url>` inside the container (FR-002) — so,
 # unlike the old synthetic-probe-image design, these need a real, network-clonable
 # clone_url whose content actually matches analysis.source_path, not a local fixture
@@ -898,7 +759,7 @@ def test_run_library_build_real_docker_end_to_end(tmp_path: Path) -> None:
     )
     workdir = tmp_path / "work"
     analysis = analyze(RepoSource(source_path=source, clone_url=str(source), project_name="zlib"))
-    analysis.clone_url = "https://github.com/madler/zlib.git"
+    analysis = dataclasses.replace(analysis, clone_url="https://github.com/madler/zlib.git")
 
     result = OssFuzzExecutor().run_library_build(analysis, workdir)
     assert result.succeeded is True
@@ -908,7 +769,7 @@ def test_run_library_build_real_docker_end_to_end(tmp_path: Path) -> None:
 @pytest.mark.docker
 def test_run_docker_build_independently_passes_after_run_library_build(tmp_path: Path) -> None:
     """T021: a workspace run_library_build leaves behind must independently pass
-    `bash agents/scripts/check_docker_build.sh <workspace> <project>` — the same command
+    `bash agents/scripts/check_build_in_container.sh <workspace> <project>` — the same command
     the repair agent is told to run — proving there is exactly one definition of "the
     build passed" (FR-001, SC-001)."""
     import subprocess
@@ -925,16 +786,44 @@ def test_run_docker_build_independently_passes_after_run_library_build(tmp_path:
     )
     workdir = tmp_path / "work"
     analysis = analyze(RepoSource(source_path=source, clone_url=str(source), project_name="zlib"))
-    analysis.clone_url = "https://github.com/madler/zlib.git"
+    analysis = dataclasses.replace(analysis, clone_url="https://github.com/madler/zlib.git")
 
     result = OssFuzzExecutor().run_library_build(analysis, workdir)
     assert result.succeeded is True
 
-    script = (
-        Path(__file__).parent.parent.parent.parent / "agents" / "scripts" / "check_docker_build.sh"
-    )
+    from harnessbuddy.core.resources import agent_script
+
+    script = agent_script("check_build_in_container.sh")
     independent = run_command(["bash", str(script), str(workdir.resolve()), "zlib"], workdir, 600)
     assert independent.exit_code == 0, independent.stdout + independent.stderr
+
+
+@pytest.mark.docker
+def test_run_harness_compile_real_docker_end_to_end(tmp_path: Path) -> None:
+    """The harness stage, which nothing else in the docker suite reaches — every other case
+    here stops after run_library_build. It passes only because the probe enters the build
+    through `compile`: run compile_harnesses.sh directly in that image and the link fails on
+    the /usr/lib/libFuzzingEngine.a the ENV names but compile_libfuzzer has yet to create."""
+    import subprocess
+
+    from harnessbuddy.core.repos import RepoSource
+    from harnessbuddy.library_builder.analysis import analyze
+
+    source = tmp_path / "src"
+    subprocess.run(
+        ["git", "clone", "--depth=1", "https://github.com/madler/zlib.git", str(source)],
+        check=True,
+        capture_output=True,
+    )
+    workdir = tmp_path / "work"
+    analysis = analyze(RepoSource(source_path=source, clone_url=str(source), project_name="zlib"))
+    analysis = dataclasses.replace(analysis, clone_url="https://github.com/madler/zlib.git")
+
+    executor = OssFuzzExecutor()
+    assert executor.run_library_build(analysis, workdir).succeeded is True
+
+    result = executor.run_harness_compile(workdir.resolve() / "install", workdir, analysis.language)
+    assert result.succeeded is True, result.stdout + result.stderr
 
 
 @pytest.mark.docker
@@ -959,7 +848,7 @@ def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: 
     )
     workdir = tmp_path / "work"
     analysis = analyze(RepoSource(source_path=source, clone_url=str(source), project_name="lz4"))
-    analysis.clone_url = "https://github.com/lz4/lz4.git"
+    analysis = dataclasses.replace(analysis, clone_url="https://github.com/lz4/lz4.git")
     assert analysis.build_system == BuildSystem.MAKEFILE
 
     result = OssFuzzExecutor().run_library_build(analysis, workdir)
@@ -970,3 +859,111 @@ def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: 
     assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
     entries = json.loads(result.compile_commands_path.read_text())
     assert any(entry["file"].endswith(".c") for entry in entries)
+
+
+# compiler settings reach the container — BuildParameters works by setting the host process
+# environment, which `docker run` does not forward, so they have to be passed explicitly.
+
+
+def _docker_environment(command: list[str]) -> dict[str, str]:
+    """The -e NAME=VALUE pairs in a docker run argv."""
+    pairs = [command[i + 1] for i, token in enumerate(command) if token == "-e"]
+    return dict(pair.split("=", 1) for pair in pairs)
+
+
+def test_library_build_forwards_the_chosen_compiler_settings(tmp_path: Path) -> None:
+    import dataclasses
+
+    from harnessbuddy.library_builder.build_parameters import BuildParameters
+
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+    parameters = dataclasses.replace(
+        BuildParameters.defaults(), cc="gcc", library_cflags="-O2 -DLIBRARY_FLAG"
+    )
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ) as mock_streaming,
+        patch(
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
+            return_value=[],
+        ),
+    ):
+        OssFuzzExecutor().run_library_build(
+            _analysis(workdir / "src"), workdir, parameters=parameters
+        )
+
+    forwarded = _docker_environment(mock_streaming.call_args[0][0])
+    assert forwarded["CC"] == "gcc"
+    assert forwarded["CFLAGS"] == "-O2 -DLIBRARY_FLAG"
+
+
+def test_library_build_forwards_nothing_the_caller_did_not_choose(tmp_path: Path) -> None:
+    """Forwarding an empty CFLAGS would replace the base image's sanitizer configuration
+    with nothing, which is worse than not forwarding at all."""
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ) as mock_streaming,
+        patch(
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
+            return_value=[],
+        ),
+    ):
+        OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
+
+    assert _docker_environment(mock_streaming.call_args[0][0]) == {}
+
+
+def test_harness_compile_does_not_replace_the_images_sanitizer_flags(tmp_path: Path) -> None:
+    """The default harness flags are just libFuzzer's engine flag; forwarding them as CFLAGS
+    would drop the image's sanitizer configuration and silently build an unsanitized
+    harness. $LIB_FUZZING_ENGINE supplies the engine in the container."""
+    workdir = tmp_path / "work"
+    (workdir / "src").mkdir(parents=True)
+    install_dir = workdir / "install"
+
+    executor = OssFuzzExecutor()
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ),
+        patch(
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
+            return_value=[],
+        ),
+    ):
+        executor.run_library_build(_analysis(workdir / "src"), workdir)
+
+    (install_dir / "lib").mkdir(parents=True)
+    (install_dir / "lib" / "libfoo.a").write_text("stub")
+    (install_dir / "include").mkdir()
+
+    with (
+        patch(
+            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
+            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
+        ) as mock_streaming,
+        _patch_verification(),
+    ):
+        executor.run_harness_compile(install_dir, workdir, Language.C)
+
+    assert "CFLAGS" not in _docker_environment(mock_streaming.call_args[0][0])

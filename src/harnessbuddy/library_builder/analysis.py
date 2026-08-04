@@ -17,12 +17,19 @@ logger = logging.getLogger(__name__)
 _C_HEADER_EXTENSIONS: frozenset[str] = frozenset({".h", ".hpp", ".hxx", ".hh"})
 _VCS_DIRS: frozenset[str] = frozenset({".git", ".hg", ".svn"})
 
+# Bare Makefile is the last-resort signal: a project shipping both meson.build and a
+# convenience top-level Makefile is a meson project (CLAUDE.md's documented order).
 _BUILD_SYSTEM_CHECKS: list[tuple[BuildSystem, list[str]]] = [
     (BuildSystem.CMAKE, ["CMakeLists.txt"]),
     (BuildSystem.AUTOTOOLS, ["configure.ac", "configure.in", "configure"]),
-    (BuildSystem.MAKEFILE, ["Makefile", "makefile"]),
     (BuildSystem.MESON, ["meson.build"]),
+    (BuildSystem.MAKEFILE, ["Makefile", "makefile"]),
 ]
+
+# The outer ceiling must exceed the one handed to cloc itself, or cloc's own --timeout
+# never gets a chance to fire and report partial results.
+_CLOC_TIMEOUT_SECONDS = 120
+_CLOC_KILL_TIMEOUT_SECONDS = _CLOC_TIMEOUT_SECONDS + 30
 
 
 class UnsupportedRepositoryError(Exception):
@@ -32,11 +39,11 @@ class UnsupportedRepositoryError(Exception):
 def analyze(source: RepoSource) -> AnalysisResult:
     """Run deterministic static analysis on a repository directory."""
     build_system, build_files = _detect_build_system(source.source_path)
-    headers = _detect_headers(source.source_path)
-    language = _detect_language(source.source_path)
+    has_headers = _has_c_headers(source.source_path)
     warnings: list[str] = []
+    language = _detect_language(source.source_path, warnings)
 
-    if not build_files and not headers:
+    if not build_files and not has_headers:
         raise UnsupportedRepositoryError(
             f"No C/C++ signals found in {source.source_path}: "
             "no recognized build system files and no C/C++ headers."
@@ -45,7 +52,7 @@ def analyze(source: RepoSource) -> AnalysisResult:
     if build_system == BuildSystem.UNKNOWN:
         warnings.append(f"No recognized build system found in {source.source_path}.")
 
-    if not headers:
+    if not has_headers:
         warnings.append(f"No C/C++ header files found in {source.source_path}.")
 
     autotools_setup = (
@@ -58,8 +65,6 @@ def analyze(source: RepoSource) -> AnalysisResult:
         project_name=source.project_name,
         source_path=source.source_path,
         build_system=build_system,
-        build_files=build_files,
-        headers=headers,
         language=language,
         clone_url=source.clone_url,
         repo_ref=source.repo_ref,
@@ -94,31 +99,50 @@ def _detect_build_system(root: Path) -> tuple[BuildSystem, list[Path]]:
     return BuildSystem.UNKNOWN, []
 
 
-def _detect_headers(root: Path) -> list[Path]:
-    """Return sorted C/C++ header files under root, excluding VCS directories."""
-    return sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file()
+def _has_c_headers(root: Path) -> bool:
+    """True when root contains at least one C/C++ header outside a VCS directory.
+
+    Short-circuits on the first hit: the answer is a boolean, and materializing every
+    header path in a large repository to compute it is pure waste.
+    """
+    return any(
+        p.is_file()
         and p.suffix in _C_HEADER_EXTENSIONS
         and not any(part in _VCS_DIRS for part in p.relative_to(root).parts)
+        for p in root.rglob("*")
     )
 
 
-def _detect_language(root: Path) -> Language:
-    """Determine the dominant C/C++ language by running cloc, falling back to headers."""
-    result = subprocess.run(
-        ["cloc", "--json", str(root) , "--timeout",  "120"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode == 0:
-        data = json.loads(result.stdout)
-        c_lines = data.get("C", {}).get("code", 0)
-        cpp_lines = data.get("C++", {}).get("code", 0)
-        logger.debug("C LoC: %d, CPP LoC %d", c_lines, cpp_lines)
-        if c_lines > 0 or cpp_lines > 0:
-            return Language.CPP if cpp_lines > c_lines else Language.C
+def _detect_language(root: Path, warnings: list[str]) -> Language:
+    """Determine the dominant C/C++ language by running cloc.
 
-    return Language.UNKNOWN
+    Falls back to C++ and appends a warning whenever cloc cannot answer — it isn't
+    installed, it outruns its own deadline on a huge tree, or it emits something that
+    isn't JSON. C++ is the safe guess: it is what every downstream consumer already
+    treats an undecided project as, and a C library compiled by a C++ driver links,
+    while the reverse does not.
+    """
+    try:
+        result = subprocess.run(
+            ["cloc", "--json", str(root), "--timeout", str(_CLOC_TIMEOUT_SECONDS)],
+            capture_output=True,
+            text=True,
+            timeout=_CLOC_KILL_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            c_lines = data.get("C", {}).get("code", 0)
+            cpp_lines = data.get("C++", {}).get("code", 0)
+            logger.debug("C LoC: %d, CPP LoC %d", c_lines, cpp_lines)
+            if c_lines > 0 or cpp_lines > 0:
+                return Language.CPP if cpp_lines > c_lines else Language.C
+        reason = f"cloc exited {result.returncode} without usable C/C++ line counts"
+    except FileNotFoundError:
+        reason = "cloc is not installed"
+    except subprocess.TimeoutExpired:
+        reason = f"cloc did not finish within {_CLOC_KILL_TIMEOUT_SECONDS}s"
+    except json.JSONDecodeError:
+        reason = "cloc produced output that is not valid JSON"
+
+    warnings.append(f"Could not determine the source language ({reason}); assuming C++.")
+    return Language.CPP

@@ -1,19 +1,42 @@
+"""Generators for the shell scripts HarnessBuddy validates and then ships.
+
+Every script here is environment-independent: the same text runs as a host subprocess
+during local verification, inside the OSS-Fuzz base-builder container, and from the
+generated output directory a user unpacks later. That works because each variable the two
+environments disagree about is read with a fallback (`${CC:-clang}`,
+`${OUT:-$SCRIPT_DIR/out}`, `${LIB_FUZZING_ENGINE:--fsanitize=fuzzer}`), so an environment
+that defines it wins and one that doesn't still gets a working value.
+"""
+
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 from harnessbuddy.library_builder.models import (
     AutotoolsSetup,
     BuildPaths,
     BuildSystem,
-    HarnessExplorationResult,
     Language,
+    LinkConfiguration,
 )
 
-_HOST_ENV_FALLBACKS = (
-    '\nCC="${CC:-clang}"\nCXX="${CXX:-clang++}"\nCFLAGS="${CFLAGS:-}"\nCXXFLAGS="${CXXFLAGS:-}"\n'
+# The single name for the directory holding harness sources, in the workspace and in
+# generated output alike.
+HARNESS_SOURCE_DIR = "harness_source"
+
+# libFuzzer's flag, which is what OSS-Fuzz's `compile` exports as LIB_FUZZING_ENGINE for
+# the libfuzzer engine. It is the fallback rather than the value: whenever a script runs
+# under `compile`, the environment's value wins.
+_DEFAULT_FUZZING_ENGINE = "-fsanitize=fuzzer"
+
+# Cap parallelism rather than using all cores: library builds run inside containers and
+# CI with memory limits far below what -j$(nproc) implies on a large host.
+_MAX_BUILD_JOBS = 4
+
+_JOB_COUNT = (
+    'JOBS="$(nproc)"\n'
+    f'if [ "$JOBS" -gt {_MAX_BUILD_JOBS} ]; then JOBS={_MAX_BUILD_JOBS}; fi\n'
 )
 
 # Autotools setup variants that bootstrap by running a script in the source tree, mapped
@@ -23,35 +46,81 @@ _AUTOTOOLS_BOOTSTRAP_SCRIPTS: dict[AutotoolsSetup | None, str] = {
     AutotoolsSetup.BOOTSTRAP: "bootstrap",
 }
 
+_CONFIGURE_ARGS_VARIABLE = "CONFIGURE_ARGS"
+_CONFIGURE_ARGS_EXPANSION = f' "${{{_CONFIGURE_ARGS_VARIABLE}[@]}}"'
 
-def build_library_script(
+
+def build_library_script(  # noqa: PLR0913 -- each argument is a distinct input to the text
     build_system: BuildSystem,
     paths: BuildPaths,
     *,
-    host_fallbacks: bool = False,
     autotools_setup: AutotoolsSetup | None = None,
+    configure_args: tuple[str, ...] = (),
+    cc: str = "clang",
+    cxx: str = "clang++",
+    cflags: str = "",
+    cxxflags: str = "",
 ) -> str:
     """Generate a build_library.sh script with parameterized paths.
 
+    The compiler settings are baked in as fallbacks rather than read from the environment
+    at run time: the script has to reproduce the build it was validated for when run from a
+    fresh checkout with nothing exported, and it is run that way — by the build gate, and by
+    a user following the generated README. An environment that does define them (the
+    OSS-Fuzz base image's sanitizer configuration) still wins.
+
     Args:
         build_system: detected build system.
-        paths: source/build/install/env-file path strings for the generated script.
-        host_fallbacks: when True, add CC/CXX/CFLAGS/CXXFLAGS defaults for host builds.
+        paths: source/build/install path strings for the generated script.
         autotools_setup: autotools bootstrap variant (only used when build_system is AUTOTOOLS).
+        configure_args: build-system-level configure options, baked into the script text
+            because cmake and meson have no environment equivalent for them.
+        cc: C compiler for the library build.
+        cxx: C++ compiler for the library build.
+        cflags: C flags for the library build.
+        cxxflags: C++ flags for the library build.
     """
     header = (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
         'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
+        "\n"
+        f'CC="${{CC:-{_double_quoted_shell_value(cc)}}}"\n'
+        f'CXX="${{CXX:-{_double_quoted_shell_value(cxx)}}}"\n'
+        f'CFLAGS="${{CFLAGS:-{_double_quoted_shell_value(cflags)}}}"\n'
+        f'CXXFLAGS="${{CXXFLAGS:-{_double_quoted_shell_value(cxxflags)}}}"\n'
     )
-    if host_fallbacks:
-        header += _HOST_ENV_FALLBACKS
+    header += _JOB_COUNT
+    header += _configure_args_block(configure_args)
     header += _skip_if_already_built(paths.install_dir)
     body = _build_body(
-        build_system, paths.source_dir, paths.build_dir, paths.install_dir, autotools_setup
+        build_system,
+        paths.source_dir,
+        paths.build_dir,
+        paths.install_dir,
+        autotools_setup,
+        use_configure_args=bool(configure_args),
     )
     return header + body
+
+
+def _configure_args_block(configure_args: tuple[str, ...]) -> str:
+    """Bake configure options into a bash array, overridable from the environment.
+
+    The array keeps values containing spaces intact, which a single string could not.
+    An EXTRA_CONFIGURE_ARGS in the environment replaces the baked list wholesale and is
+    split on whitespace, matching how the compiler-flag variables behave.
+    """
+    if not configure_args:
+        return ""
+    baked = " ".join(_single_quoted_shell_value(arg) for arg in configure_args)
+    return (
+        f"\n{_CONFIGURE_ARGS_VARIABLE}=({baked})\n"
+        'if [ -n "${EXTRA_CONFIGURE_ARGS:-}" ]; then\n'
+        f'  read -r -a {_CONFIGURE_ARGS_VARIABLE} <<<"$EXTRA_CONFIGURE_ARGS"\n'
+        "fi\n"
+    )
 
 
 def _skip_if_already_built(install_dir: str) -> str:
@@ -74,13 +143,16 @@ def _skip_if_already_built(install_dir: str) -> str:
     )
 
 
-def _build_body(
+def _build_body(  # noqa: PLR0913 -- one branch per build system; each needs every path
     build_system: BuildSystem,
     source_dir: str,
     build_dir: str,
     install_dir: str,
     autotools_setup: AutotoolsSetup | None = None,
+    *,
+    use_configure_args: bool = False,
 ) -> str:
+    extra = _CONFIGURE_ARGS_EXPANSION if use_configure_args else ""
     if build_system == BuildSystem.CMAKE:
         return (
             "\n"
@@ -92,8 +164,8 @@ def _build_body(
             '  -DCMAKE_C_FLAGS="$CFLAGS" \\\n'
             '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
             f"  -DCMAKE_INSTALL_PREFIX={install_dir} \\\n"
-            "  -DBUILD_SHARED_LIBS=OFF\n"
-            f'JOBS=$(nproc); cmake --build {build_dir} -- -j$(( JOBS > 4 ? 4 : JOBS ))\n'
+            f"  -DBUILD_SHARED_LIBS=OFF{extra}\n"
+            f'cmake --build {build_dir} -- -j"$JOBS"\n'
             f"cmake --install {build_dir}\n"
         )
     if build_system == BuildSystem.MESON:
@@ -103,8 +175,8 @@ def _build_body(
             "\n"
             'CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
             f"  meson setup {build_dir} {source_dir} \\\n"
-            f"    --prefix={install_dir} --default-library=static\n"
-            f"ninja -C {build_dir}\n"
+            f"    --prefix={install_dir} --default-library=static{extra}\n"
+            f'ninja -C {build_dir} -j"$JOBS"\n'
             f"ninja -C {build_dir} install\n"
         )
     if build_system == BuildSystem.AUTOTOOLS:
@@ -123,8 +195,9 @@ def _build_body(
             "(\n"
             f"  cd {build_dir}\n"
             '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-            f"    {source_dir}/configure --prefix={install_dir} --enable-static --disable-shared\n"
-            "  make -j$(nproc)\n"
+            f"    {source_dir}/configure --prefix={install_dir} "
+            f"--enable-static --disable-shared{extra}\n"
+            '  make -j"$JOBS"\n'
             "  make install\n"
             ")\n"
         )
@@ -133,10 +206,10 @@ def _build_body(
             "\n"
             "# build system: makefile\n"
             "\n"
-            f"make -C {source_dir} -j$(nproc) \\\n"
+            f'make -C {source_dir} -j"$JOBS" \\\n'
             '  CC="$CC" CXX="$CXX" CFLAGS="$CFLAGS" CXXFLAGS="$CXXFLAGS" \\\n'
-            f"  PREFIX={install_dir}\n"
-            f"make -C {source_dir} install PREFIX={install_dir}\n"
+            f"  PREFIX={install_dir}{extra}\n"
+            f"make -C {source_dir} install PREFIX={install_dir}{extra}\n"
         )
     return "\n# build system: unknown\n"
 
@@ -172,62 +245,42 @@ def write_default_fuzzer(harness_dir: Path, language: Language) -> Path:
 
 
 def build_harness_script(
-    harness: HarnessExplorationResult | None,
+    link: LinkConfiguration,
     *,
     whole_archive: bool = False,
-    oss_fuzz: bool = False,
-    local_cflags: str | None = None,
-    local_cxxflags: str | None = None,
+    harness_cflags: str | None = None,
+    harness_cxxflags: str | None = None,
 ) -> str:
     """Generate a script that compiles one harness source into one binary.
 
     Args:
-        harness: exploration result providing static libs and link flags.
-        whole_archive: when True, link with --whole-archive (Linux, or oss_fuzz — the
-            script always runs inside the Linux base-builder container regardless of
-            the host OS) or -all_load (macOS, local environment only).
-        oss_fuzz: when True, generate an OSS-Fuzz-compatible script that uses
-            CC/CXX/CFLAGS/CXXFLAGS/$OUT/$LIB_FUZZING_ENGINE from the base image
-            rather than defining them with local defaults.
-        local_cflags: C flags embedded in a local compiler script. When omitted,
-            uses libFuzzer's default. The generated script replaces inherited
-            CFLAGS because library-build flags may omit libFuzzer's main.
-        local_cxxflags: C++ flags embedded in a local compiler script. When omitted,
-            uses libFuzzer's default. The generated script replaces inherited
-            CXXFLAGS because library-build flags may omit libFuzzer's main.
+        link: the archives and flags the harness must link against.
+        whole_archive: when True, link with --whole-archive, which forces every library
+            symbol in and so surfaces every undefined transitive dependency. Used by the
+            discovery probe, not by the shipped script.
+        harness_cflags: C flags baked in as the default, for a run of the shipped script
+            with no CFLAGS in the environment. Defaults to libFuzzer's flag.
+        harness_cxxflags: the same for C++.
     """
-    static_libs = harness.static_libs if harness is not None else []
-    transitive_link_flags = harness.transitive_link_flags if harness is not None else []
-    extra_library_paths = harness.extra_library_paths if harness is not None else []
-    extra_include_paths = harness.extra_include_paths if harness is not None else []
-    lib_lines = "".join(f'    "$INSTALL_DIR/lib/{path.name}"\n' for path in static_libs)
-    extra = " ".join(transitive_link_flags)
+    lib_lines = "".join(f'    "$INSTALL_DIR/lib/{path.name}"\n' for path in link.static_libs)
+    extra = " ".join(link.transitive_link_flags)
+    extra_line = f'EXTRA_LINK_FLAGS="{extra}"\n' if extra else "EXTRA_LINK_FLAGS=\n"
 
-    if oss_fuzz:
-        extra_line = f'EXTRA_LINK_FLAGS="{extra}"\n' if extra else "EXTRA_LINK_FLAGS=\n"
-    else:
-        extra_lib_path = "" if sys.platform != "darwin" else "-L$(brew --prefix)/lib "
-        if extra:
-            extra_line = f'EXTRA_LINK_FLAGS="{extra_lib_path}{extra}"\n'
-        else:
-            extra_line = "EXTRA_LINK_FLAGS=\n"
-
-    extra_lib_paths = " ".join(f"-L{path}" for path in extra_library_paths)
+    extra_lib_paths = " ".join(f"-L{path}" for path in link.extra_library_paths)
     extra_lib_paths_line = (
         f'EXTRA_LIB_PATHS="{extra_lib_paths}"\n' if extra_lib_paths else "EXTRA_LIB_PATHS=\n"
     )
-    extra_include_flags = "".join(f' "-I{path}"' for path in extra_include_paths)
+    extra_include_flags = "".join(f' "-I{path}"' for path in link.extra_include_paths)
 
     if whole_archive:
-        if not oss_fuzz and sys.platform == "darwin":
-            wa_before, wa_after = "-Wl,-all_load", ""
-        else:
-            wa_before, wa_after = "-Wl,--whole-archive", "-Wl,--no-whole-archive"
-        static_libs_str = f'{wa_before} "${{STATIC_LIBS[@]-}}" {wa_after}'
+        static_libs_str = '-Wl,--whole-archive "${STATIC_LIBS[@]-}" -Wl,--no-whole-archive'
     else:
         static_libs_str = '"${STATIC_LIBS[@]-}"'
 
-    engine_flag = ' "$LIB_FUZZING_ENGINE"' if oss_fuzz else ""
+    cc = os.environ.get("CC", "clang")
+    cxx = os.environ.get("CXX", "clang++")
+    cflags = harness_cflags or _DEFAULT_FUZZING_ENGINE
+    cxxflags = harness_cxxflags or _DEFAULT_FUZZING_ENGINE
     preamble = (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
@@ -235,26 +288,18 @@ def build_harness_script(
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
         'BUILD_PREFIX="${BUILD_PREFIX:-$SCRIPT_DIR}"\n'
         "\n"
-    )
-    if not oss_fuzz:
-        cc = os.environ.get("CC", "clang")
-        cxx = os.environ.get("CXX", "clang++")
-        cflags = local_cflags or "-fsanitize=fuzzer"
-        cxxflags = local_cxxflags or "-fsanitize=fuzzer"
-        preamble += (
-            f'CC="${{CC:-{_double_quoted_shell_value(cc)}}}"\n'
-            f'CXX="${{CXX:-{_double_quoted_shell_value(cxx)}}}"\n'
-            f'CFLAGS="{_double_quoted_shell_value(cflags)}"\n'
-            f'CXXFLAGS="{_double_quoted_shell_value(cxxflags)}"\n'
-            "\n"
-        )
-    preamble += (
+        f'CC="${{CC:-{_double_quoted_shell_value(cc)}}}"\n'
+        f'CXX="${{CXX:-{_double_quoted_shell_value(cxx)}}}"\n'
+        f'CFLAGS="${{CFLAGS:-{_double_quoted_shell_value(cflags)}}}"\n'
+        f'CXXFLAGS="${{CXXFLAGS:-{_double_quoted_shell_value(cxxflags)}}}"\n'
+        f'LIB_FUZZING_ENGINE="${{LIB_FUZZING_ENGINE:-{_DEFAULT_FUZZING_ENGINE}}}"\n'
+        "\n"
         'INSTALL_DIR="$BUILD_PREFIX/install"\n'
         'HARNESS_SOURCE="${1:?usage: compile_harness.sh SOURCE OUTPUT}"\n'
         'OUTPUT_BINARY="${2:?usage: compile_harness.sh SOURCE OUTPUT}"\n'
         'mkdir -p "$(dirname "$OUTPUT_BINARY")"\n'
+        "\n"
     )
-    preamble += "\n"
 
     return (
         preamble
@@ -272,8 +317,8 @@ def build_harness_script(
             '"$HARNESS_SOURCE" \\\n'
         )
         + (
-            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
-            ' -o "$OUTPUT_BINARY"\n'
+            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS"
+            ' "$LIB_FUZZING_ENGINE" -o "$OUTPUT_BINARY"\n'
         )
         + "    ;;\n"
         + "  *.cc|*.cpp|*.cxx)\n"
@@ -282,8 +327,8 @@ def build_harness_script(
             '"$HARNESS_SOURCE" \\\n'
         )
         + (
-            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS{engine_flag}"
-            ' -o "$OUTPUT_BINARY"\n'
+            f"        {static_libs_str} $EXTRA_LIB_PATHS $EXTRA_LINK_FLAGS"
+            ' "$LIB_FUZZING_ENGINE" -o "$OUTPUT_BINARY"\n'
         )
         + "    ;;\n"
         + "  *)\n"
@@ -299,20 +344,26 @@ def _double_quoted_shell_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
 
 
-def build_harnesses_script(*, harness_dir_name: str, oss_fuzz: bool) -> str:
+def _single_quoted_shell_value(value: str) -> str:
+    """Wrap a configure option in single quotes so spaces and $ survive verbatim."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def build_harnesses_script() -> str:
     """Generate a deterministic batch wrapper around ``compile_harness.sh``.
 
     The wrapper accepts optional source and output directories. It is intentionally small:
-    every compiler and linker decision remains in the single-harness interface.
+    every compiler and linker decision remains in the single-harness interface. $OUT is
+    honoured when set (the OSS-Fuzz base image defines it) and falls back to
+    $SCRIPT_DIR/out otherwise, so the same script serves both environments.
     """
-    default_output_dir = "$OUT" if oss_fuzz else "$SCRIPT_DIR/out"
     return (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         "\n"
         'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
-        f'HARNESS_DIR="${{1:-$SCRIPT_DIR/{harness_dir_name}}}"\n'
-        f'OUT_DIR="${{2:-{default_output_dir}}}"\n'
+        f'HARNESS_DIR="${{1:-$SCRIPT_DIR/{HARNESS_SOURCE_DIR}}}"\n'
+        'OUT_DIR="${2:-${OUT:-$SCRIPT_DIR/out}}"\n'
         'mkdir -p "$OUT_DIR"\n'
         "shopt -s nullglob\n"
         "harnesses=(\n"

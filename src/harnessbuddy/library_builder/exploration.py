@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import stat
-import tempfile
 from pathlib import Path
 
+from harnessbuddy.core.files import write_executable
 from harnessbuddy.core.subprocesses import Runner, run_command_streaming
+from harnessbuddy.library_builder.build_parameters import BuildParameters
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import (
     AgentReport,
@@ -17,6 +17,7 @@ from harnessbuddy.library_builder.models import (
     BuildSystem,
 )
 from harnessbuddy.library_builder.scripts import build_library_script
+from harnessbuddy.library_builder.timeouts import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
 
 
 def write_build_library_script(
-    analysis: AnalysisResult, workdir: Path, *, environment: Environment = Environment.LOCAL
+    analysis: AnalysisResult, workdir: Path, *, parameters: BuildParameters | None = None
 ) -> tuple[Path, bool]:
     """Write build_library.sh into workdir/build_library.sh.
 
@@ -58,6 +59,7 @@ def write_build_library_script(
     standard_layout = is_standard_source_layout(analysis, workdir)
     source_dir = "$SCRIPT_DIR/src" if standard_layout else str(analysis.source_path.resolve())
 
+    parameters = parameters or BuildParameters.defaults()
     script = build_library_script(
         analysis.build_system,
         BuildPaths(
@@ -65,38 +67,33 @@ def write_build_library_script(
             build_dir="$BUILD_PREFIX/build",
             install_dir="$BUILD_PREFIX/install",
         ),
-        host_fallbacks=environment is Environment.LOCAL,
         autotools_setup=analysis.autotools_setup,
+        configure_args=parameters.library_configure_args,
+        cc=parameters.cc,
+        cxx=parameters.cxx,
+        cflags=parameters.library_cflags,
+        cxxflags=parameters.library_cxxflags,
     )
-    script_path = workdir / "build_library.sh"
-    script_path.write_text(script)
-    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    script_path = write_executable(workdir / "build_library.sh", script)
     return script_path, standard_layout
 
 
-def explore(  # noqa: PLR0913 -- 4 of 6 are keyword-only with defaults, each independently meaningful
+def explore(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meaningful
     analysis: AnalysisResult,
     workdir: Path,
     *,
-    timeout: int = 300,
+    timeout: int = DEFAULT_BUILD_TIMEOUT_SECONDS,
     environment: Environment = Environment.LOCAL,
     run: Runner | None = None,
-    regenerate_script: bool = True,
+    parameters: BuildParameters | None = None,
 ) -> BuildExplorationResult:
     """Write a build_library.sh into workdir and run it in the given environment.
 
-    environment selects host CC/CXX/CFLAGS/CXXFLAGS fallbacks (Environment.LOCAL only —
-    Environment.OSS_FUZZ relies on the container image's own toolchain env) and is
-    recorded on the returned result. run defaults to streaming the command as a host
-    subprocess; callers running this inside a container (e.g. OssFuzzExecutor) pass a
-    run primitive that wraps the command in a `docker run` invocation instead.
-
-    regenerate_script=False reuses the existing workdir/build_library.sh verbatim instead
-    of rewriting it from the template — used to re-run a repair agent's already-fixed
-    script (which write_build_library_script would otherwise clobber) purely to capture
-    host-side install/ artifacts and compile_commands.json that the agent's own
-    out-of-band verification (e.g. oss-fuzz's unmounted check_docker_build.sh) doesn't
-    produce.
+    environment decides whether the build command is wrapped with `bear` and is recorded
+    on the returned result; the script text itself is environment-independent. run
+    defaults to streaming the command as a host subprocess; callers running this inside a
+    container (e.g. OssFuzzExecutor) pass a run primitive that wraps the command in a
+    `docker run` invocation instead.
     """
     workdir = workdir.resolve()
     build_dir = workdir / "build"
@@ -110,13 +107,9 @@ def explore(  # noqa: PLR0913 -- 4 of 6 are keyword-only with defaults, each ind
         shutil.rmtree(install_dir)
     install_dir.mkdir(parents=True)
 
-    if regenerate_script:
-        script_path, standard_layout = write_build_library_script(
-            analysis, workdir, environment=environment
-        )
-    else:
-        script_path = workdir / "build_library.sh"
-        standard_layout = is_standard_source_layout(analysis, workdir)
+    script_path, standard_layout = write_build_library_script(
+        analysis, workdir, parameters=parameters
+    )
 
     if analysis.build_system == BuildSystem.UNKNOWN:
         return BuildExplorationResult(
@@ -138,7 +131,7 @@ def explore(  # noqa: PLR0913 -- 4 of 6 are keyword-only with defaults, each ind
     succeeded = result.exit_code == 0
     stderr = result.stderr
     if succeeded:
-        validation_errors = _validate_install_artifacts(install_dir)
+        validation_errors = validate_install_artifacts(install_dir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
@@ -185,7 +178,7 @@ def _build_command(
     return plain, _BEAR_NOT_FOUND_ERROR
 
 
-def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout/build_dir are keyword-only, independently meaningful
+def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-only and independently meaningful
     analysis: AnalysisResult,
     workdir: Path,
     runner: Runner,
@@ -193,7 +186,6 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout/build_dir are
     bear_missing_error: str | None,
     *,
     standard_layout: bool,
-    build_dir: Path | None = None,
 ) -> tuple[Path | None, str | None]:
     """Capture compile_commands.json as a byproduct of the build that just succeeded.
 
@@ -210,17 +202,9 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout/build_dir are
     anything. standard_layout=True means the source lives at workdir/src, referenceable
     the same "src"-relative way; the non-standard-layout case keeps the absolute host path
     since that's mounted separately, at its own path, regardless of workdir's mount target.
-
-    build_dir defaults to workdir/build (the build the caller just ran) — overridden by
-    recapture_compile_commands_after_agent_fix to point at a scratch directory instead,
-    so a supplemental capture command never touches the real workdir/build or install/.
-    That override only ever runs on the host directly (Environment.LOCAL), so it's safe
-    to pass as an absolute path — unlike the default case's "-B build", which must stay
-    cwd-relative for the same bind-mount reason -S does (see above).
     """
-    build_dir_override = build_dir
-    build_dir = build_dir_override if build_dir_override is not None else workdir / "build"
-    build_arg = str(build_dir_override) if build_dir_override is not None else "build"
+    build_dir = workdir / "build"
+    build_arg = "build"
     target = workdir / "compile_commands.json"
 
     if analysis.build_system == BuildSystem.CMAKE:
@@ -257,58 +241,6 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout/build_dir are
     return None, None
 
 
-def recapture_compile_commands_after_agent_fix(
-    analysis: AnalysisResult, workdir: Path, *, timeout: int = 300
-) -> tuple[Path | None, str | None]:
-    """Capture compile_commands.json for a build_library.sh that already succeeded via
-    an out-of-band verification (an agent's own check_local_build.sh run), without
-    touching the already-verified workdir/install or workdir/build.
-
-    Runs the same, unmodified script again with BUILD_PREFIX overridden to a scratch
-    directory: build_library.sh's skip-if-already-built guard (scripts.py) only
-    inspects BUILD_PREFIX's install dir, so this reproduces a full build in complete
-    isolation from workdir/install rather than short-circuiting against it. A failure
-    here can never regress the already-verified install/, since it never touches it —
-    the scratch directory (and everything built into it) is discarded once compile
-    commands are extracted from it.
-    """
-    if analysis.build_system == BuildSystem.UNKNOWN:
-        return None, None
-
-    workdir = workdir.resolve()
-    script_path = workdir / "build_library.sh"
-    if not script_path.exists():
-        return None, "build_library.sh not found"
-
-    standard_layout = is_standard_source_layout(analysis, workdir)
-    command, bear_missing_error = _build_command(
-        analysis.build_system, Environment.LOCAL, script_path
-    )
-    if bear_missing_error is not None and analysis.build_system in _MAKE_LIKE_SYSTEMS:
-        # Nothing to gain from paying for a rebuild bear can't capture.
-        return None, bear_missing_error
-
-    with tempfile.TemporaryDirectory(prefix="harnessbuddy-recapture-") as scratch:
-        scratch_dir = Path(scratch)
-        env_command = ["env", f"BUILD_PREFIX={scratch_dir}", *command]
-        result = run_command_streaming(env_command, workdir, timeout)
-        if result.exit_code != 0:
-            return None, (
-                "recapture build (scratch BUILD_PREFIX, to capture compile_commands.json "
-                "without touching the already-verified install/) failed"
-            )
-
-        return _capture_compile_commands(
-            analysis,
-            workdir,
-            run_command_streaming,
-            timeout,
-            bear_missing_error,
-            standard_layout=standard_layout,
-            build_dir=scratch_dir / "build",
-        )
-
-
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return []
@@ -334,7 +266,6 @@ def read_agent_report(workdir: Path) -> AgentReport | None:
             summary=summary if isinstance(summary, str) else None,
             missing_libs=_string_list(data.get("missing_libs")),
             missing_apt_packages=_string_list(data.get("missing_apt_packages")),
-            missing_brew_packages=_string_list(data.get("missing_brew_packages")),
             extra_include_paths=_string_list(data.get("extra_include_paths")),
             extra_library_paths=_string_list(data.get("extra_library_paths")),
         )
@@ -344,7 +275,7 @@ def read_agent_report(workdir: Path) -> AgentReport | None:
         report_path.unlink(missing_ok=True)
 
 
-def _validate_install_artifacts(install_dir: Path) -> list[str]:
+def validate_install_artifacts(install_dir: Path) -> list[str]:
     errors = []
     lib_dir = install_dir / "lib"
     if not lib_dir.exists() or not any(lib_dir.glob("*.a")):

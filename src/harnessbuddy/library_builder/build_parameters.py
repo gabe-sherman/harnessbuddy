@@ -20,6 +20,12 @@ class BuildParameters:
     library_cxxflags: str
     harness_cflags: str
     harness_cxxflags: str
+    # Build-system-level configure options (cmake cache variables, meson options,
+    # autotools --enable-* switches, make variables). Unlike the compiler settings above
+    # these are baked into the generated script rather than passed through the
+    # environment: cmake and meson have no environment equivalent for them, and the
+    # shipped script has to reproduce the validated build standalone.
+    library_configure_args: tuple[str, ...] = ()
 
     @classmethod
     def from_args(cls, args: object) -> BuildParameters:
@@ -31,7 +37,18 @@ class BuildParameters:
             library_cxxflags=_argument_or_environment(args, "library_cxxflags", "CXXFLAGS", ""),
             harness_cflags=_argument_or_default(args, "harness_cflags", _DEFAULT_HARNESS_FLAGS),
             harness_cxxflags=_argument_or_default(args, "harness_cxxflags", _DEFAULT_HARNESS_FLAGS),
+            library_configure_args=_repeated_argument(args, "library_configure_args"),
         )
+
+    @classmethod
+    def defaults(cls) -> BuildParameters:
+        """The settings a run with no CLI arguments would use.
+
+        For callers that build or compile outside a `generate` invocation (a test, or a
+        library-build helper reached directly) and still need the same compiler
+        resolution rules the CLI applies.
+        """
+        return cls.from_args(_NO_ARGUMENTS)
 
     @contextmanager
     def library_environment(self) -> Iterator[None]:
@@ -59,7 +76,7 @@ class BuildParameters:
         ):
             yield
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | list[str]]:
         """Return the effective settings suitable for published run metadata."""
         return {
             "cc": self.cc,
@@ -68,7 +85,13 @@ class BuildParameters:
             "library_cxxflags": self.library_cxxflags,
             "harness_cflags": self.harness_cflags,
             "harness_cxxflags": self.harness_cxxflags,
+            "library_configure_args": list(self.library_configure_args),
         }
+
+
+# A sentinel with no attributes at all, so from_args's getattr lookups all miss and every
+# field falls back to the environment-or-default rules.
+_NO_ARGUMENTS = object()
 
 
 def _argument_or_environment(args: object, argument: str, environment: str, default: str) -> str:
@@ -79,6 +102,35 @@ def _argument_or_environment(args: object, argument: str, environment: str, defa
 def _argument_or_default(args: object, argument: str, default: str) -> str:
     value = getattr(args, argument, None)
     return value if isinstance(value, str) else default
+
+
+def _repeated_argument(args: object, argument: str) -> tuple[str, ...]:
+    value = getattr(args, argument, None)
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
+
+
+_COMPILER_ENVIRONMENT_NAMES = ("CC", "CXX", "CFLAGS", "CXXFLAGS")
+
+
+@contextmanager
+def neutral_compiler_environment() -> Iterator[None]:
+    """Unset CC/CXX/CFLAGS/CXXFLAGS for the duration.
+
+    For the build gate, which runs the library build and the harness compile in one
+    invocation. Each generated script bakes in its own settings, so with nothing exported
+    both get the right ones — whereas leaving a stage's environment in place applies that
+    stage's flags to both, and the harness flags in particular (`-fsanitize=fuzzer`, which
+    supplies its own main) make cmake's compiler check fail.
+    """
+    original = {name: os.environ.pop(name, None) for name in _COMPILER_ENVIRONMENT_NAMES}
+    try:
+        yield
+    finally:
+        for name, previous in original.items():
+            if previous is not None:
+                os.environ[name] = previous
 
 
 @contextmanager

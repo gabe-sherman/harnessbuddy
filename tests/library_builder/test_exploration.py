@@ -26,8 +26,6 @@ def _analysis(source_path: Path, build_system: BuildSystem = BuildSystem.CMAKE) 
         project_name="testlib",
         source_path=source_path,
         build_system=build_system,
-        build_files=[],
-        headers=[],
         language=Language.C,
         clone_url=_FAKE_URL,
         repo_ref=None,
@@ -45,7 +43,7 @@ def _run_explore(workdir: Path, source_path: Path) -> tuple[BuildExplorationResu
             return_value=_ok_result(),
         ) as mock_run,
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
     ):
@@ -158,7 +156,6 @@ def test_read_agent_report_list_fields_not_list_of_strings_become_empty(tmp_path
             {
                 "missing_libs": "ldap",
                 "missing_apt_packages": "libssl-dev",
-                "missing_brew_packages": None,
                 "extra_include_paths": [1, 2],
                 "extra_library_paths": None,
             }
@@ -168,7 +165,6 @@ def test_read_agent_report_list_fields_not_list_of_strings_become_empty(tmp_path
     assert report is not None
     assert report.missing_libs == []
     assert report.missing_apt_packages == []
-    assert report.missing_brew_packages == []
     assert report.extra_include_paths == []
     assert report.extra_library_paths == []
 
@@ -180,7 +176,6 @@ def test_read_agent_report_well_formed_file_returns_all_fields(tmp_path: Path) -
                 "summary": "Disabled optional SSL support.",
                 "missing_libs": ["ldap"],
                 "missing_apt_packages": ["libssl-dev"],
-                "missing_brew_packages": ["openssl"],
                 "extra_include_paths": ["/usr/include/foo"],
                 "extra_library_paths": ["/usr/lib/x86_64-linux-gnu"],
             }
@@ -191,7 +186,6 @@ def test_read_agent_report_well_formed_file_returns_all_fields(tmp_path: Path) -
     assert report.summary == "Disabled optional SSL support."
     assert report.missing_libs == ["ldap"]
     assert report.missing_apt_packages == ["libssl-dev"]
-    assert report.missing_brew_packages == ["openssl"]
     assert report.extra_include_paths == ["/usr/include/foo"]
     assert report.extra_library_paths == ["/usr/lib/x86_64-linux-gnu"]
 
@@ -226,7 +220,7 @@ def _run_explore_with(  # noqa: PLR0913 -- test helper; all 6 params are distinc
             side_effect=side_effect,
         ),
         patch(
-            "harnessbuddy.library_builder.exploration._validate_install_artifacts",
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
         patch(

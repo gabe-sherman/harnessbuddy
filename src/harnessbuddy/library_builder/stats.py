@@ -5,29 +5,32 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from harnessbuddy.core.agent_stream import AgentRunSummary
 from harnessbuddy.library_builder.environments.base import Environment
-from harnessbuddy.library_builder.models import (
-    AgentReport,
-    BuildExplorationResult,
-    HarnessExplorationResult,
-)
+from harnessbuddy.library_builder.models import BuildExplorationResult, HarnessExplorationResult
 
 
 class RunStatus(Enum):
     SUCCESS = "success"
     FAILED_LIBRARY_BUILD = "failed_library_build"
     FAILED_HARNESS_BUILD = "failed_harness_build"
+    FAILED_DOCKERFILE_VERIFICATION = "failed_dockerfile_verification"
 
 
 @dataclass
 class AgentPhaseStats:
+    """One phase's agent accounting, or the record that no agent ran.
+
+    Every numeric field is None when the agent wasn't invoked, so `stats.json` carries
+    JSON nulls rather than the string "N/A" — `invoked` already says which case it is, and
+    a consumer shouldn't have to type-check each number to find out.
+    """
+
     invoked: bool
-    duration_seconds: float | str
-    cost_usd: float | str
-    input_tokens: int | str
-    output_tokens: int | str
-    summary: str
+    duration_seconds: float | None = None
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    summary: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -41,66 +44,24 @@ class AgentPhaseStats:
 
 
 def not_invoked_agent_stats() -> AgentPhaseStats:
-    return AgentPhaseStats(
-        invoked=False,
-        duration_seconds="N/A",
-        cost_usd="N/A",
-        input_tokens="N/A",
-        output_tokens="N/A",
-        summary="N/A",
-    )
+    return AgentPhaseStats(invoked=False)
 
 
-def _invoked_agent_stats(
-    duration_seconds: float,
-    cost_usd: float | None,
-    input_tokens: int | None,
-    output_tokens: int | None,
-    summary: str | None,
-) -> AgentPhaseStats:
+def agent_phase_stats(result: BuildExplorationResult | HarnessExplorationResult) -> AgentPhaseStats:
+    """The agent accounting carried by either stage's result.
+
+    One function for both stages: they report this through the same AgentOutcome fields,
+    so there is nothing per-stage left to distinguish.
+    """
+    if not result.llm_used:
+        return not_invoked_agent_stats()
     return AgentPhaseStats(
         invoked=True,
-        duration_seconds=duration_seconds,
-        cost_usd=cost_usd if cost_usd is not None else "N/A",
-        input_tokens=input_tokens if input_tokens is not None else "N/A",
-        output_tokens=output_tokens if output_tokens is not None else "N/A",
-        summary=summary or "unavailable",
-    )
-
-
-def agent_phase_stats_from_build(result: BuildExplorationResult) -> AgentPhaseStats:
-    if not result.llm_used:
-        return not_invoked_agent_stats()
-    return _invoked_agent_stats(
-        result.duration_seconds,
-        result.cost_usd,
-        result.input_tokens,
-        result.output_tokens,
-        result.agent_summary,
-    )
-
-
-def agent_phase_stats_from_harness(result: HarnessExplorationResult) -> AgentPhaseStats:
-    if not result.llm_used:
-        return not_invoked_agent_stats()
-    return _invoked_agent_stats(
-        result.duration_seconds,
-        result.cost_usd,
-        result.input_tokens,
-        result.output_tokens,
-        result.agent_summary,
-    )
-
-
-def agent_phase_stats_from_agent_error(
-    summary: AgentRunSummary, report: AgentReport | None
-) -> AgentPhaseStats:
-    return _invoked_agent_stats(
-        summary.duration_seconds,
-        summary.cost_usd,
-        summary.input_tokens,
-        summary.output_tokens,
-        report.summary if report else None,
+        duration_seconds=result.duration_seconds,
+        cost_usd=result.cost_usd,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        summary=result.agent_summary,
     )
 
 
@@ -115,7 +76,7 @@ class RunStats:
     # The literal command (FR-010) that the shared verification script was invoked with,
     # so a person can reproduce the pass/fail result themselves.
     verification_command: str | None = None
-    build_parameters: dict[str, str] | None = None
+    build_parameters: dict[str, str | list[str]] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
