@@ -27,3 +27,9 @@ STATUS.md
 .devcontainer
 
 .beads/proxieddb/
+
+# Agentic artifacts
+.agents/
+.codex/
+AGENTS.md
+CLAUDE.md
