@@ -66,8 +66,8 @@ cJSON *createMacro(const MacroInfo &macro) {
 cJSON *createEnumerator(const Enumerator &e) {
   cJSON *object = cJSON_CreateObject();
   cJSON_AddStringToObject(object, "name", e.name.c_str());
-  // cJSON stores numbers as double, so enumerator values beyond +-2^53 lose
-  // precision; real-world enum constants stay well within that range.
+  // cJSON stores numbers as double, so a value beyond +-2^53 loses precision.
+  // Real-world enum constants stay well inside that range.
   cJSON_AddNumberToObject(object, "value", static_cast<double>(e.value));
   return object;
 }

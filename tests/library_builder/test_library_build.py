@@ -76,18 +76,16 @@ _STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
 _AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
 _AGENT = "claude"
 
-# Smoke subset: a small, fast cross-section of build systems (cmake, make, autotools x3)
-# that runs by default. The rest of _STATIC_LIBS is real but slower coverage, opt-in via
-# `-m build_matrix` (see pyproject.toml's addopts).
+# Smoke subset: a fast cross-section of build systems that runs by default. The rest of
+# _STATIC_LIBS is real but slower coverage, opt-in via `-m build_matrix`.
 _SMOKE_PROJECT_NAMES = {"zlib", "lcms", "libplist", "file"}
 _SMOKE_STATIC_LIBS = [lib for lib in _STATIC_LIBS if lib.project_name in _SMOKE_PROJECT_NAMES]
 _EXTENDED_STATIC_LIBS = [
     lib for lib in _STATIC_LIBS if lib.project_name not in _SMOKE_PROJECT_NAMES
 ]
 
-# Round-robin the smoke libraries across environments so both LocalExecutor and
-# OssFuzzExecutor get exercised by default, without doubling the smoke set's real build
-# count. Everything not listed here (extended statics, agentic libs) stays LOCAL.
+# Round-robin the smoke libraries across environments, so both executors are exercised by
+# default without doubling the number of real builds. Everything unlisted stays LOCAL.
 _SMOKE_ENVIRONMENTS: dict[str, Environment] = {
     "zlib": Environment.OSS_FUZZ,
     "lcms": Environment.OSS_FUZZ,
@@ -118,11 +116,11 @@ def _select_executor(environment: Environment) -> LocalExecutor | OssFuzzExecuto
 
 
 def _build_lib(lib: LibSpec, tmp_path_factory: pytest.TempPathFactory) -> LibBuild:
-    """Clone lib and run the library build then the harness-compile probe against it once,
-    so library-build tests and harness-probe tests share a single real build instead of
-    each re-cloning and re-building the same library. Both stages go through the same
-    executor instance, since OssFuzzExecutor.run_harness_compile depends on state (the
-    run-scoped image) that only its own prior run_library_build call establishes."""
+    """Clone lib, then run the library build and the harness probe against it once, so both
+    sets of tests share one real build instead of each re-cloning and rebuilding.
+
+    Both stages use the same executor instance, since OssFuzzExecutor.run_harness_compile needs
+    the run-scoped image only its own prior run_library_build establishes."""
     environment = _SMOKE_ENVIRONMENTS.get(lib.project_name, Environment.LOCAL)
     executor = _select_executor(environment)
     print(f"RUNNING BUILD LIB FOR {lib.project_name}")
@@ -179,12 +177,10 @@ def broken_cmake_build(
 
 # static (deterministic) library builds succeed and install artifacts
 #
-# NB: class declaration order matters here. real_library_build is session-scoped, so
-# whichever test runs first for a given library actually triggers _build_lib. The two
-# *LibraryBuildChecks classes (which carry the _forbid_agent guard) must stay declared —
-# and therefore collected/run — before the *HarnessBuildChecks classes and the per-library
-# classes further down (TestZlibBuild, TestLibtiffBuild), so that guard is active the first
-# time each library is actually built.
+# NB: class declaration order matters. real_library_build is session-scoped, so whichever test
+# runs first for a library is the one that triggers the build. The *LibraryBuildChecks classes
+# carry the _forbid_agent guard, so they must stay declared — and therefore run — before the
+# *HarnessBuildChecks and per-library classes below, or the guard is not yet active.
 
 
 class _StaticLibraryBuildChecks:
@@ -210,14 +206,14 @@ class _StaticLibraryBuildChecks:
 
     def test_result_command_is_the_build_invocation(self, real_library_build: LibBuild) -> None:
         """The library stage's pass/fail comes from its own probe, so that is the command it
-        reports. The shared gate runs once, after the harness stage."""
+        reports. The gate runs once, after the harness stage."""
         cmd = real_library_build.library_result.command
         assert cmd[0] in {"bash", "bear"}
         assert "build_library.sh" in cmd
 
     def test_static_library_build_phase_log_written(self, real_library_build: LibBuild) -> None:
-        """FR-004: a real build's full raw output must be retrievable via a per-phase
-        log file, regardless of whether it also streamed live to the console."""
+        """A real build's full raw output stays retrievable from its per-phase log file,
+        whether or not it also streamed live to the console."""
         log_path = real_library_build.logs_dir / "static_library_build.log"
         assert log_path.exists()
         assert log_path.stat().st_size > 0
@@ -370,11 +366,11 @@ def test_broken_cmake_exit_code_nonzero(broken_cmake_build: tuple) -> None:
 
 # --library-configure-arg against a real library
 #
-# c-ares sits in _AGENTIC_LIBS for one reason: -DBUILD_SHARED_LIBS=OFF alone does not make it
-# install a static library, so the deterministic build has nothing to link and the repair agent
-# gets called. Its own -DCARES_STATIC is the switch that does, which makes it the honest test of
-# whether a caller-supplied configure option actually reaches the configure step: supply it and
-# the same library builds deterministically, with no agent in the loop at all.
+# c-ares is in _AGENTIC_LIBS because -DBUILD_SHARED_LIBS=OFF alone does not make it install a
+# static library, so the deterministic build has nothing to link and the agent gets called. Its
+# own -DCARES_STATIC is the switch that does, which makes it an honest test of whether a
+# caller-supplied configure option reaches the configure step: supply it and the same library
+# builds deterministically, with no agent involved.
 
 
 @pytest.mark.build_matrix
@@ -408,9 +404,9 @@ class TestConfigureArgsAgainstARealLibrary:
     def test_the_build_has_no_static_library_without_the_configure_arg(
         self, source: Path, tmp_path: Path
     ) -> None:
-        """The premise the positive case rests on. cmake succeeds and installs headers and
-        binaries either way — what is missing is the *.a the harness has to link, which is why
-        this shows up as a failed build rather than a failed configure."""
+        """The premise the positive case rests on. cmake succeeds and installs headers either
+        way; what is missing is the *.a the harness has to link, which is why this shows up as a
+        failed build rather than a failed configure."""
         result = self._build(source, tmp_path / "without")
 
         assert result.succeeded is False
@@ -430,9 +426,9 @@ class TestConfigureArgsAgainstARealLibrary:
     def test_the_shipped_script_carries_the_configure_arg(
         self, source: Path, tmp_path: Path
     ) -> None:
-        """The option has to survive into build_library.sh, not just into the one cmake
-        invocation this run made: that script is what the gate re-runs from nothing and what
-        generation publishes."""
+        """The option has to survive into build_library.sh, not just into this run's cmake
+        invocation: that script is what the gate re-runs from nothing and what generation
+        publishes."""
         workdir = tmp_path / "shipped"
         self._build(source, workdir, self._STATIC_FLAG)
 

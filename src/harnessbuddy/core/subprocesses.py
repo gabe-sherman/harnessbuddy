@@ -16,11 +16,9 @@ from typing import IO
 class MergedOutput:
     """Adds `output` to a result type that carries a command's two output streams.
 
-    Whether `stderr` holds anything depends on which runner produced the result:
-    `run_command_streaming` merges the child's stderr into stdout and leaves `stderr`
-    empty, while `run_command` keeps them apart. Every caller that scans output for
-    diagnostics (undefined symbols, missing packages, docker errors) wants both, and
-    should not have to know which runner it got.
+    Whether `stderr` holds anything depends on the runner: `run_command_streaming` merges it
+    into stdout and leaves it empty, while `run_command` keeps the two apart. A caller
+    scanning for diagnostics wants both and should not have to know which runner it got.
     """
 
     stdout: str
@@ -39,9 +37,8 @@ class RunResult(MergedOutput):
     duration_seconds: float
 
 
-# (command, cwd, timeout) -> RunResult — the one shape both host-subprocess and
-# docker-wrapped stage execution share, so callers (exploration.py, harness_explorer.py)
-# can swap how a command runs without changing their retry/parsing logic.
+# (command, cwd, timeout) -> RunResult — the one shape host-subprocess and docker-wrapped
+# execution share, so a caller can swap how a command runs without touching its own logic.
 Runner = Callable[[list[str], Path, int], RunResult]
 
 _quiet: contextvars.ContextVar[bool] = contextvars.ContextVar("harnessbuddy_quiet", default=False)
@@ -52,13 +49,12 @@ _log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def streaming_context(*, quiet: bool = False, log_path: Path | None = None) -> Iterator[None]:
-    """Scope `run_command_streaming`'s live-printing and log-file destination for every
-    call made while this context is active (FR-004/FR-011).
+    """Scope `run_command_streaming`'s live-printing and log-file destination for every call
+    made while this context is active.
 
-    Set once by a phase boundary in cli.py (via `PhaseReporter`) and read implicitly by
-    `run_command_streaming` wherever it is actually invoked (exploration.py,
-    harness_explorer.py, environments/*) — those modules don't need to thread a
-    quiet/log_path parameter through their own signatures for this to work.
+    Set once at a phase boundary in cli.py and read implicitly wherever
+    `run_command_streaming` is invoked, so the modules in between need no quiet/log_path
+    parameter of their own.
     """
     quiet_token = _quiet.set(quiet)
     log_path_token = _log_path.set(log_path)
@@ -76,9 +72,9 @@ def _write_log(log_path: Path | None, text: str) -> None:
     log_path.write_text(text)
 
 
-# How long to wait for the reader thread to notice the pipe closed after a kill. The
-# thread is a daemon, so an unresponsive grandchild that inherited stdout costs us this
-# much delay and is then abandoned rather than deadlocking the run.
+# How long to wait for the reader thread to notice the pipe closed after a kill. The thread
+# is a daemon, so an unresponsive grandchild holding stdout costs this much delay and is then
+# abandoned rather than deadlocking the run.
 _DRAIN_GRACE_SECONDS = 5
 
 
@@ -93,11 +89,10 @@ def _drain(stream: IO[str], lines: list[str], *, quiet: bool) -> None:
 def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
     """Kill the child and anything it spawned.
 
-    A build runs `bash build_library.sh`, which spawns make, which spawns compilers.
-    Killing only the shell leaves that tree running — and holding the stdout pipe open,
-    which is what would keep a "timed out" run from ever returning. The child is started
-    in its own session (see `run_command_streaming`) precisely so the whole tree can be
-    signalled by process group here.
+    A build runs `bash build_library.sh`, which spawns make, which spawns compilers. Killing
+    only the shell leaves that tree running and holding the stdout pipe open, so a timed-out
+    run never returns. `run_command_streaming` starts the child in its own session so the
+    whole tree can be signalled by process group here.
     """
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -108,15 +103,12 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
 def run_command_streaming(command: list[str], cwd: Path, timeout: int) -> RunResult:
     """Run command, printing each line in real-time while capturing combined output.
 
-    `timeout` bounds the whole call, not just the wait after the child closes stdout: a
-    command that hangs while producing no output (waiting on stdin, an infinite configure
-    loop) is killed at the deadline and reported as `exit_code=-1`, matching
-    `run_command`. Output produced before the deadline is still returned and logged.
+    `timeout` bounds the whole call, not just the wait after the child closes stdout, so a
+    command that hangs while producing no output is killed at the deadline and reported as
+    `exit_code=-1`, matching `run_command`. Output from before the deadline is still returned.
 
-    Live per-line printing is suppressed when the active `streaming_context` has
-    quiet=True; the full combined output is always written to that context's
-    log_path regardless (FR-004/FR-011), whether this call succeeds, fails, or
-    times out.
+    The active `streaming_context` decides whether the live per-line printing happens. The
+    full output always goes to that context's log_path, on success, failure, or timeout.
     """
     quiet = _quiet.get()
     log_path = _log_path.get()
@@ -139,8 +131,8 @@ def run_command_streaming(command: list[str], cwd: Path, timeout: int) -> RunRes
     try:
         exit_code = _await_exit(proc, reader, timeout=timeout, start=start)
     except KeyboardInterrupt:
-        # start_new_session detached the child from this process group, so the terminal's
-        # Ctrl-C never reached it. Pass it on rather than orphaning a running build.
+        # start_new_session detached the child, so the terminal's Ctrl-C never reached it.
+        # Pass it on rather than orphaning a running build.
         _terminate_process_group(proc)
         raise
     _write_log(log_path, "".join(lines))

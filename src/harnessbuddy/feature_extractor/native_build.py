@@ -18,12 +18,10 @@ class NativeBuildError(Exception):
 def build_native_tool(*, force_rebuild: bool = False) -> Path:
     """Build (or reuse a cached build of) the native feature_extractor binary.
 
-    Cached under .harnessbuddy/native-build/build/, keyed to both the LLVM/Clang
-    version string reported by `clang --version` (research.md §2 — if that version
-    changes, the tool is rebuilt rather than silently reused against a mismatched
-    LibTooling ABI) and a hash of native/'s own sources (CMakeLists.txt, main.cpp,
-    ...), so an edit to the tool itself always invalidates a previously cached binary
-    too, rather than requiring callers to know to pass force_rebuild explicitly.
+    Cached under .harnessbuddy/native-build/build/, keyed to the `clang --version` string and a
+    hash of native/'s own sources. A new LLVM version means a rebuild rather than a silent
+    reuse against a mismatched LibTooling ABI, and an edit to the tool invalidates the cache
+    without a caller having to pass force_rebuild.
     """
     build_dir = default_state_dir() / "native-build" / "build"
     binary_path = build_dir / _BINARY_NAME
@@ -52,8 +50,8 @@ def build_native_tool(*, force_rebuild: bool = False) -> Path:
 
 
 def _hash_native_sources() -> str:
-    """Hash every file under native/ (CMakeLists.txt, src/, include/) so any edit to
-    the tool's own sources invalidates a previously cached binary."""
+    """Hash every file under native/, so any edit to the tool's sources invalidates the
+    cached binary."""
     hasher = hashlib.sha256()
     for path in sorted(p for p in _NATIVE_SRC_DIR.rglob("*") if p.is_file()):
         hasher.update(str(path.relative_to(_NATIVE_SRC_DIR)).encode())

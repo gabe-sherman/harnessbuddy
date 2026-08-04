@@ -85,11 +85,9 @@ def test_ingest_local_project_name_override(local_repo_with_origin: Path, tmp_pa
 def test_ingest_local_project_name_override_is_lowercased(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """Docker rejects uppercase repository/tag names (e.g. the harnessbuddy-dev/<project>
-    image tag and OSS-Fuzz's own project-name convention), and every later stage
-    (workspace/state/logs directories) derives its path from this same name — so it must
-    be normalized once, here, rather than downstream, to avoid a casing mismatch between
-    where the repo was actually cloned and where later phases look for it."""
+    """Docker rejects uppercase repository and tag names, and every later stage derives its
+    paths from this name — so it is normalized once here. Normalizing downstream instead leaves
+    the clone and the later lookups at different casings."""
     source = _ingest(local_repo_with_origin, tmp_path, project_name="MyLib")
     assert source.project_name == "mylib"
 
@@ -130,7 +128,7 @@ def test_ingest_local_repo_ref_default_is_none(
 def test_ingest_local_clears_stale_workspace_files(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """Without this, a previous run's Dockerfile and scripts survive and get mistaken for
+    """Without the reset, a previous run's Dockerfile and scripts survive and get mistaken for
     something this run produced."""
     state_dir = tmp_path / "state"
     workspace = state_dir / local_repo_with_origin.name.lower()
@@ -147,8 +145,8 @@ def test_ingest_local_clears_stale_workspace_files(
 def test_ingest_local_preserves_learned_dependency_state(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """state.json holds packages learned across earlier runs; wiping it would make every
-    re-run rediscover them."""
+    """state.json holds packages learned in earlier runs, so wiping it makes every re-run
+    rediscover them."""
     state_dir = tmp_path / "state"
     workspace = state_dir / local_repo_with_origin.name.lower()
     workspace.mkdir(parents=True)
@@ -170,11 +168,10 @@ def test_ingest_local_never_touches_the_users_source_tree(
 def test_ingest_local_keeps_a_source_tree_staged_inside_the_workspace(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """Staging a copy of the source at <state_dir>/<project>/src is a deliberate layout — it is
-    what satisfies is_standard_source_layout, so the published scripts come out
-    $SCRIPT_DIR/src-relative instead of carrying host-only absolute paths. The workspace reset
-    must not take that source with it: it is the very tree the run is about to build, and
-    wiping it turns the run into 'No C/C++ build signals found in this repository'."""
+    """Staging the source at <state_dir>/<project>/src is a deliberate layout: it satisfies
+    is_standard_source_layout, so the published scripts come out $SCRIPT_DIR/src-relative
+    instead of carrying host-only absolute paths. The workspace reset must not take it, since it
+    is the tree the run is about to build."""
     state_dir = tmp_path / "state"
     staged = state_dir / "prepared" / "src"
     staged.parent.mkdir(parents=True)

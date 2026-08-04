@@ -201,9 +201,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     level = getattr(logging, args.log_level.upper()) if args.log_level else logging.CRITICAL + 1
-    # force=True so --log-level reliably takes effect on every invocation, even when the
-    # root logger already has handlers configured (e.g. a prior call in the same process,
-    # or a test harness's own logging setup) — otherwise basicConfig silently no-ops.
+    # force=True because basicConfig silently no-ops when the root logger already has
+    # handlers, e.g. a prior call in the same process or a test harness's own setup.
     logging.basicConfig(level=level, force=True)
     if args.command is None:
         parser.print_help()
@@ -231,11 +230,9 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
 ) -> BuildExplorationResult:
     """Run the executor's library build, then fall back to an LLM agent if it failed.
 
-    Returns the final BuildExplorationResult. result.llm_used is True when the agent path
-    was taken; result.agent_stop_reason says why the agent stopped, if it did. Brackets the
-    deterministic build and (if invoked) the agent repair with distinct PhaseReporter
-    banners (FR-001/FR-002); logs_dir, when given, is where the deterministic build's full
-    raw output is persisted (FR-004).
+    result.llm_used is True when the agent path was taken; result.agent_stop_reason says why
+    the agent stopped, if it did. The deterministic build and the agent repair get their own
+    phase banners. logs_dir, when given, is where the deterministic build's raw output goes.
     """
     from harnessbuddy.library_builder.build_parameters import BuildParameters
     from harnessbuddy.library_builder.timeouts import DEFAULT_BUILD_TIMEOUT_SECONDS
@@ -288,11 +285,9 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
 ) -> HarnessExplorationResult:
     """Probe harness compilation, then fall back to an LLM agent if it failed.
 
-    Returns the final HarnessExplorationResult. library_result's extra_include_paths/
-    extra_library_paths (from the library-build agent's AgentReport, if any) are threaded
-    into the probe. Brackets the deterministic probe and (if invoked) the agent repair with
-    distinct PhaseReporter banners (FR-001/FR-002); logs_dir, when given, is where the
-    deterministic probe's full raw output is persisted (FR-004).
+    library_result's extra_include_paths/extra_library_paths, if the library-build agent
+    reported any, are threaded into the probe. The deterministic probe and the agent repair
+    get their own phase banners. logs_dir, when given, is where the probe's raw output goes.
     """
     from harnessbuddy.library_builder.build_parameters import BuildParameters
 
@@ -372,9 +367,8 @@ def _ingest_source(args: argparse.Namespace, state_dir: Path) -> RepoSource | st
 def _resolve_output_path(args: argparse.Namespace, analysis: AnalysisResult) -> Path | None:
     """The output directory for this run, or None if the user declined to overwrite it.
 
-    Only resolves and confirms — the existing directory is not touched until generation is
-    ready to write, so a run that fails partway leaves the user's previous, working output
-    intact.
+    Resolves and confirms only. Nothing is deleted until generation is ready to write, so a
+    run that fails partway leaves the previous, working output intact.
     """
     output_path = Path(args.output) if args.output else Path.cwd() / "output"
     output_path = output_path / analysis.project_name
@@ -431,8 +425,8 @@ def _harness_failure_diagnostic(
     apt_hint_list: list[str],
     log_path: Path | None,
 ) -> FailureDiagnostic:
-    """Build the diagnostic for a failed harness compilation, which stops the run: the
-    probe is the only evidence that compile_harness.sh's link line works."""
+    """Build the diagnostic for a failed harness compilation, which stops the run: the probe
+    is the only evidence that compile_harness.sh's link line works."""
     phase = Phase.AGENT_HARNESS_REPAIR if harness_result.llm_used else Phase.HARNESS_COMPILE_PROBE
     origin = "agent" if harness_result.llm_used else "deterministic"
     step = _agent_step(harness_result) if harness_result.llm_used else "harness link probe"
@@ -443,6 +437,8 @@ def _harness_failure_diagnostic(
             f"  apt: {' '.join(apt_hint_list)}\n"
             "Install these packages and re-run for a complete harness build."
         )
+    elif harness_result.validation_errors:
+        message = _rejected_repair_message(harness_result)
     elif harness_result.llm_used and harness_result.agent_summary:
         message = harness_result.agent_summary
     else:
@@ -455,6 +451,22 @@ def _harness_failure_diagnostic(
         log_path=log_path,
         exit_code=harness_result.exit_code,
     )
+
+
+def _rejected_repair_message(result: BuildExplorationResult | HarnessExplorationResult) -> str:
+    """The message for a repair the agent reported as done and HarnessBuddy rejected.
+
+    The agent's summary describes the failure it set out to fix, not why the run stopped, so
+    it appears as context under the artifact check that rejected it.
+    """
+    detail = "\n".join(f"  {error.strip()}" for error in result.validation_errors)
+    message = (
+        f"The agent reported success, but the artifacts it claims to have built "
+        f"are not there:\n{detail}"
+    )
+    if result.agent_summary:
+        message += f"\n  Agent's own summary: {result.agent_summary}"
+    return message
 
 
 def _agent_step(result: BuildExplorationResult | HarnessExplorationResult) -> str:
@@ -502,14 +514,12 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
         parameters=parameters,
     )
 
-    # Covers both libs the linker reported missing (missing_system_libs) and libs it
-    # resolved silently because the exploration host already had them
-    # (transitive_link_flags).
+    # Covers both the libs the linker reported missing and the ones it resolved silently
+    # because the exploration host already had them.
     linker_deps = dependency_resolution.from_static_probe(
         harness_result.missing_system_libs, harness_result.transitive_link_flags
     )
-    # The harness-build agent reports its own apt package names directly (drawn from its
-    # general knowledge of the library's packaging), bypassing the translation table.
+    # The harness-build agent names apt packages itself, bypassing the translation table.
     harness_agent_deps = dependency_resolution.from_agent_report(
         [],
         harness_result.missing_apt_packages,
@@ -530,8 +540,8 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
         )
 
     if environment is Environment.OSS_FUZZ:
-        # The workspace Dockerfile was written before this phase's discoveries existed, and
-        # generation copies it rather than re-rendering it, so merge them in now.
+        # The Dockerfile was written before this phase's discoveries existed, and generation
+        # copies it rather than re-rendering it, so merge them in now.
         workspace_layout.inject_apt_packages(workspace, state.apt_packages)
 
     if harness_result.succeeded:
@@ -565,9 +575,9 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
 def _verify_shipped_dockerfile(workspace: Path, project_name: str, *, quiet: bool) -> bool:
     """Build the workspace Dockerfile with nothing mounted and run OSS-Fuzz's `compile`.
 
-    The last step before generation for an oss-fuzz target. Everything up to here ran with
-    the workspace mounted, which is what makes its artifacts reachable — and also what lets
-    a broken clone or apt layer in the Dockerfile pass unnoticed.
+    The last step before generation for an oss-fuzz target. Everything before it ran with the
+    workspace mounted, which is what makes the artifacts reachable — and also what lets a
+    broken clone or apt layer in the Dockerfile pass unnoticed.
     """
     from harnessbuddy.library_builder.environments import verification
 
@@ -585,8 +595,8 @@ def _generate_outputs(workspace: Path, output_path: Path, inputs: GenerationInpu
     from harnessbuddy.library_builder.generation import generate
 
     if output_path.exists():
-        # Deferred to here, rather than done when the path was confirmed, so a run that
-        # fails partway leaves the previous output in place.
+        # Deferred until now, not done when the path was confirmed, so a run that fails
+        # partway leaves the previous output in place.
         shutil.rmtree(output_path)
     result = generate(workspace, output_path, inputs)
 
@@ -601,8 +611,8 @@ def _generate_outputs(workspace: Path, output_path: Path, inputs: GenerationInpu
 
 
 def _command_str(command: list[str]) -> str | None:
-    """Render a verification command's argv for FR-010 (report/logs record the literal
-    command used to confirm success or failure)."""
+    """Render a verification command's argv, so the report records the literal command that
+    confirmed success or failure."""
     return " ".join(command) if command else None
 
 
@@ -680,18 +690,18 @@ def _report_library_build_failure(
 ) -> None:
     """Print the diagnostic for a failed library build — deterministic or post-agent.
 
-    One printer for one control path: a failed library build always stops the run, whether
-    the deterministic build failed with no agent armed, the agent's repair did not hold, or
-    the agent stopped for a person to act.
+    One printer for one control path: a failed library build always stops the run, whether no
+    agent was armed, the repair did not hold, or the agent stopped for a person to act.
     """
     phase = Phase.AGENT_LIBRARY_REPAIR if result.llm_used else Phase.STATIC_LIBRARY_BUILD
     origin = "agent" if result.llm_used else "deterministic"
     step = _agent_step(result) if result.llm_used else "static build command"
-    message = (
-        result.agent_summary
-        if (result.llm_used and result.agent_summary)
-        else summarize_message(result.stdout)
-    )
+    if result.validation_errors:
+        message = _rejected_repair_message(result)
+    elif result.llm_used and result.agent_summary:
+        message = result.agent_summary
+    else:
+        message = summarize_message(result.stdout)
     diagnostic = build_diagnostic(
         phase,
         step=step,
@@ -717,8 +727,8 @@ def _report_library_build_success(result: BuildExplorationResult) -> None:
 def _print_run_summary(status: RunStatus) -> None:
     """Print a final, unambiguous overall-outcome line.
 
-    Output generation's own PhaseReporter banner reports that phase's narrow job (writing
-    files) succeeding, and without this that is the last thing printed.
+    Without it, the last thing printed is the output-generation banner, which only reports
+    that writing the files succeeded.
     """
     from harnessbuddy.library_builder.stats import RunStatus
 
@@ -740,7 +750,7 @@ def _print_run_configuration(
 ) -> None:
     """Announce what this run will do before it starts doing it.
 
-    The agent backend is named because a default run may call a paid network service; the
+    The agent backend is named because a default run may call a paid network service, and the
     configure options because they change what gets built and are otherwise only visible
     inside the generated script.
     """

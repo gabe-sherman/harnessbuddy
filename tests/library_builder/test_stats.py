@@ -132,7 +132,7 @@ def test_agent_phase_stats_invoked_without_summary_reports_none() -> None:
     assert stats.summary is None
 
 
-# --- RunStats / write_run_stats (worked examples from contracts/stats-json.md) ---
+# --- RunStats / write_run_stats ---
 
 
 def test_write_run_stats_clean_success(tmp_path: Path) -> None:
@@ -196,7 +196,7 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
 
 
 def test_write_run_stats_harness_agent_ran_but_reported_nothing(tmp_path: Path) -> None:
-    """An agent that ran without reporting cost or a summary emits nulls, not sentinels —
+    """An agent that ran without reporting cost or a summary emits nulls rather than sentinels;
     `invoked` is what distinguishes it from an agent that never ran."""
     stats = RunStats(
         total_duration_seconds=143.5,
@@ -226,8 +226,8 @@ def test_write_run_stats_harness_agent_ran_but_reported_nothing(tmp_path: Path) 
 
 
 def test_write_run_stats_records_the_configure_options_a_run_used(tmp_path: Path) -> None:
-    """stats.json has to describe the configuration that produced the output, and the
-    configure options change what gets built."""
+    """stats.json describes the configuration that produced the output, and the configure
+    options change what gets built."""
     import dataclasses
 
     from harnessbuddy.library_builder.build_parameters import BuildParameters

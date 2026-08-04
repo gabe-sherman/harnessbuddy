@@ -1,53 +1,59 @@
 # HarnessBuddy
 
-HarnessBuddy is a CLI that automates preparing a C/C++ library for fuzzing. Point it at a
-repository URL and it detects the build system, builds the library, probes harness
-compilation to discover linker dependencies, and generates either a standalone dev
-scaffold or a ready-to-drop-in OSS-Fuzz project.
-
-> **Status:** under active development.
+HarnessBuddy is a CLI that takes the manual effort out of building C/C++ libraries for
+fuzzing while aiming to minimize LLM token cost. It detects
+the build system, builds the library, probes harness compilation to find linker
+dependencies, and writes an artifacts that builds and links the library against a harness.
 
 ## What it does
 
-- Detects the build system (CMake, Meson, Autotools, or Makefile).
-- Builds the library locally to validate it and collect install artifacts.
-- Probes harness compilation to discover transitive linker dependencies.
-- Generates one output directory, chosen by `--environment` (default `local`):
-  - `local/` — a standalone dev scaffold (`setup.sh`, `build_library.sh`,
-    `compile_harness.sh`, `compile_harnesses.sh`, `harness_src/`, and the validated
-    `install/include` and `install/lib` artifacts)
-  - `oss-fuzz/` — a project laid out to drop into an existing OSS-Fuzz checkout's
-    `projects/<name>/` and build with its own tooling (`project.yaml`, `Dockerfile`,
-    `build.sh`, `build_library.sh`, `compile_harness.sh`, `compile_harnesses.sh`,
-    `harness_source/`), with
-    `--environment oss-fuzz`
-- Optionally falls back to an LLM agent (`--agent claude` or `--agent codex`) to repair
-  build scripts when a static build fails.
+1. Detects the build system: CMake, Meson, Autotools, or Makefile.
+2. Builds the library with a deterministic script. If that build fails, an agent repairs it.
+3. Probes harness compilation to find the transitive linker dependencies. If the probe fails,
+   an agent repairs it.
+4. Writes the output directory `<output>/<project>/`.
 
-The generated `harness_src/`/`harness_source/` always contains a compiling stub
-(`LLVMFuzzerTestOneInput` with a `// TODO: Add fuzzing logic` body) — HarnessBuddy proves
-the harness *compiles and links* against the library, but you still write the actual
-fuzzing logic.
+## Output
 
-### Local compiler contract
+The output directory provides a reproducible OSS-Fuzz project and a standalone host build tree. `docker build .` works, and so does `./setup.sh && ./build_library.sh`.
 
-Successful `generate --environment local` output contains `local/compile_harness.sh`. It is an
-executable two-argument entrypoint:
-
-```text
-compile_harness.sh HARNESS_SOURCE OUTPUT_BINARY
+```
+output/<project>/
+├── Dockerfile             # OSS-Fuzz project files
+├── project.yaml
+├── .dockerignore
+├── setup.sh               # host counterpart of the Dockerfile: clone + apt dependencies
+├── build.sh               # build_library.sh, then compile_harnesses.sh
+├── build_library.sh       # build and install the library into install/
+├── compile_harness.sh     # compile and link one harness source
+├── compile_harnesses.sh   # compile every source in harness_source/ into out/
+├── harness_source/        # the harness sources, with a compiling stub to start from
+├── install/               # the library this run built
+├── compile_commands.json  # when capture succeeded
+├── stats.json             # what this run did: durations, agent use, status
+└── README.md              # what this run verified, and how to run it
 ```
 
-The script owns compiler, include, static-library, and linker arguments. Callers should not add
-flags or source files. Successful local output is self-contained: copy the entire `local/`
-directory to retain both the compiler scripts and the install tree they link against. `stats.json`
-beside the generated environment records the terminal status, agent use, and the effective
-compiler/flag settings.
+`harness_source/` starts with a stub — an `LLVMFuzzerTestOneInput` with a
+`// TODO: Add fuzzing logic` body. HarnessBuddy proves the harness *compiles and links*
+against the library. You write the fuzzing logic.
+
+## Environments
+
+`--environment` selects where this run builds and verifies. It does not change what is
+generated: the output directory always holds both setups. The generated `README.md` records
+which of the two this run exercised.
+
+- `local` — build and verify on the host.
+- `oss-fuzz` — build and verify in an OSS-Fuzz compatible Docker container, then prove the
+  generated Dockerfile builds from scratch.
 
 ## Prerequisites
 
 - Python 3.13 and [`uv`](https://docs.astral.sh/uv/)
-- `cmake`, `make`, `autoconf`/`automake`, and `meson` on `PATH` (build systems to support local builds). Below is a noncomprehensive list of common package dependencies for library building.
+- Docker, if you use `--environment oss-fuzz`
+- [`bear`](https://github.com/rizsotto/Bear) captures `compile_commands.json` for Make and Autotools builds for future program analysis.
+- For local builds: `cmake`, `make`, `autoconf`/`automake`, and `meson` on `PATH`. The below list is also a noncomprehensive set of common libraries that many projects depend on.
   ```bash
   sudo apt update
   sudo apt install -y \
@@ -77,11 +83,6 @@ compiler/flag settings.
       bear \
       cloc
   ```
-- Docker, if you want to validate against the `oss-fuzz` environment
-  (`--environment oss-fuzz`)
-- [`bear`](https://github.com/rizsotto/Bear) (`apt install bear` / `brew install bear`),
-  used to capture `compile_commands.json` for Make/Autotools builds on the local host.
-  Best-effort — if it's missing, capture is skipped and reported.
 
 ## Install
 
@@ -95,15 +96,17 @@ uv sync
 uv run harnessbuddy generate https://github.com/madler/zlib.git
 ```
 
-This clones the repository, builds it, and writes a `local/` project directory for it.
-Useful flags:
+This clones the repository, builds it, verifies it, and writes `output/zlib/`. Useful flags:
 
 ```bash
-# Build and validate in the OSS-Fuzz Docker environment instead, writing oss-fuzz/
+# Verify in the OSS-Fuzz Docker environment instead of on the host
 uv run harnessbuddy generate <REPO_URL> --environment oss-fuzz
 
-# If first build pass fails, fall back to an agent to resolve issues
-uv run harnessbuddy generate <REPO_URL> --agent claude
+# Turn off agent repair: a failed build then simply fails the run
+uv run harnessbuddy generate <REPO_URL> --no-agents
+
+# Pass build-system configure options (repeat for more than one)
+uv run harnessbuddy generate <REPO_URL> --library-configure-arg=-DBUILD_TESTING=OFF
 
 # Use distinct library and final-harness instrumentation defaults
 uv run harnessbuddy generate <REPO_URL> --environment local \
@@ -114,55 +117,60 @@ uv run harnessbuddy generate <REPO_URL> --environment local \
   --harness-cxxflags='-fsanitize=fuzzer,address'
 ```
 
+Agent repair is on by default and calls a paid network service. `--agent claude` (the
+default) or `--agent codex` selects the backend; `--no-agents` turns it off.
+
 See `uv run harnessbuddy generate --help` for the full set of options (custom output
-location, pinning a branch/tag/commit, skipping validation, etc).
+location, pinning a branch/tag/commit, a different base image, etc).
 
-### Customizing the local build
+### Adaptable builds
 
-`local/build_library.sh` respects the standard compiler/sanitizer env vars, so you can rebuild
-the same project with a different toolchain — for example, AFL++ with an ASan-instrumented
-build:
+The generated build scripts let you supply your own toolchain and flags:
 
 ```bash
 CC=afl-clang-fast CXX=afl-clang-fast++ \
 CFLAGS=-fsanitize=address CXXFLAGS=-fsanitize=address \
-  ./local/build_library.sh
+  ./build_library.sh
 ```
 
-`local/compile_harness.sh` deliberately does not read ambient `CFLAGS` or `CXXFLAGS`: those may
-be library-only flags such as `-fsanitize=fuzzer-no-link`, which omit libFuzzer's `main`. It uses
-the harness flags supplied when it was generated (or libFuzzer's default). Set those with
-`--harness-cflags` and `--harness-cxxflags` when running HarnessBuddy.
+### When a run fails
 
-`BUILD_PREFIX` controls where the library is installed (defaults to the project
-directory).
+HarnessBuddy keeps its working state in `.harnessbuddy/<project>/`: the workspace it built
+in, `logs/` with the raw output of each phase, and `stats.json`. A failed run writes no
+output directory, but the library build artifacts stay in `.harnessbuddy/<project>/install/`
+if you want to debug the link line there. Add `--log-level debug` for more detail, or
+`--quiet` to hide the raw subprocess output while a phase runs.
 
 ## Other commands
 
-`generate` produces a `compile_commands.json` file that two follow-on commands can consume to
-extract various library artifacts (`extract-features`) and produce OSS-Fuzz-Gen compatible YAML inputs (`generate-yaml`).
+`generate` produces a `compile_commands.json` file that two follow-on commands consume, to
+extract the library's API surface (`extract-features`) and to produce an OSS-Fuzz-Gen
+compatible YAML input (`generate-yaml`).
 
 ```bash
-uv run harnessbuddy extract-features <BUILD_PATH>   # -> features.json (Must run first)
-uv run harnessbuddy generate-yaml <BUILD_PATH>       # -> benchmark YAML
+uv run harnessbuddy extract-features <BUILD_PATH>   # -> features.json (run this first)
+uv run harnessbuddy generate-yaml <BUILD_PATH>      # -> <project>.yaml
 ```
 
-`extract-features` runs a Clang LibTooling-based parser over every header/source file in
-`compile_commands.json` and writes `<BUILD_PATH>/features.json`, a structured inventory of
+`extract-features` runs a Clang LibTooling-based parser over every header and source file in
+`compile_commands.json`. It writes `<BUILD_PATH>/features.json`, a structured inventory of
 the library's C/C++ declarations:
 
 - `functions` — name, return type, parameters, full signature, declaring header, and
-  whether it's public API (declared in a header, not `static`)
+  whether it is public API (declared in a header, not `static`)
 - `typedefs` — name, underlying type, declaring header
-- `macros` — name, object- vs. function-like, parameters (if function-like), value,
+- `macros` — name, object- or function-like, parameters (if function-like), value,
   declaring header
 - `enums` — name (if any), enumerators with their values, declaring header
-- `records` — structs/unions: name (if any), `kind`, fields, declaring header
-- `warnings` — non-fatal issues hit while parsing
+- `records` — structs and unions: name (if any), `kind`, fields, declaring header
+- `warnings` — non-fatal problems found during the parse
 
-By default `generate-yaml` reads `features.json` and keeps only public functions to
-build an OSS-Fuzz-Gen compatible benchmark YAML. 
-`generate-yaml` also supports per-header function extraction via the `--headers` argument, which
-is recommended for finer-grained extraction.
+`generate-yaml` reads `features.json` and keeps only the public functions. To get
+finer-grained output, name one or more headers and it keeps only the functions those headers
+declare:
+
+```bash
+uv run harnessbuddy generate-yaml <BUILD_PATH> zlib.h zconf.h
+```
 
 Run `uv run harnessbuddy --help` for details.

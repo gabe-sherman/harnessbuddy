@@ -25,9 +25,9 @@ def apply_to_harness_result(
 ) -> HarnessExplorationResult:
     """Gate a harness probe's outcome with agents/scripts/check_build.sh.
 
-    Skipped when the probe already failed, or when there was nothing to link against:
-    the gate would only reconfirm the same failure at the cost of a full rebuild. The gate
-    command is still reported in that case, so the diagnostic says how to reproduce it.
+    Skipped when the probe already failed or had nothing to link against: the gate would only
+    reconfirm the same failure at the cost of a full rebuild. Its command is still reported, so
+    the diagnostic says how to reproduce it.
     """
     command = verification.verification_command(
         workdir, environment=environment, project_name=project_name
@@ -35,8 +35,8 @@ def apply_to_harness_result(
     if not harness_result.static_libs or not harness_result.succeeded:
         return dataclasses.replace(harness_result, command=command)
 
-    # The gate builds the library and compiles harnesses in one invocation, so it runs with
-    # no stage's compiler environment in effect: each generated script bakes in its own.
+    # The gate builds the library and compiles harnesses in one invocation, so no stage's
+    # compiler environment may be in effect: each generated script bakes in its own.
     with neutral_compiler_environment():
         result = verification.run_verification(
             workdir, environment=environment, project_name=project_name

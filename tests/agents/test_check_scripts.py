@@ -36,12 +36,10 @@ _BROKEN_BUILD_LIBRARY_SH = (
     "#!/bin/bash\nset -euo pipefail\necho 'simulated build failure' >&2\nexit 1\n"
 )
 
-# check_build_in_container.sh runs the gate with `--entrypoint bash`, and check_build.sh
-# itself needs bash builtins (compgen) — so the stand-in image for these tests has to carry
-# a real bash. busybox does not, and fails before any assertion runs with
-# `exec: "bash": executable file not found in $PATH`. Small and bash-bearing, in place of
-# pulling the multi-gigabyte OSS-Fuzz base builder for a fixture that never compiles
-# anything.
+# The gate runs with `--entrypoint bash` and check_build.sh needs bash builtins (compgen), so
+# the stand-in image has to carry a real bash — busybox fails before any assertion runs. Small
+# and bash-bearing, in place of the multi-gigabyte OSS-Fuzz base builder, for a fixture that
+# never compiles anything.
 _BASH_IMAGE = "debian:stable-slim"
 
 
@@ -93,7 +91,7 @@ def test_check_build_wrong_arg_count_exits_nonzero() -> None:
 
 def test_check_build_defaults_out_to_the_workspace(tmp_path: Path) -> None:
     """The base image defines $OUT and a host shell does not, so the gate supplies the same
-    fallback the generated scripts use — otherwise `set -u` aborts it on the host."""
+    fallback the generated scripts use, or `set -u` aborts it on the host."""
     _write_project(
         tmp_path,
         build_library=_GOOD_BUILD_LIBRARY_SH,
@@ -104,8 +102,8 @@ def test_check_build_defaults_out_to_the_workspace(tmp_path: Path) -> None:
 
 
 def test_check_build_rebuilds_from_nothing(tmp_path: Path) -> None:
-    """build_library.sh exits early when install/ already holds artifacts, so a gate that
-    left a previous build in place would assert on artifacts it never produced."""
+    """build_library.sh exits early when install/ already holds artifacts, so a gate that left
+    a previous build in place would assert on artifacts it never produced."""
     _write_project(
         tmp_path,
         build_library=(
@@ -149,8 +147,8 @@ def test_check_build_fails_when_no_harness_binary_is_produced(tmp_path: Path) ->
     assert "no harness binary" in result.stderr
 
 
-# stage markers — combined output attributes a failure to the right stage, even though the
-# gate itself is a single atomic pass/fail result
+# stage markers — the combined output attributes a failure to the right stage, even though the
+# gate reports one atomic pass/fail
 
 
 def test_library_failure_output_identifies_the_stage_before_harness(tmp_path: Path) -> None:
@@ -188,8 +186,8 @@ def test_harness_failure_output_shows_the_library_succeeded_first(tmp_path: Path
 
 @pytest.mark.docker
 def test_check_build_in_container_exits_zero_on_good_project(tmp_path: Path) -> None:
-    """The gate script is mounted into the image rather than baked in, so the assertions run
-    are the same ones the host path runs."""
+    """The gate script is mounted into the image rather than baked in, so the assertions it runs
+    are the ones the host path runs."""
     _write_project(
         tmp_path,
         build_library=_GOOD_BUILD_LIBRARY_SH,
@@ -210,10 +208,10 @@ def test_check_build_in_container_exits_zero_on_good_project(tmp_path: Path) -> 
 def test_check_build_in_container_resolves_a_source_symlink_out_of_the_workspace(
     tmp_path: Path,
 ) -> None:
-    """The workspace mount covers /src whole, shadowing the source tree the image cloned
-    there, so the container reads <workspace>/src from the host. An oss-fuzz run over a local
-    path leaves that as a symlink into the user's own tree, which dangles inside the container
-    unless its target is mounted too — the gate then stops on a missing source directory."""
+    """The workspace mount covers /src whole, shadowing the source tree the image cloned there,
+    so the container reads <workspace>/src from the host. An oss-fuzz run over a local path
+    leaves that a symlink into the user's own tree, which dangles in the container unless its
+    target is mounted too."""
     workspace = tmp_path / "work"
     workspace.mkdir()
     source = tmp_path / "elsewhere"
@@ -243,12 +241,69 @@ def test_check_build_in_container_resolves_a_source_symlink_out_of_the_workspace
     assert (workspace / "install" / "include" / "foo.h").exists()
 
 
+# Stands in for the OSS-Fuzz base image's own ENV OUT=/out, which is what puts the harness
+# binaries outside the workspace mount.
+_OUT_OUTSIDE_WORKSPACE_DOCKERFILE = f"FROM {_BASH_IMAGE}\nENV OUT=/out\n"
+
+
+@pytest.mark.docker
+def test_check_build_in_container_returns_harness_binaries_to_the_host(tmp_path: Path) -> None:
+    """The OSS-Fuzz base image defines $OUT=/out, which is not under the /src workspace mount,
+    so without a mount of its own the harness binaries are discarded with the container: the
+    gate passes and the host has nothing to check. The pipeline then rejects every agent repair
+    in this environment, including the ones that worked."""
+    _write_project(
+        tmp_path,
+        build_library=_GOOD_BUILD_LIBRARY_SH,
+        compile_harnesses=_GOOD_COMPILE_HARNESSES_SH,
+    )
+    (tmp_path / "Dockerfile").write_text(_OUT_OUTSIDE_WORKSPACE_DOCKERFILE)
+
+    result = subprocess.run(
+        ["bash", str(_CHECK_BUILD_IN_CONTAINER), str(tmp_path), "checkscriptoutmount"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    harness = tmp_path / "out" / "harness"
+    assert harness.exists()
+    # Root-owned artifacts block the next run's rebuild-from-nothing just as install/ does.
+    assert harness.stat().st_uid == os.getuid()
+    shutil.rmtree(tmp_path / "out")
+
+
+@pytest.mark.docker
+def test_check_build_in_container_clears_stale_output_when_out_is_a_mountpoint(
+    tmp_path: Path,
+) -> None:
+    """The gate rebuilds from nothing, but $OUT cannot be removed once it is a bind
+    mountpoint — the container gets "Device or resource busy" and set -e fails the gate before
+    the build starts. Its contents have to go while the directory itself stays."""
+    _write_project(
+        tmp_path,
+        build_library=_GOOD_BUILD_LIBRARY_SH,
+        compile_harnesses=_GOOD_COMPILE_HARNESSES_SH,
+    )
+    (tmp_path / "Dockerfile").write_text(_OUT_OUTSIDE_WORKSPACE_DOCKERFILE)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "stale_harness").write_text("from an earlier run")
+
+    result = subprocess.run(
+        ["bash", str(_CHECK_BUILD_IN_CONTAINER), str(tmp_path), "checkscriptoutstale"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "out" / "stale_harness").exists()
+    assert (tmp_path / "out" / "harness").exists()
+    shutil.rmtree(tmp_path / "out")
+
+
 @pytest.mark.docker
 def test_check_build_in_container_returns_artifact_ownership_to_the_host(tmp_path: Path) -> None:
-    """The image runs as root, so everything it writes into the bind mount lands owned by
-    uid 0. Deleting a root-owned file needs write permission on its directory rather than on
-    the file, so without a chown back the host user cannot remove the install/ tree the
-    container created — and the next run's rebuild-from-nothing fails on it."""
+    """The image runs as root, so everything it writes into the bind mount lands owned by uid 0.
+    Without a chown back, the host user cannot remove the install/ tree the container created,
+    and the next run's rebuild-from-nothing fails on it."""
     _write_project(
         tmp_path,
         build_library=_GOOD_BUILD_LIBRARY_SH,
@@ -266,7 +321,7 @@ def test_check_build_in_container_returns_artifact_ownership_to_the_host(tmp_pat
     lib_dir = tmp_path / "install" / "lib"
     assert lib_dir.stat().st_uid == os.getuid()
     assert (lib_dir / "libfoo.a").stat().st_uid == os.getuid()
-    # The operation the next run makes, and the one that used to raise PermissionError.
+    # The operation the next run makes, and the one that raised PermissionError.
     shutil.rmtree(tmp_path / "install")
 
 

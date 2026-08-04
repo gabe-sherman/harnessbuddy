@@ -20,9 +20,9 @@ class RunStatus(Enum):
 class AgentPhaseStats:
     """One phase's agent accounting, or the record that no agent ran.
 
-    Every numeric field is None when the agent wasn't invoked, so `stats.json` carries
-    JSON nulls rather than the string "N/A" — `invoked` already says which case it is, and
-    a consumer shouldn't have to type-check each number to find out.
+    Every numeric field is None when no agent was invoked, so stats.json carries JSON nulls
+    rather than an "N/A" string a consumer would have to type-check around. `invoked` is what
+    says which case it is.
     """
 
     invoked: bool
@@ -50,8 +50,7 @@ def not_invoked_agent_stats() -> AgentPhaseStats:
 def agent_phase_stats(result: BuildExplorationResult | HarnessExplorationResult) -> AgentPhaseStats:
     """The agent accounting carried by either stage's result.
 
-    One function for both stages: they report this through the same AgentOutcome fields,
-    so there is nothing per-stage left to distinguish.
+    One function for both, since both report it through the same AgentOutcome fields.
     """
     if not result.llm_used:
         return not_invoked_agent_stats()
@@ -73,8 +72,7 @@ class RunStats:
     status: RunStatus
     environment: Environment = Environment.LOCAL
     compile_commands_path: str | None = None
-    # The literal command (FR-010) that the shared verification script was invoked with,
-    # so a person can reproduce the pass/fail result themselves.
+    # The literal command the gate was invoked with, so a person can reproduce the result.
     verification_command: str | None = None
     build_parameters: dict[str, str | list[str]] | None = None
 

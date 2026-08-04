@@ -53,8 +53,8 @@ def test_upgrades_to_cxx_on_known_abi_symbol(tmp_path: Path) -> None:
 
 
 def test_upgrades_to_cxx_on_arbitrary_demangled_symbol(tmp_path: Path) -> None:
-    """A symbol outside _CXX_ABI_RE's known set (e.g. a libc++ std:: destructor) must
-    still trigger the C -> C++ probe upgrade, since it can only come from C++ code."""
+    """A symbol outside _CXX_ABI_RE's set — a libc++ std:: destructor, say — must still trigger
+    the C to C++ upgrade, since only C++ code produces it."""
     install_dir = tmp_path / "install"
     (install_dir / "lib").mkdir(parents=True)
     (install_dir / "lib" / "libfoo.a").write_text("stub")
@@ -156,8 +156,8 @@ def test_default_link_flags_not_duplicated_when_rediscovered(tmp_path: Path) -> 
     (install_dir / "lib" / "libfoo.a").write_text("stub")
     (install_dir / "include").mkdir()
 
-    # -lpthread is already seeded as a default, so an undefined pthread_create reference
-    # (which _symbol_to_flag also maps to -lpthread) must not add a second copy of it.
+    # -lpthread is already seeded, so an undefined pthread_create reference — which
+    # _symbol_to_flag also maps to -lpthread — must not add a second copy.
     with patch(
         "harnessbuddy.library_builder.harness_explorer.run_command",
         return_value=RunResult(
@@ -237,18 +237,17 @@ def _probe_commands(tmp_path: Path, environment: Environment) -> list[list[str]]
 
 
 def test_probe_enters_through_compile_in_the_oss_fuzz_environment(tmp_path: Path) -> None:
-    """The generated scripts are environment-independent; entering them is not. In the
-    container the probe goes through OSS-Fuzz's own `compile`, because that is what resolves
-    SANITIZER_FLAGS into CFLAGS/CXXFLAGS and exports LIB_FUZZING_ENGINE=-fsanitize=fuzzer.
-    Running compile_harnesses.sh directly there links against the /usr/lib/libFuzzingEngine.a
-    the image's ENV names but compile_libfuzzer has not created — and patching only the engine
-    flag yields a target with no sanitizer instrumentation at all."""
+    """The generated scripts are environment-independent; entering them is not. In the container
+    the probe goes through `compile`, which resolves SANITIZER_FLAGS into CFLAGS/CXXFLAGS and
+    exports LIB_FUZZING_ENGINE=-fsanitize=fuzzer. Running compile_harnesses.sh directly there
+    links against an archive that does not exist yet, and patching only the engine flag yields a
+    target with no sanitizer instrumentation."""
     assert _probe_commands(tmp_path, Environment.OSS_FUZZ) == [["bash", "-c", "compile"]]
 
 
 def test_probe_runs_the_batch_script_directly_on_the_host(tmp_path: Path) -> None:
-    """There is no `compile` on a host and nothing for it to assemble, so the generated
-    script is entered directly."""
+    """A host has no `compile` and nothing for it to assemble, so the generated script is
+    entered directly."""
     assert _probe_commands(tmp_path, Environment.LOCAL) == [["bash", "compile_harnesses.sh"]]
 
 

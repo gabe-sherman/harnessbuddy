@@ -24,9 +24,8 @@ _REPO = "https://github.com/example/repo.git"
 def _materialized_workspace(project_name: str = "mylib") -> Path:
     """The workspace a real library-build stage leaves behind.
 
-    Generation copies the validated workspace rather than re-deriving it, so a test that
-    stubs out `build_library` still has to leave that workspace on disk — in a real run the
-    executor materializes it before it builds anything.
+    Generation copies the validated workspace rather than re-deriving it, so a test that stubs
+    out `build_library` still has to leave that workspace on disk.
     """
     from harnessbuddy.core.paths import default_state_dir, project_dir
     from harnessbuddy.library_builder import workspace
@@ -55,9 +54,7 @@ def _materialized_workspace(project_name: str = "mylib") -> Path:
 def _stub_library_build(result: BuildExplorationResult):  # type: ignore[no-untyped-def]
     """Stand in for the library-build stage, materializing the workspace as it would.
 
-    A real stage writes the project layout into the workspace before it builds, and
-    generation copies that workspace — so a stub that only returns a result would leave
-    generation with nothing to publish.
+    A stub that only returned a result would leave generation with nothing to publish.
     """
 
     def _run(*_args: object, **_kwargs: object) -> BuildExplorationResult:
@@ -71,9 +68,8 @@ def _stub_library_build(result: BuildExplorationResult):  # type: ignore[no-unty
 def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Give each test its own .harnessbuddy/ workspace.
 
-    The state directory is resolved relative to the working directory, so without this every
-    test shares one — and since ingestion resets the workspace, one test's leftover state
-    then decides another test's result.
+    The state directory is relative to the working directory, so without this every test shares
+    one — and since ingestion resets the workspace, one test's leftovers decide another's result.
     """
     state_root = tmp_path / "workdir"
     state_root.mkdir()
@@ -84,9 +80,8 @@ def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def no_real_agent() -> Generator[None]:
     """Fail loudly if a test reaches a real agent CLI.
 
-    --agent defaults to claude, so a generate run that fails a build will try to spawn one.
-    A test either patches the agent boundary or passes --no-agents; forgetting both used to
-    mean a hung run against the live CLI."""
+    --agent defaults to claude, so a generate run that fails a build tries to spawn one. A test
+    either patches the agent boundary or passes --no-agents; forgetting both hangs the run."""
 
     def _refuse(*_args: object, **_kwargs: object) -> None:
         raise AssertionError(
@@ -110,8 +105,7 @@ def mock_host_build() -> Generator[MagicMock]:
             "harnessbuddy.library_builder.exploration.validate_install_artifacts",
             return_value=[],
         ),
-        # Both executors gate on the shared check_build.sh script — stub that boundary
-        # too, so tests never invoke a real build.
+        # Both executors gate on check_build.sh, so stub that boundary too.
         patch(
             "harnessbuddy.library_builder.environments.verification.run_command_streaming",
             return_value=RunResult(stdout="OK", stderr="", exit_code=0, duration_seconds=0.1),
@@ -226,12 +220,10 @@ def test_generate_success_project_name_override(
 def test_generate_success_mixed_case_project_name_is_lowercased_consistently(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """Docker rejects uppercase image tags; the project name is lowercased at ingestion
-    (core/repos.py) so every later phase (workspace/state/logs directories, all derived
-    from AnalysisResult.project_name) agrees with where the repo was actually cloned —
-    a regression test for a bug where lowercasing only in analyze() left the ingested
-    source directory and the later workspace path pointing at different, mismatched
-    casings of the same name."""
+    """Docker rejects uppercase image tags, so the project name is lowercased at ingestion.
+
+    Every later phase derives its paths from it, so lowercasing anywhere later leaves the
+    ingested source directory and the workspace path at different casings of one name."""
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
@@ -247,10 +239,9 @@ def test_generate_success_mixed_case_project_name_is_lowercased_consistently(
             ]
         )
     assert rc == 0
-    # Path.exists() alone isn't reliable here: some host filesystems (e.g. a
-    # case-insensitive macOS bind mount under Docker Desktop) resolve "MyLib" and
-    # "mylib" to the same entry regardless of casing. Read the actual directory entry
-    # name back instead, which stays case-preserving even there.
+    # Path.exists() is not reliable here: a case-insensitive filesystem resolves "MyLib" and
+    # "mylib" to the same entry. Read the directory entry name back instead, which stays
+    # case-preserving even there.
     entry_names = {entry.name for entry in Path(".harnessbuddy").iterdir()}
     assert "mylib" in entry_names
     assert "MyLib" not in entry_names
@@ -530,8 +521,8 @@ def _stats_json_path(output_dir: Path) -> Path:
 def _workspace_stats_json_path(project_name: str = "mylib") -> Path:
     """Where every run records its stats, successful or not.
 
-    A failed run generates no output directory, so the workspace is the one place a record
-    of what was attempted can survive.
+    A failed run generates no output directory, so the workspace is the only place a record of
+    the attempt survives.
     """
     from harnessbuddy.core.paths import default_state_dir, project_dir
 
@@ -539,17 +530,12 @@ def _workspace_stats_json_path(project_name: str = "mylib") -> Path:
 
 
 def _oss_fuzz_workspace(project_name: str = "mylib") -> Path:
-    """A minimal stand-in for the workspace OssFuzzExecutor._materialize_workspace and
-    explore() leave behind, for tests that mock harnessbuddy.cli.build_library directly
-    (so no real workspace is ever written to disk) but still exercise the oss-fuzz
-    generation path — generate_oss_fuzz requires every one of these files to exist in
-    the exploration result's script_path's directory (no template-rendering fallback).
+    """A minimal stand-in for the workspace a real run leaves behind, for tests that mock
+    build_library and so never write one, but still exercise the oss-fuzz generation path.
+    Generation requires every one of these files.
 
-    Written into the real .harnessbuddy/<project_name>/ state directory (matching
-    project_dir()), not tmp_path — that's where the real pipeline's own `workspace`
-    variable points, and generate_oss_fuzz's Dockerfile-merge step (inject_apt_packages)
-    writes there too, so a script_path pointing anywhere else would silently diverge
-    from what generate_oss_fuzz actually copies.
+    Written into the real .harnessbuddy/<project_name>/ directory rather than tmp_path, since
+    that is where the pipeline's own `workspace` points and where the Dockerfile merge writes.
     """
     import shutil
 
@@ -719,8 +705,7 @@ def test_generate_writes_stats_json_failed_harness_build_prints_overall_failed(
 def test_generate_stops_on_a_failed_library_build(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """A failed build always stops the run: there is one control path, and no output
-    directory that was never verified."""
+    """A failed build always stops the run: one control path, and no unverified output."""
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     fake_build_result = BuildExplorationResult(
@@ -749,10 +734,9 @@ def test_generate_stops_on_a_failed_library_build(
 def test_generate_writes_no_output_when_the_harness_probe_fails(
     local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The probe is the only evidence that compile_harness.sh's link line works, so an
-    output directory generated past a probe failure would ship its central promise
-    untested (decision 9). The library artifacts stay in the workspace, and the diagnostic
-    says where."""
+    """The probe is the only evidence that compile_harness.sh's link line works, so generating
+    past a probe failure would ship the output's central promise untested. The library artifacts
+    stay in the workspace, and the diagnostic says where."""
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     rc = main(
@@ -785,8 +769,8 @@ def _key_paths(obj: object, prefix: str = "") -> set[str]:
 def test_stats_json_has_the_same_shape_across_outcomes(
     local_repo_with_origin: Path, tmp_path: Path
 ) -> None:
-    """Every run records the same keys, so a consumer never has to branch on the outcome to
-    read the record."""
+    """Every run records the same keys, so a consumer never branches on the outcome to read
+    the record."""
     success_output = tmp_path / "success_output"
     success_output.mkdir()
 
@@ -906,7 +890,7 @@ def test_no_stats_json_when_output_directory_never_created(tmp_path: Path) -> No
     assert list(output_dir.rglob("stats.json")) == []
 
 
-# agent_report.json summary flow (Structured Agent Report feature, US1)
+# agent_report.json summary flow
 
 
 def test_generate_agent_report_summary_reaches_stats_on_library_success(
@@ -924,8 +908,8 @@ def test_generate_agent_report_summary_reaches_stats_on_library_success(
         (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
         (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
         (workdir / "install" / "include" / "foo.h").write_text("stub")
-        # A repair that worked leaves a compiled harness behind; post-agent validation
-        # checks for one rather than taking the agent's word for it.
+        # A repair that worked leaves a compiled harness behind, and validation checks for
+        # one rather than taking the agent's word for it.
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("binary")
         (workdir / "agent_report.json").write_text(
@@ -1153,8 +1137,8 @@ def test_generate_agent_report_extra_library_path_reaches_local_harness_script(
         (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
         (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
         (workdir / "install" / "include" / "foo.h").write_text("stub")
-        # A repair that worked leaves a compiled harness behind; post-agent validation
-        # checks for one rather than taking the agent's word for it.
+        # A repair that worked leaves a compiled harness behind, and validation checks for
+        # one rather than taking the agent's word for it.
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("binary")
         (workdir / "agent_report.json").write_text(
@@ -1191,7 +1175,7 @@ def test_generate_agent_report_extra_library_path_reaches_local_harness_script(
     assert f"-L{extra_lib_path}" in local_script
 
 
-# agent_report.json missing-package flow (Structured Agent Report feature, US3)
+# agent_report.json missing-package flow
 
 
 def test_generate_library_missing_package_reaches_output_on_success(
@@ -1209,8 +1193,8 @@ def test_generate_library_missing_package_reaches_output_on_success(
         (workdir / "install" / "include").mkdir(parents=True, exist_ok=True)
         (workdir / "install" / "lib" / "libfoo.a").write_text("stub")
         (workdir / "install" / "include" / "foo.h").write_text("stub")
-        # A repair that worked leaves a compiled harness behind; post-agent validation
-        # checks for one rather than taking the agent's word for it.
+        # A repair that worked leaves a compiled harness behind, and validation checks for
+        # one rather than taking the agent's word for it.
         (workdir / "out").mkdir(parents=True, exist_ok=True)
         (workdir / "out" / "default_fuzzer").write_text("binary")
         (workdir / "agent_report.json").write_text(
@@ -1397,10 +1381,9 @@ def test_generate_harness_missing_package_reaches_output_on_success(
 def test_generate_harness_agent_resolved_link_still_reports_package_on_success(
     local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """An agent that resolves a link failure using a library already on its own machine
-    (nothing to install there) must still report that library's packages, so the
-    generated output stays portable to environments that don't already have it — closing
-    the remaining gap identified in specs/007-complete-dependency-packaging's research.md.
+    """An agent that resolves a link failure with a library already on its own machine must
+    still report that library's packages, so the generated output stays portable to an
+    environment that does not have it.
     """
     output_dir = tmp_path / "output"
     output_dir.mkdir()
@@ -1723,7 +1706,7 @@ def test_generate_library_and_harness_phase_share_package_without_duplication(
     assert dockerfile.count("libzstd-dev") == 1
 
 
-# phase banners and failure diagnostics (spec 012)
+# phase banners and failure diagnostics
 
 
 def test_generate_success_prints_phase_banners_in_order(
@@ -1743,9 +1726,8 @@ def test_generate_success_prints_phase_banners_in_order(
         )
     assert rc == 0
     out = capsys.readouterr().out
-    # build_harness is mocked wholesale here (matching this file's usual pattern), so its
-    # own Harness compile probe banner never runs — only the phases whose PhaseReporter
-    # actually executes in this test are asserted.
+    # build_harness is mocked wholesale, so its own banner never runs; only the phases that
+    # really execute here are asserted.
     expected_labels = [
         "Repository ingestion",
         "Static analysis",
@@ -1906,8 +1888,46 @@ def test_generate_agent_repaired_but_still_failed_library_build_diagnostic_is_ag
     assert "Agent-assisted library repair" in err
     assert "Tried adding a CMake flag but the build still failed." in err
     # Exactly one diagnostic block for this failure — not the pre-existing duplicate
-    # print of the same agent summary (research.md addendum).
+    # print of the same agent summary.
     assert err.count("Tried adding a CMake flag but the build still failed.") == 1
+
+
+def test_generate_rejected_repair_diagnostic_reports_the_validation_error_not_the_summary(
+    local_repo_with_origin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An agent that exits 0 without producing the artifacts is failed by HarnessBuddy, not by
+    itself. Its summary explains the failure it set out to fix, so leading with it says nothing
+    about why the run stopped — the artifact check has to be the message."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    fake_build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=False,
+        command=["bash", "build_library.sh"],
+        stdout="agent attempt output",
+        stderr="\nno static libraries (*.a) found in /work/install/lib",
+        exit_code=0,
+        duration_seconds=3.0,
+        llm_used=True,
+        agent_summary="Not a missing dependency: the CMake flag was wrong.",
+        validation_errors=["no static libraries (*.a) found in /work/install/lib"],
+    )
+    with _stub_library_build(fake_build_result):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--no-agents",
+            ]
+        )
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "no static libraries (*.a) found in /work/install/lib" in err
+    assert "reported success" in err
+    # Kept as context, so the agent's own account is not lost.
+    assert "Not a missing dependency: the CMake flag was wrong." in err
 
 
 def test_check_environment_availability_failure_uses_startup_failure_format(
@@ -2029,7 +2049,7 @@ def test_generate_never_creates_feature_extractor_output(
     assert not list(output_dir.rglob("*.benchmark.yaml"))
 
 
-# --environment flag (spec 009)
+# --environment flag
 
 
 def test_environment_flag_defaults_to_local() -> None:
@@ -2312,10 +2332,9 @@ def test_generate_oss_fuzz_library_failure_stops_before_harness_phase(
 
 # --library-configure-arg reaches BuildParameters
 #
-# The flag is only useful if what argv carries is what the generated script bakes in. Its
-# parsing and its resolution into BuildParameters were untested end to end, so a rename of
-# either the `dest` or the field would have gone unnoticed until a real build silently
-# dropped the option.
+# The flag is only useful if what argv carries is what the generated script bakes in, so a
+# rename of either the `dest` or the field has to fail here rather than silently drop the
+# option in a real build.
 
 
 def test_library_configure_arg_repeats_into_a_list_in_order() -> None:
@@ -2333,8 +2352,7 @@ def test_library_configure_arg_repeats_into_a_list_in_order() -> None:
 
 def test_no_configure_arg_resolves_to_an_empty_tuple() -> None:
     """`action="append"` leaves the dest at None rather than [] when the flag never appears,
-    which is the case _repeated_argument's isinstance guard exists for — without it every run
-    that passes no configure option would crash on a None."""
+    which is what _repeated_argument's isinstance guard is for."""
     from harnessbuddy.library_builder.build_parameters import BuildParameters
 
     args = build_parser().parse_args(["generate", _REPO])
@@ -2343,8 +2361,8 @@ def test_no_configure_arg_resolves_to_an_empty_tuple() -> None:
 
 
 def test_library_configure_args_resolve_onto_build_parameters() -> None:
-    """The bridge between argv and the generated script: BuildParameters is what
-    write_build_library_script bakes in, and what stats.json publishes."""
+    """BuildParameters is the bridge between argv and the generated script: it is what
+    write_build_library_script bakes in and what stats.json publishes."""
     from harnessbuddy.library_builder.build_parameters import BuildParameters
 
     args = build_parser().parse_args(
@@ -2357,8 +2375,8 @@ def test_library_configure_args_resolve_onto_build_parameters() -> None:
 
 
 def test_a_configure_arg_is_not_folded_into_the_compiler_flags() -> None:
-    """A configure option passed as --library-cflags would become a preprocessor define that
-    silently does nothing, so the two must stay separate all the way through."""
+    """A configure option passed as --library-cflags becomes a preprocessor define that does
+    nothing, so the two must stay separate all the way through."""
     from harnessbuddy.library_builder.build_parameters import BuildParameters
 
     args = build_parser().parse_args(

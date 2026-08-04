@@ -46,11 +46,8 @@ def name_from_url(url: str) -> str:
 def clean_project_dir(project_dir: Path, keep: set[Path]) -> None:
     """Empty project_dir, preserving the paths in keep and any child that contains one.
 
-    A kept path is not always a direct child: a caller can ask to preserve something nested
-    (a source tree at <project>/src, whose own parent is what iterdir() yields here), and
-    removing the child would take the kept path with it. Matching on containment as well as
-    equality is what makes `keep` mean "this survives" rather than "this survives only if it
-    happens to sit one level down".
+    A kept path is not always a direct child, so containment is matched as well as equality:
+    deleting the child that holds a nested kept path would take it along too.
     """
     keep_resolved = {p.resolve() for p in keep}
     for child in project_dir.iterdir():
@@ -66,9 +63,8 @@ def clean_project_dir(project_dir: Path, keep: set[Path]) -> None:
 def _run_git(command: list[str], *, cwd: Path | None = None) -> None:
     """Run a git command, raising CloneFailedError with git's own stderr on failure.
 
-    `check=True` alone would surface an unreachable host or a bad ref as a
-    CalledProcessError traceback out of whatever phase happened to be running; callers
-    need a typed failure they can report as an ingestion diagnostic.
+    `check=True` would surface an unreachable host or a bad ref as a CalledProcessError
+    traceback; callers need a typed failure to report as an ingestion diagnostic.
     """
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -87,14 +83,12 @@ def ingest_url(
 ) -> RepoSource:
     """Clone a remote repository into state_dir and return a RepoSource.
 
-    The checkout of repo_ref and the submodule update apply to both the fresh-clone and
-    the already-cloned path: `git clean -fdx` wipes untracked submodule content and a
-    checkout can move submodule pointers, so without the update a re-run would build
-    against empty or stale submodule trees that the first run built correctly.
+    The repo_ref checkout and the submodule update run on the fresh-clone and already-cloned
+    paths alike: `git clean -fdx` wipes untracked submodule content and a checkout can move
+    submodule pointers, so without the update a re-run builds against empty or stale trees.
 
-    Preserves state.json (dependency-resolution state learned across prior runs, e.g.
-    apt packages an agent reported missing) across the workspace wipe below — without
-    this, every re-run for the same project would silently discard it.
+    state.json survives the workspace wipe, so the dependencies learned across prior runs are
+    not discarded on every re-run.
     """
     name = (project_name or name_from_url(url)).lower()
     project_dir = state_dir / name
@@ -105,7 +99,6 @@ def ingest_url(
     if not dest.exists():
         _run_git(["git", "clone", "--recursive", url, str(dest)])
     else:
-        # Reset src state across runs
         clean_project_dir(project_dir, keep={dest, state_file})
         _run_git(["git", "reset", "--hard"], cwd=dest)
         _run_git(["git", "clean", "-fdx"], cwd=dest)
@@ -124,19 +117,17 @@ def ingest_local(
 ) -> RepoSource:
     """Validate a local repository path and return a RepoSource.
 
-    Resets the project workspace exactly as ingest_url does, so a previous run's
-    Dockerfile, scripts, and agent report can't survive into this one and be mistaken for
-    something this run produced. The user's own source directory is never touched — including
-    when it lives inside the workspace being reset, which is a layout callers choose
-    deliberately: staging a copy at <state_dir>/<project>/src is what satisfies
-    is_standard_source_layout and so gets $SCRIPT_DIR/src-relative scripts in the output
-    instead of host-only absolute paths. Passing it to `keep` is what makes that safe.
+    Resets the project workspace as ingest_url does, so a previous run's Dockerfile, scripts,
+    and agent report cannot be mistaken for this run's. The user's source directory is never
+    touched, including when it sits inside the workspace being reset — a deliberate layout,
+    since staging a copy at <state_dir>/<project>/src is what earns $SCRIPT_DIR/src-relative
+    scripts in the output. Passing it to `keep` is what makes that safe.
 
     Raises RepositoryNotFoundError if the path does not exist or is not a directory.
     Raises NoCloneableOriginError if the repository has no cloneable git remote origin.
-    Raises LocalRepoRefError if repo_ref is set: honouring it would mean checking out a
-    ref in a working tree the user owns, and ignoring it would ship a setup.sh and
-    Dockerfile pinning a ref that was never built.
+    Raises LocalRepoRefError if repo_ref is set: honouring it would check out a ref in a
+    working tree the user owns, and ignoring it would ship a setup.sh and Dockerfile pinning a
+    ref that was never built.
     """
     if not path.exists() or not path.is_dir():
         raise RepositoryNotFoundError(f"Local path does not exist or is not a directory: {path}")

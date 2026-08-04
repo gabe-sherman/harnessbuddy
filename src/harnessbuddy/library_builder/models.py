@@ -32,9 +32,8 @@ class Language(Enum):
 class AnalysisResult:
     """What static analysis concluded about a repository — immutable pipeline input.
 
-    Frozen because every later phase reads it and none owns it: the packages the harness
-    phase discovers travel to generation as an explicit argument, not as a mutation of
-    this record.
+    Frozen because every later phase reads it and none owns it. Anything a later phase
+    discovers travels onward as an explicit argument, not as a mutation of this record.
     """
 
     project_name: str
@@ -61,9 +60,8 @@ class AgentReport:
 class AgentStopReason(StrEnum):
     """Why a repair agent stopped without fixing the build.
 
-    Both are expected results of asking an agent to attempt a repair, not errors: one
-    needs a person to resolve something, the other needs time to pass. They are reported
-    on the result so the pipeline has a single control path for "the build did not pass".
+    Both are expected outcomes rather than errors: one needs a person, the other needs time
+    to pass. Reported on the result, so "the build did not pass" stays one control path.
     """
 
     ACTION_REQUIRED = "action_required"
@@ -74,17 +72,19 @@ class AgentStopReason(StrEnum):
 class AgentOutcome:
     """What a repair-agent attempt contributes to a stage's result.
 
-    Both stage results carry this same block — cost accounting, what the agent reported,
-    and where its transcript is — so it is declared once here and inherited rather than
-    repeated at each result type and each construction site. Keyword-only so the two
-    results can still declare their own required fields.
+    Both stage results carry this same block, so it is declared once here and inherited.
+    Keyword-only, so the two results can still declare their own required fields.
     """
 
     llm_used: bool = False
-    # The validated script to publish, set once a stage (or an agent's repair) has proven
-    # it works and its paths are portable enough to copy verbatim.
+    # The validated script to publish, set once a stage (or an agent's repair) proved it
+    # works and its paths are portable enough to copy verbatim.
     script_path: Path | None = None
     agent_stop_reason: AgentStopReason | None = None
+    # Non-empty only when HarnessBuddy rejected a repair the agent reported as done, because
+    # the artifacts it claims to have produced are not there. That is a different thing to
+    # tell the user than an agent that failed and said so.
+    validation_errors: list[str] = field(default_factory=list)
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -101,10 +101,9 @@ class LinkConfiguration:
     """Everything a harness link line needs: the library's own archives, plus what they
     transitively pull in and where to find it.
 
-    Exists so the script generators can be handed exactly the link inputs they use. The
-    harness probe rewrites `compile_harness.sh` on every retry with one more resolved
-    flag, and building a whole exploration result to carry four lists made the retry loop
-    look like it was reporting an outcome when it was only proposing a link line.
+    Separate from HarnessExplorationResult so the retry loop, which rewrites
+    compile_harness.sh with one more resolved flag per attempt, proposes a link line rather
+    than appearing to report an outcome.
     """
 
     static_libs: list[Path] = field(default_factory=list)
@@ -122,12 +121,11 @@ class BuildExplorationResult(MergedOutput, AgentOutcome):
     stderr: str
     exit_code: int
     duration_seconds: float
-    # The validated install tree, including when the analyzed source lives outside the
-    # generated workspace and the build script therefore cannot be copied verbatim.
+    # The validated install tree. Set even when the source lives outside the workspace and
+    # the build script therefore cannot be copied verbatim.
     install_dir: Path | None = None
-    # Set when compile-commands capture succeeded for this build; None when the main
-    # build failed (capture is never attempted) or capture was attempted and failed/
-    # was skipped. Mutually exclusive with compile_commands_error.
+    # Mutually exclusive: the path is set when compile-commands capture succeeded, the error
+    # when it was skipped or failed (including because the build itself failed).
     compile_commands_path: Path | None = None
     compile_commands_error: str | None = None
 

@@ -200,8 +200,8 @@ def test_format_phase_end_banner_distinguishes_success_and_failure() -> None:
 
 
 def test_agent_banner_visually_and_textually_distinct_from_deterministic() -> None:
-    """FR-002: an agent-assisted phase's banner must differ from a deterministic
-    phase's both in wording and in fill character, not wording alone."""
+    """An agent-assisted phase's banner differs from a deterministic phase's in both wording and
+    fill character, not wording alone."""
     deterministic = format_phase_start_banner(Phase.STATIC_LIBRARY_BUILD)
     agent = format_phase_start_banner(Phase.AGENT_LIBRARY_REPAIR)
     assert deterministic != agent

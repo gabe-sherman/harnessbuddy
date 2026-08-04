@@ -1,13 +1,11 @@
 """The wall-clock ceilings the library builder enforces, in one place.
 
-The two ceilings are deliberately far apart, so a reader can tell they were each chosen
-rather than one being a forgotten copy of the other:
+The two are far apart because they bound different things:
 
-* `DEFAULT_BUILD_TIMEOUT_SECONDS` bounds a full library build (configure + compile +
-  install) in either environment. Real libraries in the build matrix take minutes.
-* `HARNESS_PROBE_TIMEOUT_SECONDS` bounds one harness compile-and-link attempt. That is a
-  single stub translation unit plus a link, so an overrun there is a hung linker, not a
-  slow build.
+* `DEFAULT_BUILD_TIMEOUT_SECONDS` bounds a full library build (configure, compile, install) in
+  either environment. Real libraries take minutes.
+* `HARNESS_PROBE_TIMEOUT_SECONDS` bounds one harness compile-and-link attempt — one stub
+  translation unit plus a link, so an overrun means a hung linker, not a slow build.
 """
 
 from __future__ import annotations

@@ -58,7 +58,7 @@ def test_streaming_context_resets_after_exit(
 ) -> None:
     with streaming_context(quiet=True):
         pass
-    # Outside the context, default behavior (live printing) is restored.
+    # Outside the context, live printing is restored.
     run_command_streaming(_ECHO_COMMAND, tmp_path, 10)
     out = capsys.readouterr().out
     assert "hello" in out

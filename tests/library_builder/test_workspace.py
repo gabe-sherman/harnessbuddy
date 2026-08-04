@@ -72,8 +72,8 @@ def test_write_dockerfile_include_bear_false_omits_bear(tmp_path: Path) -> None:
 
 
 def test_write_dockerfile_include_bear_false_matches_no_ref_content(tmp_path: Path) -> None:
-    """include_bear=False output is byte-identical to the pre-extraction Dockerfile
-    writer's output (no bear, no other apt packages, no repo_ref)."""
+    """The exact shipped Dockerfile for a plain project: no bear, no other apt packages, no
+    repo_ref checkout."""
     analysis = _analysis("cmake_repo")
     write_dockerfile(tmp_path, analysis, include_bear=False)
     content = (tmp_path / "Dockerfile").read_text()
@@ -140,9 +140,9 @@ def test_write_build_sh_runs_build_then_harness(tmp_path: Path) -> None:
 
 
 def test_write_build_sh_resolves_its_own_directory_rather_than_srcs(tmp_path: Path) -> None:
-    """build.sh runs in three places: under OSS-Fuzz's `compile` (where $SRC is set), under
-    the build gate, and by a user in the generated output directory. $SCRIPT_DIR is the one
-    reference that resolves in all three."""
+    """build.sh runs in three places: under `compile`, under the build gate, and by a user in
+    the generated output directory. $SCRIPT_DIR is the one reference that resolves in all
+    three."""
     write_build_sh(tmp_path)
     assert "$SRC" not in (tmp_path / "build.sh").read_text()
 
@@ -153,9 +153,9 @@ def test_write_build_sh_is_executable(tmp_path: Path) -> None:
 
 
 def test_write_build_sh_has_stage_markers_in_order(tmp_path: Path) -> None:
-    """build.sh identifies which stage's output follows, so a failure inside `compile`
-    can be attributed to the right stage from the combined log alone (T022, FR-008,
-    User Story 3), even though verification is a single atomic pass/fail result."""
+    """build.sh marks which stage's output follows, so a failure inside `compile` can be
+    attributed to the right stage from the combined log, even though the gate reports one
+    atomic pass/fail."""
     write_build_sh(tmp_path)
     content = (tmp_path / "build.sh").read_text()
     assert content.index("=== build_library.sh ===") < content.index(
@@ -181,9 +181,8 @@ def test_write_dockerfile_is_deterministic(tmp_path: Path, include_bear: bool) -
     ).read_text()
 
 
-# inject_apt_packages — merges newly-discovered apt packages into an already-written
-# Dockerfile in place, since the workspace's Dockerfile is written once, early, before
-# the harness phase's own linker-dependency discovery knows what else is needed.
+# inject_apt_packages — merges newly-discovered packages into an already-written Dockerfile,
+# since that file is written early, before the harness phase knows what else is needed.
 
 
 def test_inject_apt_packages_appends_to_existing_install_line(tmp_path: Path) -> None:
@@ -194,9 +193,8 @@ def test_inject_apt_packages_appends_to_existing_install_line(tmp_path: Path) ->
 
 
 def test_inject_apt_packages_dedupes_against_existing_packages(tmp_path: Path) -> None:
-    """The build phase may report a package (e.g. via missing_apt_packages) that the
-    harness phase's linker-dependency discovery later reports again under the same apt
-    name — the merge must not duplicate it."""
+    """The build phase may report a package the harness phase later reports again under the
+    same apt name, and the merge must not duplicate it."""
     write_dockerfile(
         tmp_path, _analysis("cmake_repo"), include_bear=True, system_packages=["libzstd-dev"]
     )
@@ -227,8 +225,8 @@ def test_inject_apt_packages_is_a_noop_without_new_packages(tmp_path: Path) -> N
 
 
 def test_inject_apt_packages_inserts_a_line_when_none_exists(tmp_path: Path) -> None:
-    """A Dockerfile with no apt-get install line at all (e.g. include_bear=False and no
-    system_packages) still needs one added, right after ENV FUZZING_LANGUAGE."""
+    """A Dockerfile with no apt-get install line still needs one added, right after
+    ENV FUZZING_LANGUAGE."""
     write_dockerfile(tmp_path, _analysis("cmake_repo"), include_bear=False)
     assert "RUN apt-get" not in (tmp_path / "Dockerfile").read_text()
     inject_apt_packages(tmp_path, ["libzstd-dev"])
@@ -240,7 +238,7 @@ def test_inject_apt_packages_inserts_a_line_when_none_exists(tmp_path: Path) -> 
     assert "libzstd-dev" in lines[apt_index]
 
 
-# --base-image (T57)
+# --base-image
 
 
 def test_write_dockerfile_uses_the_default_base_image(tmp_path: Path) -> None:
@@ -272,8 +270,8 @@ def test_materialize_writes_the_whole_project_layout(tmp_path: Path) -> None:
 
 
 def test_materialize_gives_an_unknown_build_system_a_runnable_gate(tmp_path: Path) -> None:
-    """The gate a repair agent is told to run compiles harness_source/ — so that scaffold
-    has to exist even when no build system was identified and no build was ever attempted."""
+    """The gate a repair agent is told to run compiles harness_source/, so that scaffold has to
+    exist even when no build system was identified and no build was ever attempted."""
     materialize(tmp_path, _analysis("headers_only_repo"), parameters=BuildParameters.defaults())
     assert (tmp_path / "compile_harnesses.sh").is_file()
     assert list((tmp_path / "harness_source").glob("default_fuzzer.*"))

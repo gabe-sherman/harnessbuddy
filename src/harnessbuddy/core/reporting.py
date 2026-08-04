@@ -1,10 +1,8 @@
 """Phase reporting and failure diagnostics for the `generate` console output.
 
-See specs/012-clear-build-logging/ for the feature this module implements:
-`Phase`/`PhaseExecution` track which pipeline stage is running and how it
-ended; `PhaseReporter` brackets a phase's console output with a start/end banner
-(FR-001/FR-002); `FailureDiagnostic` and its builder/formatter turn a phase's failure
-into the concise, located summary described by FR-005/FR-006.
+`Phase`/`PhaseExecution` track which pipeline stage is running and how it ended.
+`PhaseReporter` brackets a phase's output with start/end banners. `FailureDiagnostic`
+turns a phase's failure into a short, located summary.
 """
 
 from __future__ import annotations
@@ -48,12 +46,12 @@ _AGENT_PHASES = frozenset({Phase.AGENT_LIBRARY_REPAIR, Phase.AGENT_HARNESS_REPAI
 
 
 def phase_label(phase: Phase) -> str:
-    """Return the console label for phase (data-model.md `Phase` table)."""
+    """Return the console label for phase."""
     return _PHASE_LABELS[phase]
 
 
 def is_agent_phase(phase: Phase) -> bool:
-    """Whether phase is one of the agent-assisted repair phases (FR-002)."""
+    """Whether phase is one of the agent-assisted repair phases."""
     return phase in _AGENT_PHASES
 
 
@@ -84,7 +82,7 @@ class PhaseExecution:
 
 @dataclass
 class FailureDiagnostic:
-    """Shown to the user when a phase fails (spec.md Key Entities)."""
+    """Shown to the user when a phase fails."""
 
     phase: Phase
     step: str
@@ -113,7 +111,7 @@ def build_diagnostic(  # noqa: PLR0913 -- one param per FailureDiagnostic field
     exit_code: int | None = None,
 ) -> FailureDiagnostic:
     """Construct a `FailureDiagnostic` — the single place these are assembled, so every
-    call site produces the same shape (data-model.md `FailureDiagnostic`)."""
+    call site produces the same shape."""
     return FailureDiagnostic(
         phase=phase,
         step=step,
@@ -133,23 +131,22 @@ def _banner_line(phase: Phase, marker: str) -> str:
 
 
 def format_phase_start_banner(phase: Phase) -> str:
-    """The line printed before a phase's own output begins (FR-001)."""
+    """The line printed before a phase's own output begins."""
     return _banner_line(phase, "START")
 
 
 def format_phase_end_banner(phase: Phase, status: Literal["succeeded", "failed"]) -> str:
-    """The line printed once a phase concludes (FR-001)."""
+    """The line printed once a phase concludes."""
     return _banner_line(phase, status.upper())
 
 
 def format_diagnostic(
     diagnostic: FailureDiagnostic, *, debug: bool = False, raw_output: str | None = None
 ) -> str:
-    """Render a `FailureDiagnostic` per contracts/cli-console-contract.md.
+    """Render a `FailureDiagnostic` for the console.
 
-    When debug is set and raw_output is non-empty, the failing step's full raw output
-    is inlined directly with the diagnostic (FR-008), independent of whether it also
-    already streamed live or was suppressed by `--quiet`.
+    When debug is set and raw_output is non-empty, the failing step's full raw output is
+    inlined here as well, whether or not it also streamed live.
     """
     origin_text = (
         "agent repair attempt failed" if diagnostic.origin == "agent" else "build step failed"
@@ -172,12 +169,12 @@ def format_diagnostic(
 
 
 def format_startup_failure(message: str) -> str:
-    """FR-010: a failure before any Phase has started still needs an actionable message."""
+    """A failure before any Phase has started still needs an actionable message."""
     return f"--- STARTUP FAILURE ---\n{message}"
 
 
 class PhaseReporter:
-    """Brackets one phase's console output with a start/end banner (FR-001/FR-002).
+    """Brackets one phase's console output with a start/end banner.
 
     Use as a context manager::
 

@@ -1,11 +1,10 @@
 """Generators for the shell scripts HarnessBuddy validates and then ships.
 
-Every script here is environment-independent: the same text runs as a host subprocess
-during local verification, inside the OSS-Fuzz base-builder container, and from the
-generated output directory a user unpacks later. That works because each variable the two
-environments disagree about is read with a fallback (`${CC:-clang}`,
-`${OUT:-$SCRIPT_DIR/out}`, `${LIB_FUZZING_ENGINE:--fsanitize=fuzzer}`), so an environment
-that defines it wins and one that doesn't still gets a working value.
+Every script here is environment-independent: the same text runs as a host subprocess, inside
+the OSS-Fuzz base-builder container, and from the generated output directory. Each variable
+the two environments disagree about is read with a fallback (`${CC:-clang}`,
+`${OUT:-$SCRIPT_DIR/out}`, `${LIB_FUZZING_ENGINE:--fsanitize=fuzzer}`), so an environment that
+defines it wins and one that does not still gets a working value.
 """
 
 from __future__ import annotations
@@ -21,26 +20,23 @@ from harnessbuddy.library_builder.models import (
     LinkConfiguration,
 )
 
-# The single name for the directory holding harness sources, in the workspace and in
-# generated output alike.
+# The one name for the harness source directory, in the workspace and in generated output.
 HARNESS_SOURCE_DIR = "harness_source"
 
-# libFuzzer's flag, which is what OSS-Fuzz's `compile` exports as LIB_FUZZING_ENGINE for
-# the libfuzzer engine. It is the fallback rather than the value: whenever a script runs
-# under `compile`, the environment's value wins.
+# libFuzzer's flag, which is what OSS-Fuzz's `compile` exports as LIB_FUZZING_ENGINE. Used as
+# a fallback, so the environment's value wins whenever a script runs under `compile`.
 _DEFAULT_FUZZING_ENGINE = "-fsanitize=fuzzer"
 
-# Cap parallelism rather than using all cores: library builds run inside containers and
-# CI with memory limits far below what -j$(nproc) implies on a large host.
+# Capped rather than -j$(nproc): builds run in containers and CI with memory limits far below
+# what a large host's core count implies.
 _MAX_BUILD_JOBS = 4
 
 _JOB_COUNT = (
-    'JOBS="$(nproc)"\n'
-    f'if [ "$JOBS" -gt {_MAX_BUILD_JOBS} ]; then JOBS={_MAX_BUILD_JOBS}; fi\n'
+    f'JOBS="$(nproc)"\nif [ "$JOBS" -gt {_MAX_BUILD_JOBS} ]; then JOBS={_MAX_BUILD_JOBS}; fi\n'
 )
 
-# Autotools setup variants that bootstrap by running a script in the source tree, mapped
-# to that script's name. Both generate configure; they differ only in filename.
+# Autotools variants that bootstrap by running a script in the source tree, mapped to that
+# script's name. Both generate configure; only the filename differs.
 _AUTOTOOLS_BOOTSTRAP_SCRIPTS: dict[AutotoolsSetup | None, str] = {
     AutotoolsSetup.AUTOGEN: "autogen.sh",
     AutotoolsSetup.BOOTSTRAP: "bootstrap",
@@ -63,18 +59,17 @@ def build_library_script(  # noqa: PLR0913 -- each argument is a distinct input 
 ) -> str:
     """Generate a build_library.sh script with parameterized paths.
 
-    The compiler settings are baked in as fallbacks rather than read from the environment
-    at run time: the script has to reproduce the build it was validated for when run from a
-    fresh checkout with nothing exported, and it is run that way — by the build gate, and by
-    a user following the generated README. An environment that does define them (the
-    OSS-Fuzz base image's sanitizer configuration) still wins.
+    The compiler settings are baked in as fallbacks rather than read from the environment at
+    run time, because the script must reproduce the validated build from a bare shell — which
+    is how both the gate and a user following the generated README run it. An environment that
+    does define them, such as the base image's sanitizer configuration, still wins.
 
     Args:
         build_system: detected build system.
         paths: source/build/install path strings for the generated script.
         autotools_setup: autotools bootstrap variant (only used when build_system is AUTOTOOLS).
         configure_args: build-system-level configure options, baked into the script text
-            because cmake and meson have no environment equivalent for them.
+            because cmake and meson have no environment equivalent.
         cc: C compiler for the library build.
         cxx: C++ compiler for the library build.
         cflags: C flags for the library build.
@@ -108,9 +103,8 @@ def build_library_script(  # noqa: PLR0913 -- each argument is a distinct input 
 def _configure_args_block(configure_args: tuple[str, ...]) -> str:
     """Bake configure options into a bash array, overridable from the environment.
 
-    The array keeps values containing spaces intact, which a single string could not.
-    An EXTRA_CONFIGURE_ARGS in the environment replaces the baked list wholesale and is
-    split on whitespace, matching how the compiler-flag variables behave.
+    An array rather than a string, so an option containing spaces stays one option. An
+    EXTRA_CONFIGURE_ARGS in the environment replaces the baked list wholesale.
     """
     if not configure_args:
         return ""
@@ -126,10 +120,9 @@ def _configure_args_block(configure_args: tuple[str, ...]) -> str:
 def _skip_if_already_built(install_dir: str) -> str:
     """Exit early when install_dir already has real artifacts (*.a + non-empty include/).
 
-    Repeated invocations that don't first clear install_dir (as explore() does for the
-    authoritative library-build stage) — e.g. re-running build_library.sh as part of a
-    harness-discovery retry loop — would otherwise redo the full compile every time for
-    no reason. rm -rf install_dir forces a real rebuild.
+    A repeat invocation that does not first clear install_dir — a harness-discovery retry
+    loop, say, unlike explore() — would otherwise redo the full compile for nothing.
+    `rm -rf install_dir` forces a real rebuild.
     """
     return (
         "\n"
@@ -182,7 +175,7 @@ def _build_body(  # noqa: PLR0913 -- one branch per build system; each needs eve
     if build_system == BuildSystem.AUTOTOOLS:
         bootstrap_script = _AUTOTOOLS_BOOTSTRAP_SCRIPTS.get(autotools_setup)
         if bootstrap_script is not None:
-            # sometimes the script already runs configure, run distclean to reset directory state
+            # The script sometimes runs configure itself; distclean resets that state.
             setup_step = f"(cd {source_dir} && ./{bootstrap_script} && make distclean || true)\n"
         elif autotools_setup == AutotoolsSetup.AUTORECONF:
             setup_step = f"(cd {source_dir} && autoreconf -fiv)\n"
@@ -255,11 +248,11 @@ def build_harness_script(
 
     Args:
         link: the archives and flags the harness must link against.
-        whole_archive: when True, link with --whole-archive, which forces every library
-            symbol in and so surfaces every undefined transitive dependency. Used by the
-            discovery probe, not by the shipped script.
-        harness_cflags: C flags baked in as the default, for a run of the shipped script
-            with no CFLAGS in the environment. Defaults to libFuzzer's flag.
+        whole_archive: link with --whole-archive, forcing every library symbol in so every
+            undefined transitive dependency surfaces. Used by the discovery probe, not by
+            the shipped script.
+        harness_cflags: C flags baked in as the default, for a run of the shipped script with
+            no CFLAGS in the environment. Defaults to libFuzzer's flag.
         harness_cxxflags: the same for C++.
     """
     lib_lines = "".join(f'    "$INSTALL_DIR/lib/{path.name}"\n' for path in link.static_libs)
@@ -352,10 +345,9 @@ def _single_quoted_shell_value(value: str) -> str:
 def build_harnesses_script() -> str:
     """Generate a deterministic batch wrapper around ``compile_harness.sh``.
 
-    The wrapper accepts optional source and output directories. It is intentionally small:
-    every compiler and linker decision remains in the single-harness interface. $OUT is
-    honoured when set (the OSS-Fuzz base image defines it) and falls back to
-    $SCRIPT_DIR/out otherwise, so the same script serves both environments.
+    Takes optional source and output directories and nothing else: every compiler and linker
+    decision stays in the single-harness script. $OUT is honoured when the environment defines
+    it and falls back to $SCRIPT_DIR/out, so one script serves both environments.
     """
     return (
         "#!/bin/bash\n"

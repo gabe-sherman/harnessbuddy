@@ -1,10 +1,7 @@
 """Single dependency-resolution/merge point for library_builder.
 
-Consolidates HarnessBuddy's dependency-resolution logic — previously scattered across
-`cli.py`'s five near-identical merge blocks and inlined package-translation code in
-`_run_harness_phase` — into one shared type (`LibraryDependency`), a closed
-`DependencySource` enum, and one `merge()` function. See
-specs/008-consolidate-dependency-resolution/ for the full design and rationale.
+Every dependency, whatever discovered it, becomes a `LibraryDependency` tagged with a
+`DependencySource` and reaches the persisted state through one `merge()`.
 """
 
 from __future__ import annotations
@@ -76,9 +73,8 @@ def save_state(path: Path, state: DependencyState) -> None:
 def merge(state: DependencyState, dependencies: list[LibraryDependency]) -> None:
     """Union dependencies into state in-place, deduplicating while preserving order.
 
-    The only function permitted to mutate DependencyState.apt_packages/sources.
-    Idempotent: merging the same dependencies list twice produces the same state as
-    merging it once.
+    The only function permitted to mutate DependencyState.apt_packages/sources, and
+    idempotent: merging the same list twice leaves the same state as merging it once.
     """
     new_apt: list[str] = []
     new_apt_by_source: dict[str, list[str]] = {}
@@ -99,11 +95,10 @@ def from_static_probe(
 ) -> list[LibraryDependency]:
     """Translate the deterministic harness-link probe's outputs into LibraryDependency entries.
 
-    Unions missing_system_libs (linker-reported missing) with the bare names embedded in
-    transitive_link_flags (linker-resolved silently because the exploration host already had
-    them — spec 005), then translates each name independently through
-    package_names.translate() so system libraries (dropped silently by translate(), never
-    added to unknown_libs) are excluded entirely rather than misclassified as unknown.
+    Unions the libs the linker reported missing with the bare names in transitive_link_flags,
+    which it resolved silently because the exploration host already had them. Each name is
+    translated on its own, so a system library — which translate() drops without recording it
+    as unknown — is excluded rather than misclassified.
     """
     from harnessbuddy.library_builder.harness_explorer import lib_names_from_link_flags
     from harnessbuddy.library_builder.package_names import translate
@@ -115,7 +110,7 @@ def from_static_probe(
     for name in names:
         translation = translate([name])
         if not (translation.apt_packages or translation.unknown_libs):
-            continue  # system library — translate() drops it silently, as today
+            continue  # a system library, which translate() drops silently
         dependencies.append(
             LibraryDependency(
                 source=DependencySource.LINKER,
@@ -134,11 +129,9 @@ def from_agent_report(
 ) -> list[LibraryDependency]:
     """Wrap an agent's self-reported dependency lists into LibraryDependency entries.
 
-    Zips the two lists positionally — index i's name and apt package are assumed to
-    describe the same dependency. This is a real, pre-existing, documented limitation when
-    an agent reports more than one distinct dependency in a single run (nothing guarantees
-    missing_apt_packages[0] corresponds to missing_libs[0] rather than missing_libs[1]); it is
-    not a new guarantee introduced by this refactor (research.md's correlation-gap decision).
+    Zips the two lists positionally: index i's name and apt package are only *assumed* to
+    describe the same dependency. Nothing guarantees that when an agent reports more than one
+    dependency in a run — a known limitation.
     """
     return [
         LibraryDependency(source=source, name=name, apt_package=apt)

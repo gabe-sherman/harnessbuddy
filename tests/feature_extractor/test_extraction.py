@@ -47,7 +47,7 @@ def test_extract_features_twice_overwrites_without_duplicating(zlib_feature_test
 def test_extract_features_second_run_reuses_cached_native_binary(
     zlib_feature_test_dir: Path,
 ) -> None:
-    extract_features(zlib_feature_test_dir)  # ensure the native binary is already built/cached
+    extract_features(zlib_feature_test_dir)  # build and cache the native binary first
 
     with (
         patch.object(native_build, "_configure") as mock_configure,

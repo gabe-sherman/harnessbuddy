@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Prove the shipped Dockerfile builds and compiles with nothing mounted.
 #
-# The gate (check_build_in_container.sh) mounts the workspace, which is what makes its
-# artifacts reachable — but a mounted run can pass while the Dockerfile's own clone or apt
-# layers are broken, because the mount supplies what the image failed to. This runs the
-# real thing instead: `docker build` followed by OSS-Fuzz's own `compile`, no mounts, and
-# checks that a harness binary landed in the image's /out.
+# The gate (check_build_in_container.sh) mounts the workspace, which is what makes the artifacts
+# reachable — but a mounted run can pass while the Dockerfile's own clone or apt layers are
+# broken, since the mount supplies what the image failed to. This runs the real thing:
+# `docker build`, then `compile`, no mounts, then a check for a harness binary in /out.
 #
-# Run once, as the last step before generation, for an oss-fuzz target.
+# Runs once, as the last step before generation, for an oss-fuzz target.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then

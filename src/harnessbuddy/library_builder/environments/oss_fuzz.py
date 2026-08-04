@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 _AVAILABILITY_TIMEOUT_SECONDS = 10
 _IMAGE_BUILD_TIMEOUT_SECONDS = 600
 
-# Docker pull/network-failure phrases (research.md #3) — distinguishes "the environment
-# itself isn't reachable" (no agent fallback, FR-007) from a genuine build failure.
+# Docker pull/network-failure phrases. An unreachable environment is not a build failure,
+# so it never routes to agent fallback.
 _UNAVAILABLE_PATTERN = re.compile(
     "|".join((r"Error response from daemon", r"no such host", r"i/o timeout")),
     re.IGNORECASE,
@@ -62,19 +62,10 @@ _CONTAINER_SRC_DIR = "/src"
 
 
 def _ensure_source_symlink(workdir: Path, analysis: AnalysisResult) -> None:
-    """Symlink workdir/src to the real source directory when it lives elsewhere, so
-    is_standard_source_layout's resolve()-equality check (exploration.py) treats this as
-    a standard layout and write_build_library_script emits the portable $SCRIPT_DIR/src
-    path instead of a host-only absolute path.
+    """Symlink workdir/src to the real source when it lives elsewhere.
 
-    $SCRIPT_DIR/src then resolves correctly in all three contexts build_library.sh runs in:
-    the bind-mounted exploration probe below (this symlink's target is reachable there via
-    run_library_build's identity extra_mounts bind), the mounted gate
-    (check_build_in_container.sh makes the same identity bind for exactly this reason), and
-    check_dockerfile_from_scratch.sh's unmounted container (where $SCRIPT_DIR/src is the
-    Dockerfile's own fresh git clone, unrelated to any host symlink). Without this, a
-    non-standard-layout source (e.g. ingest_local pointed at an arbitrary path) would bake a
-    host-only absolute path into build_library.sh, which no container can resolve.
+    is_standard_source_layout then accepts the layout, so build_library.sh gets the portable
+    $SCRIPT_DIR/src path instead of a host-only absolute path no container can resolve.
     """
     link = workdir / "src"
     source = analysis.source_path.resolve()
@@ -90,24 +81,13 @@ def _docker_run_factory(
 ) -> Runner:
     """Build a Runner that executes command inside image_tag via `docker run --entrypoint bash`.
 
-    cwd is bind-mounted at /src — the same path the OSS-Fuzz base image's own project
-    layout uses ($SRC in a real base-builder image, and where workspace.write_dockerfile's
-    baked-in `RUN git clone ... $SRC/src` / `COPY build_library.sh ...` puts things at
-    `docker build` time) — rather than at cwd's own host path. This matters because real
-    oss-fuzz tooling (the base image's own `compile` entrypoint, $LIB_FUZZING_ENGINE setup,
-    etc.) is hardwired to /src; mounting anywhere else would make that tooling operate on
-    the stale snapshot baked into the image instead of the live, host-editable workspace
-    that harness-link discovery iteratively rewrites between attempts. Scripts referencing
-    $SCRIPT_DIR-relative paths (the standard-layout convention exploration.py/
-    harness_explorer.py generate) are unaffected, since $SCRIPT_DIR resolves to wherever
-    the script actually runs from regardless of the literal path. extra_mounts covers the
-    non-standard-layout case, where the analyzed source lives outside the workdir tree and
-    is referenced by its own absolute host path — those keep mounting at that same path,
-    unaffected by cwd's mount target moving to /src.
-    Used only for internal probing (the exploration-time build, harness-link discovery
-    attempts) — the atomic pass/fail gate always goes through verification.run_docker_verification
-    instead (FR-002). FUZZING_LANGUAGE is set via the workspace Dockerfile's own ENV
-    instruction (workspace.write_dockerfile), not passed here.
+    cwd is bind-mounted at /src, not at its own host path, because OSS-Fuzz tooling (the
+    base image's `compile`, $LIB_FUZZING_ENGINE setup) is hardwired to /src. Mounting
+    elsewhere would leave that tooling operating on the stale snapshot baked into the image
+    instead of the live workspace harness-link discovery rewrites between attempts.
+
+    extra_mounts covers a source tree outside workdir, which keeps mounting at its own host
+    path. Used for internal probing only; the pass/fail gate goes through verification.py.
     """
 
     def run(command: list[str], cwd: Path, timeout: int) -> RunResult:
@@ -134,16 +114,9 @@ def _restore_host_ownership(image_tag: str, mounts: list[str], cwd: Path) -> Non
     """Give the host user back what the container just wrote into the bind mount.
 
     The OSS-Fuzz image runs as root, so build/, install/, and out/ come back owned by uid 0
-    inside a directory the host user owns. Deleting a root-owned file needs write permission
-    on its directory, not the file, so the next attempt's rmtree of install/ fails as soon as
-    the build created a subdirectory of its own (install/lib/, say) — which is every build.
-
-    -Rh confines this to the workspace: a non-standard-layout run leaves <workspace>/src as a
-    symlink into the user's own tree, and -h chowns that link rather than following it.
-
-    Best-effort. On Docker Desktop the bind mount already maps to the host user and there is
-    nothing to undo, and a failure here costs a stale-permissions error later rather than
-    invalidating the build that just succeeded.
+    and the next attempt's rmtree of install/ fails. -h chowns <workspace>/src itself rather
+    than following it, since a non-standard-layout run leaves it a symlink into the user's
+    own tree. Best-effort: on Docker Desktop there is nothing to undo.
     """
     command = [
         *["docker", "run", "--rm", *mounts, "--entrypoint", "chown", image_tag],
@@ -154,9 +127,9 @@ def _restore_host_ownership(image_tag: str, mounts: list[str], cwd: Path) -> Non
         logger.debug("Could not restore host ownership of %s: %s", cwd, result.output.strip())
 
 
-# What the base image already sets correctly for a fuzzing build. Forwarding a value equal
-# to one of these would be a no-op; forwarding an empty one would replace the image's
-# sanitizer flags with nothing, which is why only chosen values travel into the container.
+# What the base image already sets correctly for a fuzzing build. Only values that differ
+# travel into the container: forwarding an empty CFLAGS would wipe the image's sanitizer
+# flags.
 _UNCHOSEN_COMPILER_SETTINGS = {"CC": "clang", "CXX": "clang++", "CFLAGS": "", "CXXFLAGS": ""}
 _UNCHOSEN_HARNESS_FLAGS = "-fsanitize=fuzzer"
 
@@ -181,12 +154,10 @@ def _container_build_environment(parameters: BuildParameters) -> dict[str, str]:
 def _container_harness_environment(parameters: BuildParameters) -> dict[str, str]:
     """The harness-compile settings to forward into the container.
 
-    The default harness flags are dropped rather than forwarded, because replacing CFLAGS with
-    just `-fsanitize=fuzzer` would throw away the sanitizer configuration. Note where that
-    configuration comes from: not the image's ENV CFLAGS, which carry no -fsanitize at all,
-    but `compile`, which appends SANITIZER_FLAGS to whatever CFLAGS it inherits. Forwarding a
-    genuinely chosen --library-cflags therefore still works — `compile` adds the sanitizer
-    flags on top of it rather than replacing it.
+    The default harness flags are dropped rather than forwarded: replacing CFLAGS with just
+    `-fsanitize=fuzzer` would throw away the sanitizer configuration `compile` adds. A
+    genuinely chosen value still forwards, since `compile` appends SANITIZER_FLAGS on top of
+    whatever CFLAGS it inherits rather than replacing them.
     """
     return _chosen_settings(
         {
@@ -277,23 +248,19 @@ def _rewrite_compile_commands_entry(entry: dict, host_prefix: str) -> bool:
         _rewrite_arguments_field,
         _rewrite_command_field,
     )
-    # any() would short-circuit and skip later fields once one rewrite succeeds — every
-    # rewriter must run regardless, so results are collected in a list before combining.
+    # Collected into a list first: any() would short-circuit and skip the later fields once
+    # one rewrite succeeded.
     results = [rewrite(entry, host_prefix) for rewrite in field_rewriters]
     return any(results)
 
 
 def _rewrite_compile_commands_paths(compile_commands_path: Path, host_workdir: Path) -> None:
-    """Rewrite /src paths baked into compile_commands.json by the docker-mounted build
-    back to their host-side workdir path.
+    """Rewrite the /src paths a docker-mounted build baked into compile_commands.json back
+    to their host-side workdir path.
 
-    _docker_run_factory always mounts host_workdir at /src (_CONTAINER_SRC_DIR) inside
-    the container, so cmake/bear bake container-absolute paths like "/src/build/foo"
-    into directory/file/command/arguments. Left unrewritten, the native feature
-    extractor — which runs as a plain host subprocess, never inside a container — fails
-    with an LLVM fatal error when clang::tooling::ClangTool tries to chdir into a /src
-    path that doesn't exist on the host. The mapping is a fixed, known prefix
-    (host_workdir <-> /src), so a direct substitution is exact — no heuristics needed.
+    The native feature extractor runs as a plain host subprocess and fatal-errors trying to
+    chdir into a /src path that doesn't exist there. host_workdir <-> /src is a fixed
+    prefix, so the substitution is exact.
     """
     host_prefix = str(host_workdir.resolve())
     entries = json.loads(compile_commands_path.read_text())
@@ -307,22 +274,18 @@ def _rewrite_compile_commands_paths(compile_commands_path: Path, host_workdir: P
 
 
 class OssFuzzExecutor:
-    """Runs each pipeline stage against the real OSS-Fuzz project layout, materialized
-    directly in the workspace as soon as its pieces are known (User Story 2).
+    """Runs each pipeline stage against the real OSS-Fuzz project layout in the workspace.
 
     Stateful per instance: run_library_build builds a run-scoped image from the workspace
-    Dockerfile, used for the bind-mounted exploration build and for harness-link
-    discovery's retry loop; run_harness_compile reuses it.
+    Dockerfile, used for the bind-mounted exploration build and for harness-link discovery's
+    retry loop; run_harness_compile reuses it.
 
-    Each stage's pass/fail comes from its own probe. The shared gate
-    (agents/scripts/check_build.sh, run in the container by
-    check_build_in_container.sh) runs once, after the harness probe succeeds, with the
-    workspace mounted at /src — so everything it builds (install/, out/,
-    compile_commands.json) lands on the host for the next stage and for generation, and a
-    repair agent verifying its own fix leaves those artifacts behind too. That mount is
-    also why a run against an oss-fuzz target finishes with
-    verification.run_from_scratch_docker_verification: a mounted gate can pass while the
-    Dockerfile's own clone or apt layers are broken.
+    Each stage's pass/fail comes from its own probe. The shared gate (check_build.sh, run in
+    the container by check_build_in_container.sh) runs once, after the harness probe
+    succeeds, with the workspace mounted at /src and its out/ mounted at the image's own
+    $OUT=/out, so its artifacts — the harness binaries included — land on the host. Those
+    mounts are also why a run finishes with run_from_scratch_docker_verification: a mounted
+    gate can pass while the Dockerfile's own clone or apt layers are broken.
     """
 
     def __init__(self, *, base_image: str | None = None) -> None:
@@ -360,8 +323,7 @@ class OssFuzzExecutor:
             workdir, analysis, parameters=parameters, base_image=self._base_image
         )
         _ensure_source_symlink(workdir, analysis)
-        # Written before _ensure_image: the workspace Dockerfile's COPY of
-        # build_library.sh (workspace.write_dockerfile) requires it to already exist.
+        # Before _ensure_image: the Dockerfile's COPY of build_library.sh needs it on disk.
         write_build_library_script(analysis, workdir, parameters=parameters)
 
         try:
@@ -384,9 +346,8 @@ class OssFuzzExecutor:
         extra_mounts = (
             [] if _is_within(analysis.source_path, workdir) else [analysis.source_path.resolve()]
         )
-        # BuildParameters works by setting the host process environment, which `docker run`
-        # does not forward — so the compiler settings are passed explicitly, or --cc/--cxx
-        # and the library flags would be silently ignored for this environment.
+        # `docker run` does not forward the host process environment BuildParameters sets,
+        # so the compiler settings are passed explicitly or they are silently ignored here.
         run = _docker_run_factory(
             self._image_tag, extra_mounts, _container_build_environment(parameters)
         )
@@ -402,7 +363,7 @@ class OssFuzzExecutor:
             _rewrite_compile_commands_paths(exploration_result.compile_commands_path, workdir)
         if exploration_result.command:
             return exploration_result
-        # No build was attempted (an unidentified build system), so there is no command to
+        # No build was attempted (unidentified build system), so there is no command to
         # report. Point at the gate, which is what an agent's fix has to satisfy.
         return dataclasses.replace(
             exploration_result,
@@ -434,8 +395,8 @@ class OssFuzzExecutor:
             )
         workdir = workdir.resolve()
         parameters = parameters or BuildParameters.defaults()
-        # Discovery keeps its fast, direct-exec path against the already-built image for
-        # its internal retry loop (research.md #2) — no docker build per attempt.
+        # Discovery's retry loop execs directly against the already-built image, so it does
+        # not pay for a `docker build` per attempt.
         run = _docker_run_factory(self._image_tag, [], _container_harness_environment(parameters))
         harness_result = explore_harness_compilation(
             install_dir,
@@ -460,17 +421,12 @@ class OssFuzzExecutor:
         return gated
 
     def _ensure_image(self, workdir: Path, analysis: AnalysisResult) -> None:
-        """Build a run-scoped image from the workspace's real Dockerfile — used for
-        internal probing (the bind-mounted exploration build, harness-link discovery
-        attempts). The gate builds its own image through check_build_in_container.sh, from
-        the same Dockerfile and to the same tag.
+        """Build a run-scoped image from the workspace's real Dockerfile, for internal
+        probing. The gate builds its own image from the same Dockerfile, to the same tag.
 
-        Always invokes `docker build`, relying on Docker's own layer cache for speed
-        when the Dockerfile is unchanged. A prior version skipped this call whenever the
-        discovered package list matched the last build, but that key can't see Dockerfile
-        edits an agent makes directly (e.g. adding a package without also reporting it via
-        agent_report.json) — probes then silently ran against a stale image missing the
-        fix.
+        Always invokes `docker build`, relying on Docker's layer cache when the Dockerfile
+        is unchanged. Caching on the discovered package list instead would miss Dockerfile
+        edits an agent made directly, leaving probes to run against a stale image.
         """
         tag = f"harnessbuddy-dev/{analysis.project_name}:latest"
         command = ["docker", "build", "-t", tag, "."]
@@ -490,15 +446,10 @@ class OssFuzzExecutor:
     def _require_compile(self, image_tag: str) -> None:
         """Reject a base image that has no `compile`, before anything tries to build in it.
 
-        Every stage of an oss-fuzz run enters the build through `compile`
-        (Environment.harness_probe_command, check_build.sh, check_dockerfile_from_scratch.sh),
-        so an image without it cannot pass any of them. The workspace Dockerfile is written in
-        terms of $SRC as well, another OSS-Fuzz base-image convention. --base-image therefore
-        selects among OSS-Fuzz base images — ubuntu-24-04, a Focal-based tag, base-builder-go
-        — rather than accepting any image at all.
-
-        Raised as EnvironmentUnavailableError, not a build failure: no edit a repair agent can
-        make to build.sh puts `compile` into the image.
+        Every stage enters the build through `compile`, and the workspace Dockerfile is
+        written in terms of $SRC, so --base-image selects among OSS-Fuzz base images rather
+        than accepting any image. Reported as unavailable rather than as a build failure: no
+        edit a repair agent makes to build.sh puts `compile` into the image.
         """
         from harnessbuddy.library_builder.workspace import DEFAULT_BASE_IMAGE
 

@@ -36,9 +36,8 @@ def generate_benchmark(
 ) -> BenchmarkYaml:
     """Convert <output_dir>/features.json into an oss-fuzz-gen-compatible YAML benchmark.
 
-    Filters functions to is_public_api == true (FR-012), defaulting target_name/
-    target_path per FR-013/FR-014 unless overridden, and overwrites
-    <output_dir>/<project_name>.yaml (FR-015).
+    Keeps only public-API functions, or only those declared in `headers` when it is non-empty,
+    and overwrites <output_dir>/<project_name>.yaml.
     """
     check_include_func = select_public
     if len(headers) > 0:

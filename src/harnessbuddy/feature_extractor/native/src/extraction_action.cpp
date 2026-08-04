@@ -85,8 +85,8 @@ bool hasSourceExtension(llvm::StringRef path) {
          path.ends_with(".m") || path.ends_with(".mm");
 }
 
-// research.md section 5: external linkage plus a declaration location inside a
-// library-owned header (not a system header, not a .c/.cpp translation unit).
+// Public API means external linkage plus a declaration inside a library-owned
+// header — not a system header, and not a .c/.cpp translation unit.
 bool isPublicApiLocation(const clang::NamedDecl &decl,
                          const ProjectContext &ctx,
                          const clang::SourceManager &sm) {

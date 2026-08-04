@@ -202,7 +202,7 @@ def test_read_agent_report_deletes_file_after_read_when_malformed(tmp_path: Path
     assert not (tmp_path / "agent_report.json").exists()
 
 
-# compile_commands.json capture dispatch (T007)
+# compile_commands.json capture dispatch
 
 
 def _run_explore_with(  # noqa: PLR0913 -- test helper; all 6 params are distinct fixture knobs
@@ -253,9 +253,9 @@ def test_cmake_capture_reconfigures_and_copies_file(tmp_path: Path) -> None:
 def test_cmake_capture_reconfigure_uses_relative_paths_for_standard_layout(
     tmp_path: Path,
 ) -> None:
-    """Environment.OSS_FUZZ's runner bind-mounts workdir at /src, not at its own host
-    path — an absolute host path here wouldn't resolve to anything inside the container,
-    so -B/-S must be cwd-relative when the source lives at the standard workdir/src."""
+    """The oss-fuzz runner bind-mounts workdir at /src, not at its own host path, so an
+    absolute host path would not resolve in the container: -B/-S must be cwd-relative when the
+    source lives at the standard workdir/src."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
@@ -280,8 +280,8 @@ def test_cmake_capture_reconfigure_uses_relative_paths_for_standard_layout(
 def test_cmake_capture_reconfigure_uses_absolute_source_for_non_standard_layout(
     tmp_path: Path,
 ) -> None:
-    """Non-standard layout (source outside workdir) is mounted separately at its own
-    absolute path (extra_mounts), so it must keep using that absolute path here."""
+    """A source outside workdir is mounted separately at its own absolute path, so it must keep
+    using that path here."""
     workdir = tmp_path / "work"
     source = tmp_path / "elsewhere" / "src"
     source.mkdir(parents=True)
@@ -379,8 +379,8 @@ def test_autotools_capture_wraps_with_bear(tmp_path: Path) -> None:
 
 
 def test_make_capture_best_effort_when_bear_missing_on_host(tmp_path: Path) -> None:
-    """bear missing on the local host must not fail the build (FR-008) — only the
-    capture is skipped, with an actionable message recorded."""
+    """A missing bear on the local host must not fail the build: only the capture is skipped,
+    with an actionable message recorded."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
@@ -405,8 +405,8 @@ def test_make_capture_best_effort_when_bear_missing_on_host(tmp_path: Path) -> N
 def test_make_capture_bear_always_wrapped_in_oss_fuzz_even_without_local_bear(
     tmp_path: Path,
 ) -> None:
-    """The oss-fuzz environment never runs the shutil.which check — bear is a hard
-    requirement there (FR-011), so capture is attempted unconditionally."""
+    """The oss-fuzz environment skips the shutil.which check, since bear is always present
+    there, so capture is attempted unconditionally."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)

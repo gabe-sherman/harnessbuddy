@@ -35,20 +35,12 @@ class LibSpec:
 
 
 LIBS = [
-    #     LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
-        #  LibSpec(
-        #      "https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False
-        #  ),
+    LibSpec("https://github.com/madler/zlib.git", "zlib", BuildSystem.CMAKE, True),
+    LibSpec("https://github.com/fukuchi/libqrencode.git", "libqrencode", BuildSystem.CMAKE, False),
     LibSpec("https://gitlab.com/libtiff/libtiff.git", "libtiff", BuildSystem.CMAKE, True),
-    # LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
-    # LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
-    # LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
-    # LibSpec("https://github.com/ImageMagick/ImageMagick", "imagemagick", BuildSystem.CMAKE, None),
-    # LibSpec("https://github.com/htop-dev/htop.git", "htop", BuildSystem.AUTOTOOLS, None),
-    # LibSpec("https://github.com/libusb/libusb", "libusb", BuildSystem.AUTOTOOLS, None),
-    # LibSpec(
-    #     "https://github.com/openvenues/libpostal.git", "libpostal", BuildSystem.AUTOTOOLS, None
-    # ),
+    LibSpec("https://github.com/curl/curl.git", "curl", BuildSystem.CMAKE, False),
+    LibSpec("https://github.com/lvgl/lvgl.git", "lvgl", BuildSystem.CMAKE, None),
+    LibSpec("https://github.com/Mbed-TLS/mbedtls.git", "mbedtls", BuildSystem.CMAKE, None),
 ]
 
 _AGENT = "claude"
@@ -83,8 +75,8 @@ def _docker_build_and_compile(project_name: str) -> bool:
     """Drop real harness sources into the generated oss-fuzz project and verify they
     build and compile inside the OSS-Fuzz Docker image.
 
-    Returns True when there's no ground-truth harness to check (nothing to fail) or when
-    the Docker build and compile both succeed.
+    Returns True when there is no ground-truth harness to check, or when the Docker build and
+    compile both succeed.
     """
     harnesses = list(_REAL_HARNESSES_DIR.glob(f"{project_name}*"))
     if not harnesses:
@@ -102,7 +94,7 @@ def _docker_build_and_compile(project_name: str) -> bool:
         logger.error("docker build failed for %s", project_name)
         return False
 
-    # Compile the harness and fuzz it for 2 seconds
+    # Compile the harness, then fuzz it for two seconds.
     result = subprocess.run(
         [
             "docker",

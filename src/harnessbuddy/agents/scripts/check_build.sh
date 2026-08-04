@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # The single definition of "the build passed", for every environment.
 #
-# Runs the project's own build.sh (build_library.sh then compile_harnesses.sh) from
-# nothing and asserts the artifacts that make the output worth shipping. HarnessBuddy's
-# pipeline and every repair agent invoke this same script, so a fix an agent verifies is a
-# fix the pipeline accepts.
+# Runs the project's own build.sh (build_library.sh then compile_harnesses.sh) from nothing and
+# asserts the artifacts that make the output worth shipping. The pipeline and every repair agent
+# invoke this same script, so a fix an agent verifies is a fix the pipeline accepts.
 #
-# Runs unchanged on the host and inside the OSS-Fuzz base-builder container. Two fallbacks
-# are what let one script text serve both: $OUT is honoured when the environment defines it
-# and falls back to <workspace>/out otherwise, matching the generated scripts; and the build
-# is entered through OSS-Fuzz's own `compile` wherever that exists, falling back to build.sh
-# directly on a plain host.
+# Two fallbacks let one script text run unchanged on the host and in the OSS-Fuzz container:
+# $OUT falls back to <workspace>/out, and the build is entered through `compile` wherever that
+# exists and through build.sh otherwise.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -24,15 +21,18 @@ cd "$workspace"
 OUT="${OUT:-$PWD/out}"
 export OUT
 
-rm -rf install build "$OUT"
+rm -rf install build
+# $OUT is emptied rather than removed: check_build_in_container.sh bind-mounts the host's out/
+# there, and a mountpoint cannot be unlinked from inside the container ("Device or resource
+# busy"), which under set -e would fail the gate before the build even started.
 mkdir -p "$OUT"
+find "$OUT" -mindepth 1 -delete
 
-# OSS-Fuzz's `compile` runs build.sh, but only after assembling the environment the base
-# image half-provides: SANITIZER_FLAGS resolved into CFLAGS/CXXFLAGS, and
-# LIB_FUZZING_ENGINE=-fsanitize=fuzzer in place of the deprecated archive path its ENV names.
-# Running build.sh directly in that image links against a file compile_libfuzzer has not
-# created yet, and once that is worked around it produces an uninstrumented target instead.
-# On a host there is no `compile` and nothing to assemble, so build.sh is entered directly.
+# `compile` runs build.sh, but only after assembling what the base image half-provides:
+# SANITIZER_FLAGS resolved into CFLAGS/CXXFLAGS, and LIB_FUZZING_ENGINE=-fsanitize=fuzzer in
+# place of the deprecated archive path its ENV names. Running build.sh directly in that image
+# links against an archive that does not exist yet, and working that around yields an
+# uninstrumented target. A host has no `compile` and nothing to assemble.
 build_command=(bash build.sh)
 if command -v compile > /dev/null 2>&1; then
   build_command=(compile)
@@ -40,8 +40,8 @@ fi
 
 echo "=== build.sh ==="
 if command -v bear > /dev/null 2>&1; then
-  # Captures compile_commands.json for Make/Autotools projects, which have no build-system
-  # equivalent. Harmless for the others, which emit their own.
+  # Captures compile_commands.json for Make/Autotools, which have no build-system equivalent.
+  # Harmless for the others, which emit their own.
   bear -- "${build_command[@]}"
 else
   "${build_command[@]}"

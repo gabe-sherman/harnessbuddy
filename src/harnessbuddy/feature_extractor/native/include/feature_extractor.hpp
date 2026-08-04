@@ -78,20 +78,17 @@ struct FeatureArtifact {
   std::vector<std::string> warnings;
 };
 
-// Identifies the project source root (the common ancestor of every
-// translation unit's file path in compile_commands.json — not necessarily the
-// directory compile_commands.json itself lives in, for out-of-tree builds),
-// used to compute header_path values relative to it and to decide whether a
-// declaration's location is "library-owned" for is_public_api (research.md
-// section 5) rather than third-party/system.
+// The project source root: the common ancestor of every translation unit's file
+// path, which for an out-of-tree build is not where compile_commands.json lives.
+// header_path values are relative to it, and a declaration inside it counts as
+// library-owned rather than third-party or system.
 struct ProjectContext {
   std::string project_root;
 };
 
-// Not thread-safe. ClangTool runs one translation unit at a time by default, so
-// a single collector instance can be shared across every TU's
-// FrontendAction/PPCallbacks to accumulate and deduplicate declarations seen
-// from more than one TU (e.g. via a shared header).
+// Not thread-safe. ClangTool runs one translation unit at a time, so one
+// collector can be shared across every TU to accumulate and deduplicate
+// declarations that appear in more than one (via a shared header, say).
 class FeatureCollector {
 public:
   void addFunction(FunctionInfo info);
@@ -112,31 +109,28 @@ private:
   std::unordered_set<std::string> seen_records_;
 };
 
-// Returns true when absPath is inside ctx.project_root (i.e. library-owned, not
-// a system or third-party header).
+// True when abs_path is inside ctx.project_root, i.e. library-owned rather than a
+// system or third-party header.
 bool isWithinProject(const ProjectContext &ctx, llvm::StringRef abs_path);
 
-// Returns absPath relative to ctx.project_root when isWithinProject(ctx,
-// absPath), otherwise returns absPath unchanged.
+// abs_path relative to ctx.project_root when it is within the project, and
+// unchanged otherwise.
 std::string relativeHeaderPath(const ProjectContext &ctx,
                                llvm::StringRef abs_path);
 
-// Builds the ASTFrontendAction that extracts functions/typedefs/enums/records
-// (extraction_action.cpp) and registers the macro-extracting PPCallbacks
-// (macro_callbacks.cpp) for a single translation unit, writing results into
-// collector.
+// Builds the ASTFrontendAction that extracts functions, typedefs, enums, and
+// records from one translation unit, and registers the macro-extracting
+// PPCallbacks alongside it. Both write into collector.
 std::unique_ptr<clang::tooling::FrontendActionFactory>
 newExtractionActionFactory(FeatureCollector &collector, ProjectContext ctx);
 
-// Registers a PPCallbacks (macro_callbacks.cpp) on the given Preprocessor that
-// extracts macro definitions (FR-006) into collector.
+// Registers a PPCallbacks that extracts macro definitions into collector.
 std::unique_ptr<clang::PPCallbacks>
 newMacroCollectorCallbacks(FeatureCollector &collector, ProjectContext ctx,
                            const clang::SourceManager &sm,
                            const clang::LangOptions &lang_opts);
 
-// Serializes artifact to the exact JSON shape of
-// contracts/feature-artifact.schema.json.
+// Serializes artifact to the JSON shape features.json readers expect.
 std::string writeJson(const FeatureArtifact &artifact);
 
 } // namespace feature_extractor

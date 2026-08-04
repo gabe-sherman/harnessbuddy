@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 _C_HEADER_EXTENSIONS: frozenset[str] = frozenset({".h", ".hpp", ".hxx", ".hh"})
 _VCS_DIRS: frozenset[str] = frozenset({".git", ".hg", ".svn"})
 
-# Bare Makefile is the last-resort signal: a project shipping both meson.build and a
-# convenience top-level Makefile is a meson project (CLAUDE.md's documented order).
+# Bare Makefile is the last-resort signal: a project shipping meson.build and a convenience
+# top-level Makefile is a meson project.
 _BUILD_SYSTEM_CHECKS: list[tuple[BuildSystem, list[str]]] = [
     (BuildSystem.CMAKE, ["CMakeLists.txt"]),
     (BuildSystem.AUTOTOOLS, ["configure.ac", "configure.in", "configure"]),
@@ -26,8 +26,8 @@ _BUILD_SYSTEM_CHECKS: list[tuple[BuildSystem, list[str]]] = [
     (BuildSystem.MAKEFILE, ["Makefile", "makefile"]),
 ]
 
-# The outer ceiling must exceed the one handed to cloc itself, or cloc's own --timeout
-# never gets a chance to fire and report partial results.
+# The outer ceiling has to exceed the one handed to cloc, or cloc's own --timeout never fires
+# and reports partial results.
 _CLOC_TIMEOUT_SECONDS = 120
 _CLOC_KILL_TIMEOUT_SECONDS = _CLOC_TIMEOUT_SECONDS + 30
 
@@ -76,10 +76,9 @@ def analyze(source: RepoSource) -> AnalysisResult:
 def _detect_autotools_setup(root: Path) -> AutotoolsSetup:
     """Detect how to bootstrap autotools for this repository.
 
-    Priority: configure script present > autogen.sh > bootstrap > autoreconf from
-    configure.ac. Only reached once configure.ac/configure.in/configure has already
-    established that this is an autotools tree, so a bare `bootstrap` here is the
-    gnulib-style autotools wrapper rather than some other project's setup script.
+    Priority: an existing configure > autogen.sh > bootstrap > autoreconf from configure.ac.
+    Only reached once the tree is known to be autotools, so a bare `bootstrap` here is the
+    gnulib-style wrapper rather than some other project's setup script.
     """
     if (root / "configure").exists():
         return AutotoolsSetup.CONFIGURE
@@ -102,8 +101,7 @@ def _detect_build_system(root: Path) -> tuple[BuildSystem, list[Path]]:
 def _has_c_headers(root: Path) -> bool:
     """True when root contains at least one C/C++ header outside a VCS directory.
 
-    Short-circuits on the first hit: the answer is a boolean, and materializing every
-    header path in a large repository to compute it is pure waste.
+    Short-circuits on the first hit rather than walking a large repository to the end.
     """
     return any(
         p.is_file()
@@ -116,11 +114,9 @@ def _has_c_headers(root: Path) -> bool:
 def _detect_language(root: Path, warnings: list[str]) -> Language:
     """Determine the dominant C/C++ language by running cloc.
 
-    Falls back to C++ and appends a warning whenever cloc cannot answer — it isn't
-    installed, it outruns its own deadline on a huge tree, or it emits something that
-    isn't JSON. C++ is the safe guess: it is what every downstream consumer already
-    treats an undecided project as, and a C library compiled by a C++ driver links,
-    while the reverse does not.
+    Falls back to C++ with a warning whenever cloc cannot answer: it is missing, it outran its
+    deadline, or it emitted something other than JSON. C++ is the safe guess, since a C library
+    compiled by a C++ driver links while the reverse does not.
     """
     try:
         result = subprocess.run(

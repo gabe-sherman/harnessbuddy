@@ -42,8 +42,8 @@ def test_save_and_load_state_roundtrip(tmp_path: Path) -> None:
 
 
 def test_load_state_ignores_keys_it_no_longer_tracks(tmp_path: Path) -> None:
-    """A state.json written by an earlier version carries brew_packages and unknown_libs.
-    Neither is read anymore, and their presence must not stop the rest from loading."""
+    """An older state.json carries brew_packages and unknown_libs. Neither is read anymore, and
+    their presence must not stop the rest from loading."""
     state_file = tmp_path / "state.json"
     state_file.write_text(
         json.dumps(
@@ -65,7 +65,7 @@ def test_load_state_ignores_keys_it_no_longer_tracks(tmp_path: Path) -> None:
 
 
 def test_merge_combines_complementary_partial_info() -> None:
-    """Two sources report the same library name; only the one that resolved a package
+    """Two sources report the same library name, and only the one that resolved a package
     contributes anything installable."""
     state = DependencyState()
     merge(
@@ -83,8 +83,8 @@ def test_merge_combines_complementary_partial_info() -> None:
 
 
 def test_merge_ignores_a_dependency_with_no_package() -> None:
-    """An unresolved library name is reported to the user by the harness phase; there is
-    nothing to persist, since nothing can be installed from it."""
+    """The harness phase reports an unresolved library name to the user, but there is nothing to
+    persist, since nothing can be installed from it."""
     state = DependencyState()
     merge(state, [LibraryDependency(source=DependencySource.LINKER, name="nonexistentlib")])
     assert state.apt_packages == []
@@ -126,8 +126,7 @@ def test_merge_deduplicates_across_calls() -> None:
     assert state.apt_packages == ["libssl-dev"]
 
 
-# extensibility: quickstart Scenario 3 (US1) -- a hand-built dependency merges correctly
-# with no cli.py involvement at all.
+# extensibility: a hand-built dependency merges correctly, with no cli.py involvement.
 
 
 def test_merge_supports_a_hypothetical_new_discovery_source() -> None:
@@ -144,7 +143,7 @@ def test_merge_supports_a_hypothetical_new_discovery_source() -> None:
     assert state.apt_packages == ["libssl-dev", "libcurl4-openssl-dev"]
 
 
-# source traceability (US2)
+# source traceability
 
 
 def test_sources_keys_match_dependency_source_value_for_each_producer() -> None:
@@ -225,10 +224,8 @@ def test_from_agent_report_empty_lists_return_empty() -> None:
 
 
 def test_from_agent_report_multi_dependency_correlation_is_positional_only() -> None:
-    """Documents research.md's correlation-gap decision: with more than one entry in
-    missing_libs, index i's apt package is only *assumed* to describe missing_libs[i] --
-    there is no guarantee of correspondence. This is an unchanged, pre-existing limitation,
-    not a new claim made by this refactor."""
+    """With more than one entry in missing_libs, index i's apt package is only *assumed* to
+    describe missing_libs[i] — nothing guarantees the correspondence."""
     dependencies = from_agent_report(
         missing_libs=["ldap", "curl"],
         missing_apt_packages=["libldap2-dev"],

@@ -12,9 +12,8 @@ from harnessbuddy.core.agent_stream import (
 )
 from harnessbuddy.core.resources import skill_instructions
 
-# Imported as modules rather than by name: these are the shared definitions of "the
-# artifacts are there", and binding them here would make this module's copy diverge from
-# the one every other caller (and every test) sees.
+# Imported as modules, not by name, so a test that patches an artifact check patches the
+# one this module calls too.
 from harnessbuddy.library_builder import exploration, harness_explorer
 from harnessbuddy.library_builder.environments import verification
 from harnessbuddy.library_builder.environments.base import Environment
@@ -35,12 +34,10 @@ def _verification_command(
     workdir: Path,
     project_name: str,
 ) -> str:
-    """The concrete command (FR-009) that proves a fix works in the selected environment.
+    """The command that proves a fix works in the selected environment.
 
-    workdir is the workspace, which during exploration is already the real oss-fuzz
-    project directory (research.md #1, #7) — there is no separate "eventual output"
-    path to reference. Delegates to environments/verification.py so this is the exact
-    same command construction the pipeline itself uses to gate pass/fail.
+    Delegates to environments/verification.py, so an agent verifies its fix with the exact
+    command the pipeline gates on.
     """
     return " ".join(
         verification.verification_command(
@@ -79,11 +76,8 @@ _OSS_FUZZ_PACKAGE_POLICY = (
 def _package_policy_note(environment: Environment) -> str:
     """The environment-specific policy on installing missing system packages.
 
-    Both agent skills instruct stopping and reporting missing packages by default — safe
-    for Environment.LOCAL, since installing there mutates the user's real machine. In
-    Environment.OSS_FUZZ, missing packages are instead a Dockerfile edit into a disposable,
-    from-scratch-rebuilt container the agent can verify itself, so it may resolve those
-    directly rather than always stopping for a human.
+    Locally, installing would mutate the user's real machine, so the agent stops and
+    reports. In the container it can edit the Dockerfile and verify the result itself.
     """
     policy = (
         _OSS_FUZZ_PACKAGE_POLICY if environment is Environment.OSS_FUZZ else _LOCAL_PACKAGE_POLICY
@@ -117,25 +111,17 @@ _BUDGET_PATTERN = re.compile(
 def _stop_reason(result: AgentStreamResult) -> AgentStopReason | None:
     """The reason the agent stopped without a fix, or None if it did not stop that way.
 
-    The two conditions are detected differently because they are emitted by different
-    layers, so they are read from different channels of the stream.
+    The two conditions come from different layers, so they are read from different channels.
 
-    A budget/rate limit comes from the agent CLI itself, not the model, and surfaces
-    anywhere in the transcript (an unparsed stderr line, an error event) -- so it is
-    matched against combined_text, and does fail the process, so it stays gated on a
-    non-zero exit code. That gate is also what keeps _BUDGET_PATTERN's looser
-    alternatives (a bare "429", "rate limit") from matching a build log that merely
-    mentions them.
+    A budget/rate limit comes from the agent CLI and can surface anywhere in the transcript,
+    so it is matched against combined_text. It also fails the process, so it stays gated on a
+    non-zero exit code — which is what keeps the looser patterns (a bare "429") from matching
+    a build log that merely mentions them.
 
-    ACTION REQUIRED is emitted by the *model*, which has no way to set the process exit
-    code: `claude --print` exits 0 whenever the CLI ran, however the agent decided to
-    stop. Gating it on exit_code made it unreachable in practice, so the marker is
-    honored on its own -- which makes it matter *where* the marker is read from. It is
-    matched only against model_text, what the model actually wrote. Against
-    combined_text, an agent that merely *read* a file quoting the marker failed the run:
-    the library-builder SKILL.md documents the marker four times, and an OpenSSL repair
-    that verified clean and produced working artifacts was reported as action_required
-    purely because the agent had read its own instructions off disk.
+    ACTION REQUIRED comes from the model, which cannot set the exit code: `claude --print`
+    exits 0 whenever the CLI ran. So the marker is honored on its own, and read only from
+    model_text. Matching combined_text instead failed runs where the agent had merely read a
+    file quoting the marker — SKILL.md documents it four times.
     """
     if _BUDGET_PATTERN.search(result.combined_text) and result.exit_code != 0:
         return AgentStopReason.BUDGET_LIMITED
@@ -255,6 +241,7 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
 
     succeeded = result.exit_code == 0 and stop_reason is None
     stderr = ""
+    validation_errors: list[str] = []
     if succeeded:
         validation_errors = exploration.validate_install_artifacts(workdir / "install")
         if validation_errors:
@@ -272,6 +259,7 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         llm_used=True,
         script_path=(workdir / "build_library.sh") if succeeded else None,
         agent_stop_reason=stop_reason,
+        validation_errors=validation_errors,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
@@ -296,10 +284,8 @@ def build_harness_prompt(
 ) -> str:
     """Construct a Claude prompt for diagnosing and fixing a failed harness link probe."""
     instructions = skill_instructions("harness_builder")
-    # Some Runners (the oss-fuzz docker-streaming one) merge stderr into stdout and never
-    # populate .stderr, so harness.stderr alone can be empty even when the failure's real
-    # diagnostic text is sitting in .stdout — concatenate both, matching the same
-    # combined-stream handling harness_explorer.py already relies on internally.
+    # Streaming Runners merge stderr into stdout and leave .stderr empty, so .output is what
+    # reliably carries the diagnostic text.
     output_tail = "\n".join(harness.output.splitlines()[-200:])
     verify_command = _verification_command(
         environment,
@@ -358,30 +344,29 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     succeeded = result.exit_code == 0 and stop_reason is None
     stderr = ""
     missing_system_libs = harness.missing_system_libs
-    # The agent edits compile_harness.sh directly, and after a successful fix that script
-    # is what ships — so its text, not these lists, is the link configuration of record.
-    # They are carried forward only to describe what was tried.
+    # The agent edits compile_harness.sh directly and that script is what ships, so its text
+    # is the link configuration of record. These lists only describe what was tried.
     static_libs = harness.static_libs
     transitive_link_flags = harness.transitive_link_flags
     extra_library_paths = harness.extra_library_paths
     script_path = paths.workdir / "compile_harness.sh"
+    validation_errors: list[str] = []
     if succeeded:
         validation_errors = harness_explorer.validate_harness_artifacts(paths.workdir)
         if validation_errors:
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
     if not succeeded:
-        # A validation-only failure (agent claimed done but out/ is empty) carries no new
-        # linker stderr to re-parse, so preserve the pre-agent list rather than discarding it.
+        # A validation-only failure (agent claimed done but out/ is empty) has no new linker
+        # stderr to re-parse, so keep the pre-agent list rather than discarding it.
         missing_system_libs = list(
             dict.fromkeys(
                 missing_system_libs + harness_explorer.extract_missing_system_libs(stderr)
             )
         )
 
-    # The agent reports the bare library name it couldn't resolve (e.g. "ldap") alongside
-    # the actual apt package names below. Add the matching -l flag ourselves so the
-    # generated script attempts the link once the package is installed.
+    # The agent reports the bare library name it could not resolve (e.g. "ldap"). Add the
+    # matching -l flag so the generated script links it once the package is installed.
     report_missing_libs = report.missing_libs if report else []
     if report_missing_libs:
         missing_system_libs = list(dict.fromkeys(missing_system_libs + report_missing_libs))
@@ -404,6 +389,7 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         llm_used=True,
         script_path=script_path if succeeded else None,
         agent_stop_reason=stop_reason,
+        validation_errors=validation_errors,
         duration_seconds=result.duration_seconds,
         cost_usd=result.cost_usd,
         input_tokens=result.input_tokens,

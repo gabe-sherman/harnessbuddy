@@ -54,8 +54,8 @@ def test_parse_claude_line_text_block_is_model_text() -> None:
 
 
 def test_parse_claude_line_empty_thinking_emits_nothing() -> None:
-    # claude_stream_sample.jsonl line 1 is an assistant message with a single
-    # thinking block whose text is empty — a real shape observed from live output.
+    # Line 1 of the sample is an assistant message whose one thinking block has empty text,
+    # a shape observed from live output.
     events = _parse_claude_line(_claude_lines()[1])
     assert events == []
 
@@ -96,9 +96,8 @@ def test_parse_claude_line_system_and_result_emit_nothing() -> None:
 
 
 def test_parse_claude_line_rate_limit_event_emits_nothing() -> None:
-    # A real top-level event type Claude Code emits that isn't "assistant"/"user" —
-    # must be silently skipped, not dumped as raw JSON (see _parse_claude_line's
-    # docstring: unrecognized-but-well-formed events are not a raw_fallback case).
+    # A real top-level event type that is neither "assistant" nor "user" must be skipped
+    # silently, not dumped as raw JSON.
     rate_limit_line = next(line for line in _claude_lines() if '"type": "rate_limit_event"' in line)
     assert _parse_claude_line(rate_limit_line) == []
 
@@ -112,15 +111,14 @@ def test_parse_claude_line_malformed_json_is_raw_fallback() -> None:
 
 
 def test_parse_claude_line_unrecognized_type_is_silently_skipped() -> None:
-    # Valid JSON with a `type` we don't render narration for is a legitimate event,
-    # not garbage — must not be dumped as raw JSON.
+    # Valid JSON with a `type` that gets no narration is a legitimate event, not garbage.
     line = _malformed_lines()[1]
     assert _parse_claude_line(line) == []
 
 
 def test_parse_claude_line_no_type_field_is_raw_fallback() -> None:
-    # Valid JSON that doesn't even look like a structured event (no `type` field)
-    # is the actual "malformed" case — still surfaced verbatim for diagnosis.
+    # Valid JSON with no `type` field does not look like an event at all, which is the
+    # malformed case: surfaced verbatim for diagnosis.
     line = _malformed_lines()[2]
     events = _parse_claude_line(line)
     assert len(events) == 1
@@ -144,9 +142,8 @@ def test_parse_claude_result_line_extracts_token_usage() -> None:
 
 
 def test_claude_stream_model_text_holds_only_the_models_own_text(tmp_path: Path) -> None:
-    # model_text is the channel marker detection reads (see AgentStreamResult): it must
-    # carry the model's text blocks and nothing else, so a file the agent read or a
-    # command it ran can never be mistaken for something the agent said.
+    # model_text is the channel marker detection reads, so it must carry the model's text
+    # blocks and nothing else: a file the agent read is not something the agent said.
     fake_proc = _FakeProcess([line + "\n" for line in _claude_lines()])
     with patch("harnessbuddy.core.agent_stream.subprocess.Popen", return_value=fake_proc):
         result = run_agent_streaming(["claude", "--print"], tmp_path, 60, "claude")
@@ -199,8 +196,8 @@ def test_parse_codex_line_file_change_is_file_edit() -> None:
 
 
 def test_parse_codex_line_agent_message_is_model_text() -> None:
-    # codex_stream_sample.jsonl's "agent_message" item is the model's actual
-    # response text — Codex's equivalent of Claude's plain-text content block.
+    # The sample's "agent_message" item is the model's response text, Codex's equivalent of
+    # a Claude text content block.
     events = [e for line in _codex_lines() for e in _parse_codex_line(line)]
     model_events = [e for e in events if e.kind == "model_text"]
     assert any("hello world" in e.text for e in model_events)
@@ -267,7 +264,7 @@ def test_codex_stream_extracts_token_usage_and_no_cost(tmp_path: Path) -> None:
     assert result.output_tokens == 28
 
 
-# --- write_agent_report (US2) ---
+# --- write_agent_report ---
 
 
 def test_write_agent_report_cost_trailer(tmp_path: Path) -> None:

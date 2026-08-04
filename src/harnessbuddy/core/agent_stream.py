@@ -23,19 +23,14 @@ class AgentActivityEvent:
 class AgentStreamResult:
     """One agent invocation's output, split into two channels.
 
-    `combined_text` is the whole rendered transcript — every event, including tool
-    results (file contents the agent read, output of commands it ran) and our own
-    narration lines. It's what gets persisted for a human to read.
+    `combined_text` is the whole rendered transcript, including tool results and narration
+    lines. It is what gets persisted for a human to read.
 
-    `model_text` is only what the *model itself* wrote as its response: Claude `text`
-    content blocks and Codex `agent_message` items. Match on this, not on
-    `combined_text`, when looking for a marker the model was instructed to *print* —
-    e.g. `ACTION REQUIRED`. Searching the full transcript makes any file quoting the
-    marker (its own SKILL.md, notably) trip it, failing a build that succeeded.
-
-    Thinking/reasoning blocks are deliberation, not output, so they are deliberately
-    excluded from `model_text` too: an agent weighing whether to print a marker must
-    not be read as having printed it.
+    `model_text` is only what the model itself wrote: Claude `text` blocks and Codex
+    `agent_message` items. Match on this when looking for a marker the model was told to
+    print, such as `ACTION REQUIRED` — searching the whole transcript trips on any file that
+    merely quotes it. Thinking blocks are excluded too, so an agent weighing whether to print
+    a marker is not read as having printed it.
     """
 
     combined_text: str
@@ -95,13 +90,10 @@ def _claude_content_block_event(block: dict[str, Any]) -> AgentActivityEvent | N
 def _parse_claude_line(line: str) -> list[AgentActivityEvent]:
     """Parse one line of `claude --output-format stream-json` output.
 
-    Anthropic adds new top-level event types over time (e.g. `rate_limit_event`) and
-    this function does not attempt to enumerate them all. A well-formed JSON object
-    with a `type` string is treated as a legitimate event we simply don't render
-    narration for (silent, not a fallback) — `raw_fallback` is reserved for input that
-    doesn't even look like a structured event, so a truly unexpected/garbled line is
-    still visible for diagnosis without every future event type flooding the terminal
-    with raw JSON.
+    New top-level event types appear over time, so they are not enumerated. A well-formed JSON
+    object with a `type` string is a legitimate event this simply renders no narration for.
+    `raw_fallback` is reserved for a line that doesn't look like a structured event at all, so
+    garbled input stays visible without every future event type dumping raw JSON.
     """
     try:
         data = json.loads(line)
@@ -131,11 +123,10 @@ def _codex_item_event(item: dict[str, Any]) -> AgentActivityEvent | None:
     if item_type == "file_change":
         return AgentActivityEvent("file_edit", f"Editing {item.get('path', '?')}")
     if item_type == "agent_message":
-        # Codex's equivalent of a Claude plain-text assistant content block — the
-        # model's actual response text, not an internal reasoning trace.
+        # Codex's equivalent of a Claude text content block: the model's response text.
         return AgentActivityEvent("model_text", item.get("text", ""))
     if item_type == "reasoning":
-        # Codex's equivalent of Claude's "thinking" content block.
+        # Codex's equivalent of Claude's "thinking" block.
         text = item.get("text") or ""
         return AgentActivityEvent("status", f"Thinking: {text}") if text else None
     if item_type == "error":
@@ -146,10 +137,7 @@ def _codex_item_event(item: dict[str, Any]) -> AgentActivityEvent | None:
 def _parse_codex_line(line: str) -> list[AgentActivityEvent]:
     """Parse one line of `codex exec --json` output.
 
-    Same silent-skip-vs-raw_fallback distinction as `_parse_claude_line`: a
-    well-formed JSON object with a `type` string is a legitimate event we may not
-    render narration for; `raw_fallback` is reserved for lines that don't look like a
-    structured event at all.
+    Same silent-skip vs `raw_fallback` distinction as `_parse_claude_line`.
     """
     try:
         data = json.loads(line)
@@ -199,7 +187,7 @@ def _codex_result_cost(line: str) -> tuple[None, int | None, int | None]:
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return None, None, None
-    # usd usage not available
+    # Codex reports tokens but no cost.
     return None, usage.get("input_tokens"), usage.get("output_tokens")
 
 
@@ -232,8 +220,7 @@ def run_agent_streaming(
 ) -> AgentStreamResult:
     """Run an agent CLI, rendering its structured event stream as readable lines.
 
-    Mirrors the Popen/line-iteration/TimeoutExpired structure of
-    run_command_streaming, but parses each line as a backend-specific structured
+    Mirrors run_command_streaming's structure, but parses each line as a backend-specific
     event instead of treating it as opaque text.
     """
     if tool not in _LINE_PARSERS:

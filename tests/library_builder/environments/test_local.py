@@ -1,7 +1,7 @@
 """LocalExecutor: each stage probes on the host, and one shared gate proves the build.
 
-The gate (agents/scripts/check_build.sh — the same script a repair agent is told to run)
-runs once, after the harness probe succeeds, rebuilding the library from nothing.
+The gate (check_build.sh, the same script a repair agent is told to run) runs once, after the
+harness probe succeeds, rebuilding the library from nothing.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def test_check_availability_never_raises() -> None:
     LocalExecutor().check_availability()
 
 
-# run_library_build — the probe decides this stage, and the workspace is materialized first
+# run_library_build — the probe decides this stage, and the workspace comes first
 
 
 def test_run_library_build_tags_environment_local(tmp_path: Path) -> None:
@@ -88,8 +88,8 @@ def test_run_library_build_tags_environment_local(tmp_path: Path) -> None:
 
 
 def test_run_library_build_materializes_the_project_before_building(tmp_path: Path) -> None:
-    """A repair agent for a failed build is handed the gate command, and that gate compiles
-    harness_source/ — so the scaffold has to exist regardless of how the build went."""
+    """The gate a repair agent is handed compiles harness_source/, so the scaffold has to exist
+    regardless of how the build went."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
@@ -101,8 +101,8 @@ def test_run_library_build_materializes_the_project_before_building(tmp_path: Pa
 
 
 def test_run_library_build_does_not_run_the_gate(tmp_path: Path) -> None:
-    """The gate rebuilds the library from nothing; running it per stage would pay for that
-    twice in one run. It runs once, after the harness probe."""
+    """The gate rebuilds the library from nothing, so running it per stage would pay for that
+    twice. It runs once, after the harness probe."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
@@ -133,7 +133,7 @@ def test_run_library_build_probe_failure_fails_the_stage(tmp_path: Path) -> None
 
 
 def test_run_library_build_reports_the_gate_for_an_unknown_build_system(tmp_path: Path) -> None:
-    """No build was attempted, so there is no build command to report — the gate is what an
+    """No build was attempted, so there is no build command to report: the gate is what an
     agent's fix has to satisfy."""
     workdir = tmp_path / "work"
     source = workdir / "src"
@@ -181,8 +181,8 @@ def test_run_harness_compile_tags_environment_local(tmp_path: Path) -> None:
 
 
 def test_run_harness_compile_publishes_the_configured_harness_flags(tmp_path: Path) -> None:
-    """The published compiler carries the caller's harness flags as its defaults, so it
-    reproduces this run when a user invokes it from a bare shell."""
+    """The published compiler bakes in the caller's harness flags, so it reproduces this run
+    when a user invokes it from a bare shell."""
     with (
         _installed_library(tmp_path) as install_dir,
         patch(
@@ -206,8 +206,8 @@ def test_run_harness_compile_publishes_the_configured_harness_flags(tmp_path: Pa
 
 
 def test_run_harness_compile_gates_the_result_with_check_build_sh(tmp_path: Path) -> None:
-    """The stage's pass/fail comes from the shared gate, not from the probe's exit code:
-    the gate is what rebuilds from nothing and asserts the artifacts."""
+    """The stage's pass/fail comes from the gate, not the probe's exit code: the gate is what
+    rebuilds from nothing and asserts the artifacts."""
     with (
         _installed_library(tmp_path) as install_dir,
         patch(
@@ -261,8 +261,8 @@ def test_run_harness_compile_skips_the_gate_without_static_libs(tmp_path: Path) 
 
 
 def test_run_harness_compile_skips_the_gate_when_discovery_fails(tmp_path: Path) -> None:
-    """Discovery already exhausted its retry attempts against this install/ output — the
-    gate would only reconfirm the same failure, at the cost of a full rebuild."""
+    """Discovery already exhausted its retries against this install/ output, so the gate would
+    only reconfirm the same failure at the cost of a full rebuild."""
     with (
         _installed_library(tmp_path) as install_dir,
         patch(

@@ -37,7 +37,7 @@ def test_build_native_tool_reuses_cache_when_sources_and_version_unchanged(
         patch.object(native_build, "_configure") as mock_configure,
         patch.object(native_build, "_build", side_effect=_build_that_creates_binary(binary_path)),
     ):
-        native_build.build_native_tool()  # first call: builds and writes the cache key
+        native_build.build_native_tool()  # builds and writes the cache key
         mock_configure.reset_mock()
 
         with patch.object(native_build, "_build") as mock_build_second:
@@ -49,10 +49,9 @@ def test_build_native_tool_reuses_cache_when_sources_and_version_unchanged(
 
 
 def test_build_native_tool_rebuilds_when_native_source_changes(tmp_path: Path) -> None:
-    """A cached binary must not be silently reused if native/'s own sources changed
-    since it was built (e.g. a compiler-flag fix in main.cpp) — the LLVM-version-only
-    cache key previously missed this, requiring callers to know to pass
-    force_rebuild explicitly."""
+    """A cached binary must not be reused when native/'s own sources changed since it was
+    built. An LLVM-version-only cache key misses that, leaving callers to know to pass
+    force_rebuild."""
     native_src_dir = tmp_path / "native"
     _write_fake_native_sources(native_src_dir)
     state_dir = tmp_path / "state"

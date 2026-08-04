@@ -13,8 +13,8 @@ _RECONFIGURE_HINT = (
 
 
 def _compile_commands_directory(compile_commands_path: Path) -> str | None:
-    """The 'directory' baked into the first compile_commands.json entry, or None if
-    the file is empty/malformed."""
+    """The 'directory' in the first compile_commands.json entry, or None if the file is empty or
+    malformed."""
     try:
         entries = json.loads(compile_commands_path.read_text())
     except (json.JSONDecodeError, OSError):
@@ -26,11 +26,11 @@ def _compile_commands_directory(compile_commands_path: Path) -> str | None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _require_zlib_feature_test() -> None:
-    """Skip every test in this package if the real zlib fixture isn't set up locally."""
+    """Skip every test in this package if the real zlib fixture is not set up locally."""
     if not _ZLIB_FEATURE_TEST_DIR.is_dir():
         pytest.skip(
-            f"{_ZLIB_FEATURE_TEST_DIR} not found; see specs/006-feature-extractor/"
-            "quickstart.md Prerequisites to set it up"
+            f"{_ZLIB_FEATURE_TEST_DIR} not found; build zlib there with "
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON first"
         )
     compile_commands_path = _ZLIB_FEATURE_TEST_DIR / "compile_commands.json"
     if not compile_commands_path.is_file():

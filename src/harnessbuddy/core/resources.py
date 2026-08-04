@@ -1,10 +1,9 @@
 """Locating the data files HarnessBuddy ships: agent skills and the build gate scripts.
 
-These live under `src/harnessbuddy/agents/` and are resolved through
-`importlib.resources`, so they are found the same way whether HarnessBuddy runs from a
-git checkout or from an installed wheel. A missing file is an error, not a degraded mode:
-without the gate scripts no build can be verified, and without a skill file a repair agent
-would be prompted with a single sentence instead of its instructions.
+These live under `src/harnessbuddy/agents/` and resolve through `importlib.resources`, so a
+git checkout and an installed wheel find them the same way. A missing file is an error, not a
+degraded mode: without the gate scripts no build can be verified, and without a skill file a
+repair agent gets a one-sentence prompt instead of its instructions.
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ _AGENTS_PACKAGE = "harnessbuddy.agents"
 def agent_script(name: str) -> Path:
     """Return the filesystem path of agents/scripts/<name>.
 
-    A real path rather than a stream: these are shell scripts that get invoked as
-    subprocess arguments, and one of them is bind-mounted into a container.
+    A path rather than a stream: these are shell scripts passed as subprocess arguments, and
+    one of them is bind-mounted into a container.
     """
     return _resource_path(f"scripts/{name}")
 
@@ -31,9 +30,8 @@ def skill_instructions(agent_name: str) -> str:
 
 def _resource_path(relative_path: str) -> Path:
     resource = files(_AGENTS_PACKAGE).joinpath(relative_path)
-    # as_file materializes the resource on disk if the distribution is zipped. Everything
-    # HarnessBuddy ships is installed unzipped, so the context exits with the path still
-    # valid; entering it is what keeps that assumption explicit rather than accidental.
+    # as_file materializes the resource if the distribution is zipped. HarnessBuddy installs
+    # unzipped, so the path stays valid after the context exits.
     with as_file(resource) as path:
         if not path.is_file():
             raise FileNotFoundError(

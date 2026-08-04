@@ -1,12 +1,12 @@
 """The project workspace: one directory layout, materialized once, verified, then shipped.
 
-`.harnessbuddy/<project>/` is not a scratch area that gets translated into output later — it
-is the project. It holds a real OSS-Fuzz project (`project.yaml`, `Dockerfile`, `build.sh`)
-plus the environment-independent build and harness-compile scripts, and generation copies it
-verbatim so what ships is exactly what was verified, including any repair an agent applied.
+`.harnessbuddy/<project>/` is the project, not a scratch area translated into output later.
+It holds a real OSS-Fuzz project (`project.yaml`, `Dockerfile`, `build.sh`) plus the build and
+harness-compile scripts, and generation copies it verbatim, so what ships is what was
+verified, including any repair an agent applied.
 
-Both environments materialize the same layout. The oss-fuzz target additionally builds an
-image from the Dockerfile here; the local target simply never reads it.
+Both environments materialize the same layout. Only the oss-fuzz target builds an image from
+the Dockerfile here.
 """
 
 from __future__ import annotations
@@ -30,22 +30,18 @@ from harnessbuddy.library_builder.scripts import (
 
 _AUTOTOOLS_PACKAGES = ("autoconf", "automake", "libtool", "pkg-config")
 
-# ubuntu-24-04, not the bare/Focal-based default tag: Focal's only apt-available bear
-# (2.4.3) mishandles the `bear -- <command>` invocation exploration.py's _build_command()
-# constructs (a known argparse REMAINDER quirk in Bear 2.x — `--` ends up passed to
-# subprocess as if it were the command itself, raising "FileNotFoundError: [Errno 2] No
-# such file or directory: '--'"). Ubuntu 24.04's bear (3.x, the modern rewrite) handles
-# `--` correctly.
+# ubuntu-24-04, not the Focal-based default tag: Focal's bear (2.4.3) mishandles the
+# `bear -- <command>` form exploration.py builds, passing `--` on as if it were the command.
+# Ubuntu 24.04 ships bear 3.x, which handles it.
 DEFAULT_BASE_IMAGE = "gcr.io/oss-fuzz-base/base-builder:ubuntu-24-04"
 
-# Shared with generation (bear-stripping) and inject_apt_packages below — the one place
-# this exact apt-get invocation text is spelled out.
+# The one place this apt-get invocation text is spelled out. Shared with generation's
+# bear-stripping and with inject_apt_packages below.
 APT_INSTALL_PREFIX = "RUN apt-get update && apt-get install -y --no-install-recommends"
 
-# build.sh is what OSS-Fuzz's `compile` runs, and what check_build.sh runs before making
-# its assertions — so the two can never disagree about what "building this project" means.
-# $SCRIPT_DIR rather than $SRC: in the container build.sh lives at $SRC, so they are the
-# same path there, and on the host $SRC does not exist.
+# build.sh is what OSS-Fuzz's `compile` runs and what check_build.sh runs before asserting,
+# so the two cannot disagree about what building this project means. $SCRIPT_DIR rather than
+# $SRC: they are the same path in the container, and $SRC does not exist on the host.
 _BUILD_SH = (
     "#!/bin/bash\n"
     "set -euo pipefail\n"
@@ -68,14 +64,13 @@ def materialize(
 ) -> None:
     """Write the full project layout into workdir, except build_library.sh.
 
-    Every file here is either fixed or derives only from static analysis, so this runs
-    before any build attempt. That is what gives a repair agent something runnable even
-    when the build system was never identified: the gate it is told to run needs
-    compile_harnesses.sh and a harness source to exist, whatever happened to the library
-    build.
+    Every file here is fixed or derives only from static analysis, so this runs before any
+    build attempt. That is what leaves a repair agent something runnable even when no build
+    system was identified: the gate it is told to run needs compile_harnesses.sh and a harness
+    source to exist regardless.
 
-    build_library.sh is written separately by exploration.write_build_library_script,
-    which owns the source-layout decision and rewrites it on each attempt.
+    build_library.sh is written by exploration.write_build_library_script, which owns the
+    source-layout decision and rewrites it on each attempt.
     """
     workdir.mkdir(parents=True, exist_ok=True)
     write_project_yaml(workdir, analysis)
@@ -89,9 +84,8 @@ def write_harness_scripts(
 ) -> Path:
     """Write compile_harness.sh, compile_harnesses.sh, and a default harness source.
 
-    The stub compiles whatever is in harness_source/, so the gate's non-empty-$OUT
-    assertion has something to find before harness-link discovery has run at all.
-    Discovery later rewrites compile_harness.sh in place with each link flag it resolves.
+    The stub gives the gate's non-empty-$OUT assertion something to find before harness-link
+    discovery has run. Discovery later rewrites compile_harness.sh with each flag it resolves.
     """
     harness_source_dir = workdir / HARNESS_SOURCE_DIR
     harness_source_dir.mkdir(parents=True, exist_ok=True)
@@ -131,10 +125,9 @@ def write_dockerfile(
 ) -> Path:
     """Write the OSS-Fuzz project Dockerfile.
 
-    include_bear=True produces the workspace's "live" copy, used to build the image the
-    exploration probe runs in, so Make/Autotools compile_commands.json capture always has
-    bear available (FR-011); include_bear=False produces the copy shipped in the output,
-    which must not depend on a HarnessBuddy-only tool.
+    include_bear=True produces the workspace's live copy, so the image the exploration probe
+    runs in always has bear for Make/Autotools compile_commands.json capture.
+    include_bear=False produces the shipped copy, which must not need a HarnessBuddy-only tool.
     """
     path = output_path / "Dockerfile"
     lines = [
@@ -170,10 +163,8 @@ def write_dockerfile(
 def inject_apt_packages(output_path: Path, packages: list[str]) -> Path:
     """Merge newly-discovered apt packages into an existing Dockerfile, in place.
 
-    Preserves everything already there (including any agent edits) rather than
-    re-rendering, because the workspace Dockerfile is written before the harness phase's
-    linker-dependency discovery — or its repair agent — can know what else is required,
-    and generation only ever copies this file.
+    Merges rather than re-renders, so agent edits survive: this file is written before the
+    harness phase can know what else is needed, and generation only ever copies it.
     """
     path = output_path / "Dockerfile"
     if not packages:
@@ -196,18 +187,20 @@ def inject_apt_packages(output_path: Path, packages: list[str]) -> Path:
 
 
 def write_build_sh(output_path: Path) -> Path:
-    """Write build.sh — the library build followed by harness compilation, with markers
-    identifying each stage's output. OSS-Fuzz's `compile` runs it, check_build.sh runs it
-    and then asserts, and a host user can run it directly."""
+    """Write build.sh — the library build then harness compilation, with a marker per stage.
+
+    OSS-Fuzz's `compile` runs it, check_build.sh runs it and then asserts, and a host user can
+    run it directly.
+    """
     return write_executable(output_path / "build.sh", _BUILD_SH)
 
 
 def strip_bear_dependency(dockerfile_content: str) -> str:
-    """Drop the "bear" apt package the workspace Dockerfile depends on for
-    compile_commands.json capture during exploration — bear is never needed by the shipped
-    image. Operates on package tokens rather than a fixed string replace, since "bear"
-    isn't always followed by a space (e.g. when it's the only or last package in the list,
-    immediately followed by a newline)."""
+    """Drop the "bear" apt package, which only the workspace image needs.
+
+    Splits the package list into tokens rather than replacing a fixed string, since "bear" is
+    not always followed by a space — it may be last in the list.
+    """
     lines = []
     for line in dockerfile_content.splitlines(keepends=True):
         if not line.startswith(APT_INSTALL_PREFIX):
@@ -216,7 +209,7 @@ def strip_bear_dependency(dockerfile_content: str) -> str:
         packages = [pkg for pkg in line[len(APT_INSTALL_PREFIX) :].split() if pkg != "bear"]
         if packages:
             lines.append(f"{APT_INSTALL_PREFIX} {' '.join(packages)}\n")
-        # else: bear was the only dependency — drop the now-empty install line entirely.
+        # else: bear was the only package — drop the now-empty install line entirely.
     return "".join(lines)
 
 

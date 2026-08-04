@@ -21,9 +21,9 @@ from harnessbuddy.library_builder.scripts import (
     build_library_script,
 )
 
-# The paths workspace materialization uses, shared by every build_library.sh content test
-# below since the command text these tests assert on is driven entirely by
-# build_system/autotools_setup, not by paths.
+# The paths workspace materialization uses. Shared by every build_library.sh content test
+# below, since the command text they assert on depends on build_system and autotools_setup
+# rather than on paths.
 _OSS_FUZZ_PATHS = BuildPaths(
     source_dir="$SCRIPT_DIR/src",
     build_dir="$BUILD_PREFIX/build",
@@ -42,10 +42,9 @@ _ALL_BUILD_SYSTEM_VARIANTS = [
 
 
 def test_build_library_script_skips_when_artifacts_already_present(tmp_path: Path) -> None:
-    """A repeat invocation that doesn't first clear install_dir (e.g. re-running
-    build_library.sh as part of a harness-discovery retry loop, unlike explore()'s own
-    authoritative build which always wipes it first) must not redo the real build —
-    source_dir points nowhere, so reaching `make` would fail."""
+    """A repeat invocation that does not first clear install_dir — a harness-discovery retry
+    loop, unlike explore(), which always wipes it — must not redo the real build. source_dir
+    points nowhere, so reaching `make` would fail."""
     install_dir = tmp_path / "install"
     (install_dir / "lib").mkdir(parents=True)
     (install_dir / "lib" / "libfoo.a").write_text("stub")
@@ -172,8 +171,8 @@ def test_single_harness_compiler_uses_configured_defaults_without_environment_ov
 def test_single_harness_compiler_uses_its_baked_flags_in_a_bare_environment(
     tmp_path: Path,
 ) -> None:
-    """The generated compiler has to work when run from a fresh shell with nothing exported
-    — that is how the gate and a user of the shipped output both run it."""
+    """The generated compiler has to work from a bare shell with nothing exported, which is how
+    the gate and a user of the shipped output both run it."""
     compiler = tmp_path / "compile_harness.sh"
     compiler.write_text(
         build_harness_script(
@@ -207,9 +206,8 @@ def test_single_harness_compiler_uses_its_baked_flags_in_a_bare_environment(
 
 
 def test_single_harness_compiler_lets_the_environment_override_its_flags() -> None:
-    """The precedence that makes one script text work in both places: in the container the
-    base image's CFLAGS carry the sanitizer configuration, and they must win over anything
-    baked in at generation time."""
+    """The precedence that makes one script text work in both places: the base image's CFLAGS
+    carry the sanitizer configuration, so they must win over anything baked in."""
     script = build_harness_script(_harness(), harness_cflags="-fsanitize=fuzzer")
     assert 'CFLAGS="${CFLAGS:--fsanitize=fuzzer}"' in script
 
@@ -308,8 +306,8 @@ def test_extra_library_paths_ordered_before_extra_link_flags_var() -> None:
 
 
 def test_extra_paths_are_the_same_in_every_environment() -> None:
-    """There is one script text: the environment shows up only in which values the
-    fallbacks resolve to at run time, never in what is generated."""
+    """There is one script text: the environment shows up only in what the fallbacks resolve
+    to at run time, never in what is generated."""
     script = build_harness_script(
         _harness(
             extra_include_paths=["/usr/include/foo"],
@@ -322,7 +320,7 @@ def test_extra_paths_are_the_same_in_every_environment() -> None:
 
 
 def test_whole_archive_uses_the_linux_linker_flags() -> None:
-    """Every generated script runs on Linux: on the host HarnessBuddy targets, and in the
+    """Every generated script runs on Linux: on the host HarnessBuddy targets and in the
     base-builder container."""
     script = build_harness_script(_harness(), whole_archive=True)
     assert "-Wl,--whole-archive" in script
@@ -343,9 +341,9 @@ def test_whole_archive_leaves_the_extra_paths_alone() -> None:
 
 
 def test_harness_script_falls_back_to_libfuzzer_when_no_engine_is_set() -> None:
-    """The in-container probe runs the script directly rather than through OSS-Fuzz's
-    `compile`, which is what would otherwise have set $LIB_FUZZING_ENGINE — so the fallback
-    is load-bearing inside the container, not just on the host."""
+    """The in-container probe runs the script directly rather than through `compile`, which is
+    what would set $LIB_FUZZING_ENGINE — so the fallback matters there too, not only on the
+    host."""
     script = build_harness_script(_harness())
     assert 'LIB_FUZZING_ENGINE="${LIB_FUZZING_ENGINE:--fsanitize=fuzzer}"' in script
     assert script.count('"$LIB_FUZZING_ENGINE"') == 2
@@ -362,8 +360,8 @@ def test_batch_script_reads_the_one_harness_directory_name() -> None:
 
 @pytest.mark.parametrize("variable", ["CC", "CXX", "CFLAGS", "CXXFLAGS"])
 def test_library_script_lets_the_environment_win_over_its_baked_settings(variable: str) -> None:
-    """The baked values reproduce the validated build from a bare shell; the base image's
-    own sanitizer configuration still takes precedence in the container."""
+    """The baked values reproduce the validated build from a bare shell, and the base image's
+    sanitizer configuration still takes precedence in the container."""
     script = build_library_script(BuildSystem.CMAKE, _OSS_FUZZ_PATHS, cflags="-O2")
     assert f'{variable}="${{{variable}:-' in script
 
@@ -399,9 +397,8 @@ def test_configure_args_land_at_the_configure_step(
         configure_args=("-DBUILD_TESTING=OFF",),
     )
     assert "CONFIGURE_ARGS=('-DBUILD_TESTING=OFF')" in script
-    # The options reach the build system's own configuration, not the compiler's flags —
-    # --library-cflags would have turned this one into a preprocessor define that silently
-    # does nothing.
+    # The options reach the build system's configuration, not the compiler's flags:
+    # --library-cflags would have made this one a preprocessor define that does nothing.
     body = script[script.index("# build system:") :]
     assert '"${CONFIGURE_ARGS[@]}"' in body
     flag_lines = [line for line in script.splitlines() if line.startswith(("CFLAGS=", "CXXFLAGS="))]
@@ -459,17 +456,17 @@ def test_no_configure_args_leaves_the_array_out_entirely() -> None:
 def test_every_build_system_caps_parallelism(
     build_system: BuildSystem, autotools_setup: AutotoolsSetup | None
 ) -> None:
-    """Builds run in containers and CI with memory limits far below what -j$(nproc) implies
-    on a large host, so the cap has to apply everywhere rather than only to cmake."""
+    """Builds run in containers and CI with memory limits far below what -j$(nproc) implies on
+    a large host, so the cap applies to every build system rather than only to cmake."""
     script = build_library_script(build_system, _OSS_FUZZ_PATHS, autotools_setup=autotools_setup)
     assert 'if [ "$JOBS" -gt 4 ]; then JOBS=4; fi' in script
     assert '-j"$JOBS"' in script
     assert "-j$(nproc)" not in script
 
 
-# build_library.sh content for the oss-fuzz workspace's SCRIPT_DIR/BUILD_PREFIX layout —
-# build command per build system, autotools setup variants, and the guarantee that
-# capture-only instrumentation (spec 010 US2) never leaks into the shipped script.
+# build_library.sh content for the workspace's SCRIPT_DIR/BUILD_PREFIX layout: the build
+# command per build system, the autotools setup variants, and the guarantee that capture-only
+# instrumentation never leaks into the shipped script.
 
 
 @pytest.mark.parametrize(
@@ -526,10 +523,9 @@ def test_build_library_script_autotools_autoreconf_runs_autoreconf() -> None:
 def test_build_library_script_has_no_capture_instrumentation(
     build_system: BuildSystem, autotools_setup: AutotoolsSetup | None
 ) -> None:
-    """build_library_script's output must never carry CMake/bear capture-only flags —
-    capture is applied at the orchestration level (explore()), never baked into the
-    template itself (spec 010 User Story 2), so the shipped oss-fuzz script is
-    structurally unaffected regardless of build system."""
+    """build_library_script's output must never carry CMake/bear capture-only flags: capture is
+    applied by explore(), never baked into the script, so the shipped one is unaffected for
+    every build system."""
     script = build_library_script(build_system, _OSS_FUZZ_PATHS, autotools_setup=autotools_setup)
     assert "CMAKE_EXPORT_COMPILE_COMMANDS" not in script
     assert "bear" not in script

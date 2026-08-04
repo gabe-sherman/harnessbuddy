@@ -20,8 +20,7 @@ bool looksLikeCxx(llvm::StringRef path) {
 }
 
 std::string detectLanguage(const std::vector<std::string> &files) {
-  // Must match harnessbuddy.library_builder.models.Language's values ("c" | "c++"),
-  // consumed by extraction.py's Language parsing.
+  // Must match models.Language's values ("c" | "c++"), which extraction.py parses.
   for (const std::string &file : files) {
     if (looksLikeCxx(file)) {
       return "c++";
@@ -30,10 +29,9 @@ std::string detectLanguage(const std::vector<std::string> &files) {
   return "c";
 }
 
-// The compile-commands directory (argv[1]) is often a separate build directory
-// (e.g. CMake's -B), not the source checkout, so it can't be used as the
-// project root for isWithinProject() checks. Recover the real source root as
-// the common ancestor of every translation unit's absolute file path instead.
+// The compile-commands directory (argv[1]) is often a separate build directory,
+// not the source checkout, so it cannot serve as the project root. Recover the
+// real root as the common ancestor of every translation unit's absolute path.
 std::string computeProjectRoot(const std::vector<std::string> &files) {
   std::vector<llvm::StringRef> common;
   bool first = true;
@@ -96,11 +94,11 @@ int main(int argc, char **argv) {
   tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
       "-resource-dir=" CLANG_RESOURCE_DIR,
       clang::tooling::ArgumentInsertPosition::BEGIN));
-  // -resource-dir only covers clang's own builtin headers (stddef.h, stdarg.h, ...).
-  // Platform libc/SDK headers (inttypes.h, stdio.h, ...) still need an explicit
-  // -isysroot on macOS, since ClangTool's ad hoc driver invocation doesn't reliably
-  // auto-detect the Xcode SDK the way a plain `clang` invocation does. CLANG_SYSROOT
-  // is empty on non-Apple platforms, where the default system include paths apply.
+  // -resource-dir covers only clang's builtin headers (stddef.h, stdarg.h, ...).
+  // Platform libc headers still need an explicit -isysroot on macOS, since
+  // ClangTool's ad hoc driver invocation does not auto-detect the Xcode SDK the way
+  // a plain `clang` does. CLANG_SYSROOT is empty elsewhere, where the default
+  // system include paths apply.
   const std::string clang_sysroot = CLANG_SYSROOT;
   if (!clang_sysroot.empty()) {
     tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(

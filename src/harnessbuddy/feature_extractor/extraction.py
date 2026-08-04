@@ -47,8 +47,8 @@ class MissingFeatureArtifactError(Exception):
 def extract_features(output_dir: Path) -> FeatureArtifactSet:
     """Extract a library's declarations into features.json, returning the parsed result.
 
-    Resolves <output_dir>/compile_commands.json (FR-003), builds/invokes the native
-    tool, and overwrites <output_dir>/features.json with its result (FR-010, FR-015).
+    Reads <output_dir>/compile_commands.json, builds and invokes the native tool, and
+    overwrites <output_dir>/features.json with the result.
     """
     from harnessbuddy.core.subprocesses import run_command_streaming
     from harnessbuddy.feature_extractor.native_build import build_native_tool

@@ -33,7 +33,7 @@ _VERIFY_OK = RunResult(
 
 
 def _patch_verification(*, return_value: RunResult = _VERIFY_OK):  # type: ignore[no-untyped-def]
-    """Mock the shared gate boundary — a separate subprocess call from the run-scoped image
+    """Mock the shared gate boundary, a separate subprocess call from the run-scoped image
     build and the bind-mounted probing below."""
     return patch(
         "harnessbuddy.library_builder.environments.verification.run_command_streaming",
@@ -87,7 +87,7 @@ def test_check_availability_ok_when_docker_info_succeeds() -> None:
         OssFuzzExecutor().check_availability()  # must not raise
 
 
-# run_library_build — probe image build failure classification (T024)
+# run_library_build — probe image build failure classification
 
 
 def test_run_library_build_network_failure_raises_environment_unavailable(tmp_path: Path) -> None:
@@ -110,8 +110,8 @@ def test_run_library_build_network_failure_raises_environment_unavailable(tmp_pa
 
 
 def test_run_library_build_non_network_probe_failure_returns_failed_result(tmp_path: Path) -> None:
-    """A genuine probe-image build failure (bad apt package, etc.) is a stage failure
-    eligible for agent fallback — not an EnvironmentUnavailableError (T024)."""
+    """A genuine probe-image build failure (a bad apt package, say) is a stage failure
+    eligible for agent fallback, not an EnvironmentUnavailableError."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with patch(
@@ -156,12 +156,9 @@ def test_run_library_build_success_tags_environment_oss_fuzz(tmp_path: Path) -> 
 
 
 def test_run_library_build_does_not_run_shared_verification_script(tmp_path: Path) -> None:
-    """run_library_build's pass/fail comes from the bind-mounted probe alone — the shared
-    check_build_in_container.sh gate is never invoked here, since its container is always a
-    fresh, unmounted `docker run` (build_library.sh's skip-if-already-built check can't
-    fire there), so running it once per stage would redo the full library rebuild from
-    scratch twice. The gate only actually runs once, at the end of run_harness_compile,
-    which validates build_library.sh and compile_harnesses.sh together via `compile`."""
+    """run_library_build's pass/fail comes from the bind-mounted probe alone. The gate runs
+    once, at the end of run_harness_compile, which validates build_library.sh and
+    compile_harnesses.sh together; running it per stage would rebuild the library twice."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with (
@@ -187,9 +184,8 @@ def test_run_library_build_does_not_run_shared_verification_script(tmp_path: Pat
 
 
 def test_run_library_build_skips_verification_when_probe_fails(tmp_path: Path) -> None:
-    """A failing probe short-circuits — check_build_in_container.sh's from-scratch `docker
-    build` + `compile` (an uncached recompile of the library) is not paid for twice to
-    reconfirm a failure the bind-mounted probe already reproduced."""
+    """A failing probe short-circuits: the gate's from-scratch `docker build` and `compile`
+    is not paid for to reconfirm a failure the probe already reproduced."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with (
@@ -216,9 +212,8 @@ def test_run_library_build_skips_verification_when_probe_fails(tmp_path: Path) -
 
 
 def test_run_harness_compile_skips_verification_when_discovery_fails(tmp_path: Path) -> None:
-    """Discovery already exhausted its retry attempts against this install/ output — the
-    shared script would only reconfirm the same failure at the cost of a second full
-    docker build + compile."""
+    """Discovery already exhausted its retries against this install/ output, so the gate
+    would only reconfirm the same failure at the cost of another docker build and compile."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     install_dir = workdir / "install"
@@ -284,17 +279,15 @@ def test_docker_run_invocation_mounts_workdir_and_uses_bash_entrypoint(tmp_path:
     assert docker_command[0] == "docker"
     assert "--entrypoint" in docker_command
     assert "bash" in docker_command
-    # Mounted at /src (not workdir's own host path) — real oss-fuzz tooling ($SRC,
-    # $LIB_FUZZING_ENGINE setup, the base image's own `compile`) is hardwired to /src.
+    # Mounted at /src, not workdir's own host path: oss-fuzz tooling is hardwired to it.
     assert f"{workdir.resolve()}:/src" in docker_command
     assert "-w" in docker_command
     assert docker_command[docker_command.index("-w") + 1] == "/src"
 
 
-# _rewrite_compile_commands_paths — /src container paths rewritten to the host workdir,
-# since the native feature extractor runs as a plain host subprocess (never inside a
-# container) and LLVM fatal-errors trying to chdir into a /src path that doesn't exist
-# on the host.
+# _rewrite_compile_commands_paths — container /src paths rewritten to the host workdir, since
+# the native feature extractor runs as a host subprocess and fatal-errors trying to chdir into
+# a /src path that does not exist there.
 
 
 def test_rewrite_compile_commands_paths_rewrites_directory_and_file(tmp_path: Path) -> None:
@@ -323,8 +316,8 @@ def test_rewrite_compile_commands_paths_rewrites_directory_and_file(tmp_path: Pa
 
 
 def test_rewrite_compile_commands_paths_rewrites_glued_flag_prefixes(tmp_path: Path) -> None:
-    """-I/src/..., -isystem/src/..., --sysroot=/src/... etc. glue the path directly onto
-    a short flag with no separator — the common case for include/library search paths."""
+    """-I/src/..., -isystem/src/..., --sysroot=/src/... glue the path straight onto the flag
+    with no separator, which is the common case for include and library search paths."""
     workdir = tmp_path / "work"
     workdir.mkdir()
     compile_commands = workdir / "compile_commands.json"
@@ -366,9 +359,8 @@ def test_rewrite_compile_commands_paths_rewrites_glued_flag_prefixes(tmp_path: P
 
 
 def test_rewrite_compile_commands_paths_leaves_unrelated_paths_alone(tmp_path: Path) -> None:
-    """A path that merely contains "/src" as a nested subdirectory (not the container
-    mount root) must not be rewritten — e.g. a header installed under an unrelated
-    absolute path that happens to have its own src/ subdirectory."""
+    """A path that merely contains "/src" as a nested subdirectory, rather than as the
+    container mount root, must not be rewritten."""
     workdir = tmp_path / "work"
     workdir.mkdir()
     compile_commands = workdir / "compile_commands.json"
@@ -403,9 +395,8 @@ def test_rewrite_compile_commands_paths_no_op_when_no_src_paths_present(tmp_path
 def test_run_library_build_rewrites_src_paths_in_captured_compile_commands(
     tmp_path: Path,
 ) -> None:
-    """End-to-end wiring: run_library_build's captured compile_commands.json (produced
-    by the docker-mounted cmake reconfigure) has its /src paths rewritten to the real
-    host workdir before the result is returned."""
+    """End-to-end wiring: the compile_commands.json run_library_build captures from the
+    docker-mounted cmake reconfigure has its /src paths rewritten before it is returned."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
 
@@ -452,7 +443,7 @@ def test_run_library_build_rewrites_src_paths_in_captured_compile_commands(
     assert entry["command"] == f"cc -I{host_prefix}/install/include -c {host_prefix}/src/foo.c"
 
 
-# _ensure_probe_image — bear is a hard requirement in the probe image (T013, FR-011)
+# _ensure_probe_image — bear is a hard requirement in the probe image
 
 
 def _capture_dockerfile(dockerfiles: dict[str, str]):  # type: ignore[no-untyped-def]
@@ -517,10 +508,9 @@ def test_probe_image_uses_the_requested_base_image(tmp_path: Path) -> None:
 
 
 def test_a_base_image_without_compile_is_rejected_as_unavailable(tmp_path: Path) -> None:
-    """--base-image selects among OSS-Fuzz base images, not any image: every verification
-    stage enters the build through `compile`, and the generated Dockerfile is written in terms
-    of $SRC. Reported as unavailable rather than as a build failure, because no edit an agent
-    makes to build.sh puts `compile` into the image."""
+    """--base-image selects among OSS-Fuzz base images, not any image: every stage enters the
+    build through `compile`, and the generated Dockerfile is written in terms of $SRC. Reported
+    as unavailable rather than as a build failure, since no agent edit can add `compile`."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
 
@@ -568,8 +558,8 @@ def test_run_harness_compile_reuses_probe_image_from_library_build(tmp_path: Pat
     ):
         executor.run_library_build(_analysis(workdir / "src"), workdir)
 
-    # explore() (called by run_library_build) resets workdir/install — populate the
-    # static-lib fixture only after that stage, matching the real pipeline order.
+    # explore() resets workdir/install, so the static-lib fixture is populated only after
+    # that stage, matching the real pipeline order.
     (install_dir / "lib").mkdir(parents=True)
     (install_dir / "lib" / "libfoo.a").write_text("stub")
 
@@ -587,8 +577,8 @@ def test_run_harness_compile_reuses_probe_image_from_library_build(tmp_path: Pat
 
 
 def test_run_harness_compile_gates_on_shared_verification_script(tmp_path: Path) -> None:
-    """run_harness_compile's pass/fail comes from check_build_in_container.sh (T015, FR-001),
-    not from discovery's own direct-exec probe result."""
+    """run_harness_compile's pass/fail comes from check_build_in_container.sh, not from
+    discovery's own direct-exec probe result."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     install_dir = workdir / "install"
@@ -665,8 +655,8 @@ def test_run_harness_compile_skips_verification_without_static_libs(tmp_path: Pa
     assert result.succeeded is False
 
 
-# workspace materialization — the workspace is a real, buildable OSS-Fuzz project
-# throughout the run, not just in the final output (T019, User Story 2)
+# workspace materialization — the workspace is a real, buildable OSS-Fuzz project throughout
+# the run, not just in the final output
 
 
 def test_run_library_build_materializes_real_project_layout(tmp_path: Path) -> None:
@@ -701,9 +691,8 @@ def test_run_library_build_materializes_real_project_layout(tmp_path: Path) -> N
 def test_run_library_build_workspace_dockerfile_has_no_git_clone_bind_mount_quirk(
     tmp_path: Path,
 ) -> None:
-    """The workspace Dockerfile is the real one (git clone from clone_url), not a
-    synthetic tempdir Dockerfile with no git clone at all (T012/T013 remove the old
-    probe-image path)."""
+    """The workspace Dockerfile is the real one, cloning from clone_url, not a synthetic
+    tempdir Dockerfile with no git clone at all."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with (
@@ -729,19 +718,16 @@ def test_run_library_build_workspace_dockerfile_has_no_git_clone_bind_mount_quir
 
 
 def test_probe_image_build_error_class_removed() -> None:
-    """T013: the synthetic tempdir Dockerfile / probe-image error type is gone."""
+    """The synthetic tempdir Dockerfile's probe-image error type is gone."""
     import harnessbuddy.library_builder.environments.oss_fuzz as oss_fuzz_module
 
     assert not hasattr(oss_fuzz_module, "_ProbeImageBuildError")
 
 
-# Docker-gated end-to-end tests (T015, T021) — skipped by default per pyproject.toml's
-# docker marker. Under the new architecture (T012), the atomic check_build_in_container.sh gate
-# does a from-scratch `git clone <analysis.clone_url>` inside the container (FR-002) — so,
-# unlike the old synthetic-probe-image design, these need a real, network-clonable
-# clone_url whose content actually matches analysis.source_path, not a local fixture
-# behind a placeholder URL. Reuses the same small, stable public repos the build_matrix
-# suite already depends on network access for.
+# Docker-gated end-to-end tests, skipped by default per pyproject.toml's docker marker. The
+# gate clones analysis.clone_url from scratch inside the container, so these need a real,
+# network-clonable URL whose content matches analysis.source_path — the same small, stable
+# public repos the build_matrix suite already needs network access for.
 
 
 @pytest.mark.docker
@@ -768,10 +754,9 @@ def test_run_library_build_real_docker_end_to_end(tmp_path: Path) -> None:
 
 @pytest.mark.docker
 def test_run_docker_build_independently_passes_after_run_library_build(tmp_path: Path) -> None:
-    """T021: a workspace run_library_build leaves behind must independently pass
-    `bash agents/scripts/check_build_in_container.sh <workspace> <project>` — the same command
-    the repair agent is told to run — proving there is exactly one definition of "the
-    build passed" (FR-001, SC-001)."""
+    """A workspace run_library_build leaves behind must independently pass
+    `bash agents/scripts/check_build_in_container.sh <workspace> <project>` — the same command a
+    repair agent is told to run — so there is exactly one definition of "the build passed"."""
     import subprocess
 
     from harnessbuddy.core.repos import RepoSource
@@ -800,10 +785,10 @@ def test_run_docker_build_independently_passes_after_run_library_build(tmp_path:
 
 @pytest.mark.docker
 def test_run_harness_compile_real_docker_end_to_end(tmp_path: Path) -> None:
-    """The harness stage, which nothing else in the docker suite reaches — every other case
-    here stops after run_library_build. It passes only because the probe enters the build
-    through `compile`: run compile_harnesses.sh directly in that image and the link fails on
-    the /usr/lib/libFuzzingEngine.a the ENV names but compile_libfuzzer has yet to create."""
+    """The harness stage, which nothing else in the docker suite reaches. It passes only
+    because the probe enters the build through `compile`: running compile_harnesses.sh directly
+    in that image fails on the /usr/lib/libFuzzingEngine.a the ENV names but nothing created
+    yet."""
     import subprocess
 
     from harnessbuddy.core.repos import RepoSource
@@ -828,12 +813,11 @@ def test_run_harness_compile_real_docker_end_to_end(tmp_path: Path) -> None:
 
 @pytest.mark.docker
 def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: Path) -> None:
-    """T014 (US3): the oss-fuzz image guarantees bear (FR-011), so Make/Autotools
-    compile-commands capture must succeed there unconditionally — no PATH-dependent
-    flakiness the way the local host has. Capture happens during explore()'s own
-    bind-mounted run against analysis.source_path, independent of the atomic gate's
-    from-scratch clone, so a local fixture with a real, network-clonable clone_url from
-    the build_matrix suite (lz4, Makefile-based) is used for both.
+    """The oss-fuzz image always has bear, so Make/Autotools compile-commands capture must
+    succeed there unconditionally, without the local host's PATH-dependent flakiness.
+
+    Capture happens during explore()'s bind-mounted run against analysis.source_path,
+    independent of the gate's from-scratch clone, so lz4 serves as both.
     """
     import subprocess
 
@@ -861,8 +845,8 @@ def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: 
     assert any(entry["file"].endswith(".c") for entry in entries)
 
 
-# compiler settings reach the container — BuildParameters works by setting the host process
-# environment, which `docker run` does not forward, so they have to be passed explicitly.
+# compiler settings reach the container — `docker run` does not forward the host process
+# environment BuildParameters sets, so they have to be passed explicitly.
 
 
 def _docker_environment(command: list[str]) -> dict[str, str]:
@@ -905,8 +889,8 @@ def test_library_build_forwards_the_chosen_compiler_settings(tmp_path: Path) -> 
 
 
 def test_library_build_forwards_nothing_the_caller_did_not_choose(tmp_path: Path) -> None:
-    """Forwarding an empty CFLAGS would replace the base image's sanitizer configuration
-    with nothing, which is worse than not forwarding at all."""
+    """Forwarding an empty CFLAGS would replace the base image's sanitizer configuration with
+    nothing, which is worse than not forwarding at all."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with (
@@ -929,9 +913,9 @@ def test_library_build_forwards_nothing_the_caller_did_not_choose(tmp_path: Path
 
 
 def test_harness_compile_does_not_replace_the_images_sanitizer_flags(tmp_path: Path) -> None:
-    """The default harness flags are just libFuzzer's engine flag; forwarding them as CFLAGS
-    would drop the image's sanitizer configuration and silently build an unsanitized
-    harness. $LIB_FUZZING_ENGINE supplies the engine in the container."""
+    """The default harness flags are just libFuzzer's engine flag, and forwarding them as
+    CFLAGS would drop the image's sanitizer configuration and build an unsanitized harness.
+    $LIB_FUZZING_ENGINE supplies the engine in the container."""
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     install_dir = workdir / "install"

@@ -20,11 +20,9 @@ class BuildParameters:
     library_cxxflags: str
     harness_cflags: str
     harness_cxxflags: str
-    # Build-system-level configure options (cmake cache variables, meson options,
-    # autotools --enable-* switches, make variables). Unlike the compiler settings above
-    # these are baked into the generated script rather than passed through the
-    # environment: cmake and meson have no environment equivalent for them, and the
-    # shipped script has to reproduce the validated build standalone.
+    # Build-system-level configure options: cmake cache variables, meson options, autotools
+    # --enable-* switches, make variables. Baked into the generated script rather than passed
+    # through the environment, since cmake and meson have no environment equivalent.
     library_configure_args: tuple[str, ...] = ()
 
     @classmethod
@@ -44,8 +42,7 @@ class BuildParameters:
     def defaults(cls) -> BuildParameters:
         """The settings a run with no CLI arguments would use.
 
-        For callers that build or compile outside a `generate` invocation (a test, or a
-        library-build helper reached directly) and still need the same compiler
+        For a caller that builds outside a `generate` invocation and still needs the compiler
         resolution rules the CLI applies.
         """
         return cls.from_args(_NO_ARGUMENTS)
@@ -89,8 +86,8 @@ class BuildParameters:
         }
 
 
-# A sentinel with no attributes at all, so from_args's getattr lookups all miss and every
-# field falls back to the environment-or-default rules.
+# A sentinel with no attributes, so every getattr in from_args misses and each field falls
+# back to the environment-or-default rules.
 _NO_ARGUMENTS = object()
 
 
@@ -119,10 +116,10 @@ def neutral_compiler_environment() -> Iterator[None]:
     """Unset CC/CXX/CFLAGS/CXXFLAGS for the duration.
 
     For the build gate, which runs the library build and the harness compile in one
-    invocation. Each generated script bakes in its own settings, so with nothing exported
-    both get the right ones — whereas leaving a stage's environment in place applies that
-    stage's flags to both, and the harness flags in particular (`-fsanitize=fuzzer`, which
-    supplies its own main) make cmake's compiler check fail.
+    invocation. Each generated script bakes in its own settings, so with nothing exported both
+    get the right ones. Leaving one stage's environment in place applies its flags to both, and
+    the harness flags in particular (`-fsanitize=fuzzer` supplies its own main) make cmake's
+    compiler check fail.
     """
     original = {name: os.environ.pop(name, None) for name in _COMPILER_ENVIRONMENT_NAMES}
     try:

@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 5
 
-# Always linked, not just discovered from undefined-symbol parsing: glibc's pthread_*
-# entry points are weak symbols, so a static link that omits -lpthread silently falls
-# back to no-op stubs instead of erroring, which _resolve_flags can never catch.
+# Always linked rather than discovered: glibc's pthread_* entry points are weak symbols, so
+# omitting -lpthread silently links no-op stubs instead of erroring, and _resolve_flags never
+# sees an undefined symbol to react to.
 _DEFAULT_LINK_FLAGS = ["-lpthread"]
 
 _PATTERNS_FILE = Path(__file__).parent / "symbol_patterns.json"
@@ -57,22 +57,17 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
 ) -> HarnessExplorationResult:
     """Test harness compilation against install artifacts to discover transitive deps.
 
-    Uses --whole-archive to force all library symbols in, which surfaces every undefined
-    transitive dependency. Retries up to _MAX_ATTEMPTS times, accumulating resolved -l
-    flags from linker errors, seeded with _DEFAULT_LINK_FLAGS (flags needed regardless of
-    whether linking surfaces them as undefined symbols). Returns the result regardless of
-    success; callers use HarnessExplorationResult.succeeded to decide behaviour.
+    Links with --whole-archive to force every library symbol in, so every undefined
+    transitive dependency surfaces. Retries up to _MAX_ATTEMPTS times, accumulating the -l
+    flags resolved from each attempt's linker errors on top of _DEFAULT_LINK_FLAGS. Always
+    returns a result; callers read .succeeded.
 
-    extra_include_paths/extra_library_paths are fixed inputs (e.g. from a prior agent's
-    AgentReport) threaded unchanged into every returned HarnessExplorationResult.
+    extra_include_paths/extra_library_paths are fixed inputs (typically from a prior agent's
+    AgentReport) threaded unchanged into the returned result.
 
-    The generated scripts are environment-independent, but entering them is not:
-    environment.harness_probe_command decides how each attempt starts the build, and its
-    docstring explains why the container goes through OSS-Fuzz's `compile` instead of running
-    compile_harnesses.sh directly. environment is also recorded on the returned result. run
-    defaults to running the command as a host subprocess; callers running this inside a
-    container pass a run primitive that wraps the command in a `docker run` invocation
-    instead.
+    environment.harness_probe_command decides how each attempt enters the build. run defaults
+    to a host subprocess; a caller probing inside a container passes a run primitive that
+    wraps the command in `docker run`.
     """
     extra_include_paths = extra_include_paths or []
     extra_library_paths = extra_library_paths or []
@@ -103,12 +98,9 @@ def explore_harness_compilation(  # noqa: PLR0913 -- public API; every param is 
     use_cpp = language == Language.CPP
     harness_src_dir = workdir / HARNESS_SOURCE_DIR
     harness_src_dir.mkdir(exist_ok=True)
-    # _materialize_workspace/LocalExecutor.run_library_build already wrote this stub (so the
-    # atomic gate's non-empty-/out check has something to find before discovery ever runs) —
-    # this call is idempotent when that already happened, and a fallback when discovery runs
-    # without it (e.g. called directly in tests). Discovery upgrades this same file's
-    # extension in place on a CXX finding, rather than probing with a separate throwaway
-    # file, so the discovered language can never desync from what final generation copies.
+    # Idempotent: workspace materialization already wrote this stub. Discovery upgrades this
+    # same file's extension in place on a C++ finding rather than probing with a throwaway
+    # copy, so the discovered language cannot desync from what generation ships.
     harness_path = write_default_fuzzer(harness_src_dir, language)
 
     script_path = workdir / "compile_harness.sh"
@@ -236,9 +228,8 @@ def extract_missing_system_libs(stderr: str) -> list[str]:
 def lib_names_from_link_flags(flags: list[str]) -> list[str]:
     """Strip the "-l" prefix from transitive_link_flags entries.
 
-    Every entry in transitive_link_flags is "-l<name>" (every key in
-    symbol_patterns.json is "-l<name>"), matching the bare-name input
-    package_names.translate() expects.
+    Every entry is "-l<name>", since every key in symbol_patterns.json is. The bare names
+    are what package_names.translate() takes.
     """
     return [flag.removeprefix("-l") for flag in flags]
 
@@ -251,6 +242,15 @@ def _symbol_to_flag(symbol: str) -> str | None:
 
 
 def validate_harness_artifacts(workdir: Path) -> list[str]:
+    """Check that a harness binary really exists on the host, in every environment.
+
+    An agent's exit code is not evidence that it linked anything, so what it claims to have
+    produced is checked directly. One host path serves both environments because the gate puts
+    the binaries there: a local build writes <workdir>/out itself, and
+    check_build_in_container.sh bind-mounts that same directory over the base image's
+    $OUT=/out, which is outside the /src mount and would otherwise be discarded with the
+    container.
+    """
     out_dir = workdir / "out"
     if not out_dir.exists() or not any(out_dir.iterdir()):
         return [f"no compiled harness binary found in {out_dir}"]

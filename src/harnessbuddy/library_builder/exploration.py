@@ -30,12 +30,10 @@ _MAKE_LIKE_SYSTEMS = (BuildSystem.MAKEFILE, BuildSystem.AUTOTOOLS)
 
 
 def is_standard_source_layout(analysis: AnalysisResult, workdir: Path) -> bool:
-    """True when the source was cloned to workdir/src, the layout generated output
-    scaffolds expect.
+    """True when the source was cloned to workdir/src, the layout generated output expects.
 
-    When true, build_library.sh's paths can be expressed relative to $SCRIPT_DIR
-    (the directory the script lives in), so the same script works unmodified whether
-    run from workdir during exploration or copied into a generated output directory.
+    build_library.sh's paths can then be $SCRIPT_DIR-relative, so the same script works
+    unmodified from the workspace and from a generated output directory.
     """
     return analysis.source_path.resolve() == (workdir / "src").resolve()
 
@@ -45,15 +43,12 @@ def write_build_library_script(
 ) -> tuple[Path, bool]:
     """Write build_library.sh into workdir/build_library.sh.
 
-    When the source uses the standard workdir/src layout, its paths are
-    $SCRIPT_DIR-relative so the script can be copied verbatim into generated output
-    directories, preserving any agent fixes. Otherwise paths fall back to absolute.
-    Returns (script_path, standard_layout) so callers can decide whether
-    BuildExplorationResult.script_path should be set.
+    With the standard workdir/src layout the paths are $SCRIPT_DIR-relative, so the script
+    can be published verbatim; otherwise they fall back to absolute. Returns (script_path,
+    standard_layout) so callers know whether BuildExplorationResult.script_path can be set.
 
-    Split out of explore() so OssFuzzExecutor can write this file before building the
-    workspace image — the Dockerfile's COPY of build_library.sh requires it to already
-    exist on disk.
+    Separate from explore() because OssFuzzExecutor needs this file on disk before building
+    the workspace image, which COPYs it.
     """
     workdir = workdir.resolve()
     standard_layout = is_standard_source_layout(analysis, workdir)
@@ -89,11 +84,10 @@ def explore(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meani
 ) -> BuildExplorationResult:
     """Write a build_library.sh into workdir and run it in the given environment.
 
-    environment decides whether the build command is wrapped with `bear` and is recorded
-    on the returned result; the script text itself is environment-independent. run
-    defaults to streaming the command as a host subprocess; callers running this inside a
-    container (e.g. OssFuzzExecutor) pass a run primitive that wraps the command in a
-    `docker run` invocation instead.
+    environment decides whether the build command is wrapped with `bear`, and is recorded on
+    the returned result; the script text itself is environment-independent. run defaults to
+    streaming as a host subprocess; a caller building inside a container passes a run
+    primitive that wraps the command in `docker run`.
     """
     workdir = workdir.resolve()
     build_dir = workdir / "build"
@@ -165,10 +159,9 @@ def _build_command(
     """Choose the canonical build invocation, wrapping Make/Autotools with `bear --`.
 
     Returns (command, bear_missing_error). The wrap is unconditional in the oss-fuzz
-    environment (bear is guaranteed present there, FR-011); on the local host it's
-    best-effort via shutil.which, since a missing bear must never turn into a build
-    failure (FR-008) — bear_missing_error is set instead so the caller can report it
-    once the build itself has succeeded.
+    environment, where bear is always present. On the local host it is best-effort: a missing
+    bear must not fail the build, so bear_missing_error is set for the caller to report once
+    the build itself has succeeded.
     """
     plain = ["bash", str(script_path.name)]
     if build_system not in _MAKE_LIKE_SYSTEMS:
@@ -190,18 +183,13 @@ def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-on
     """Capture compile_commands.json as a byproduct of the build that just succeeded.
 
     Returns (path, error) — exactly one is non-None. CMake re-configures with
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON (no rebuild needed, since CMake writes the file
-    during configure); Meson's Ninja backend already wrote the file unprompted; Make/
-    Autotools relies on the `bear --` wrap explore() already applied (or didn't, if
-    bear_missing_error is set) to the canonical build command above.
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, which needs no rebuild since CMake writes the file
+    during configure. Meson's Ninja backend already wrote it. Make/Autotools relies on the
+    `bear --` wrap explore() applied, or on bear_missing_error if it could not.
 
-    The CMake configure command below runs with cwd=workdir (runner(..., workdir, ...)),
-    so it must reference the source by a path relative to that cwd — not an absolute host
-    path — since Environment.OSS_FUZZ's runner bind-mounts workdir at /src inside the
-    container (not at its own host path), where an absolute host path wouldn't resolve to
-    anything. standard_layout=True means the source lives at workdir/src, referenceable
-    the same "src"-relative way; the non-standard-layout case keeps the absolute host path
-    since that's mounted separately, at its own path, regardless of workdir's mount target.
+    The CMake configure below runs with cwd=workdir, and the oss-fuzz runner bind-mounts
+    workdir at /src, so a standard-layout source must be referenced as cwd-relative "src".
+    A non-standard-layout source keeps its absolute host path, which is mounted separately.
     """
     build_dir = workdir / "build"
     build_arg = "build"
@@ -250,9 +238,8 @@ def _string_list(value: object) -> list[str]:
 def read_agent_report(workdir: Path) -> AgentReport | None:
     """Read and delete workdir/agent_report.json, tolerantly parsing its contents.
 
-    Returns None if the file is absent, isn't valid JSON, or isn't a JSON object.
-    Deletes the file whenever it existed, regardless of parse outcome, so a later,
-    unrelated invocation never picks up a stale report.
+    Returns None if the file is absent, is not valid JSON, or is not a JSON object. Deletes
+    the file whenever it existed, so a later invocation cannot pick up a stale report.
     """
     report_path = workdir / "agent_report.json"
     if not report_path.exists():
