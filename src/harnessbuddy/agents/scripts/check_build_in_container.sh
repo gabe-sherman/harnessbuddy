@@ -13,13 +13,15 @@
 # This decides only where the gate runs. The assertions live in check_build.sh alone.
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <workspace> <project_name>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 <workspace> <project_name> [--keep-artifacts]" >&2
   exit 1
 fi
 
 workspace=$1
 project_name=$2
+# Passed straight through to check_build.sh inside the container, which validates it.
+check_build_options=("${@:3}")
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tag="harnessbuddy-dev/${project_name}:latest"
 
@@ -53,7 +55,7 @@ fi
 
 status=0
 docker run --rm "${mounts[@]}" -w /src --entrypoint bash \
-  "$tag" /usr/local/bin/check_build.sh /src || status=$?
+  "$tag" /usr/local/bin/check_build.sh /src "${check_build_options[@]}" || status=$?
 
 # The container runs as root, so install/, build/, and out/ come back root-owned and the next
 # run cannot delete them. -h stops at the symlink above rather than following it into the

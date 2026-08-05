@@ -52,9 +52,12 @@ def _write_project(work_dir: Path, *, build_library: str, compile_harnesses: str
     write_executable(work_dir / "compile_harnesses.sh", compile_harnesses)
 
 
-def _run_gate(work_dir: Path) -> subprocess.CompletedProcess[str]:
+def _run_gate(work_dir: Path, *options: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(_CHECK_BUILD), str(work_dir)], capture_output=True, text=True, timeout=60
+        ["bash", str(_CHECK_BUILD), str(work_dir), *options],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -120,6 +123,63 @@ def test_check_build_rebuilds_from_nothing(tmp_path: Path) -> None:
     result = _run_gate(tmp_path)
     assert result.returncode == 0, result.stderr
     assert "skipped a real build" not in result.stderr
+
+
+_GUARDED_BUILD_LIBRARY_SH = (
+    "#!/bin/bash\nset -euo pipefail\n"
+    'if [ -e install/lib/libfoo.a ]; then echo "skipped a real build" >&2; exit 0; fi\n'
+    "mkdir -p install/lib install/include\n"
+    "touch install/lib/libfoo.a install/include/foo.h\n"
+)
+
+
+def test_keep_artifacts_leaves_the_library_build_to_its_own_guard(tmp_path: Path) -> None:
+    """The deterministic lane already built from nothing, so repeating it here would only pay
+    for the same result twice."""
+    _write_project(
+        tmp_path,
+        build_library=_GUARDED_BUILD_LIBRARY_SH,
+        compile_harnesses=_GOOD_COMPILE_HARNESSES_SH,
+    )
+    (tmp_path / "install" / "lib").mkdir(parents=True)
+    (tmp_path / "install" / "include").mkdir(parents=True)
+    (tmp_path / "install" / "lib" / "libfoo.a").write_text("from the cold build")
+    (tmp_path / "install" / "include" / "foo.h").touch()
+
+    result = _run_gate(tmp_path, "--keep-artifacts")
+
+    assert result.returncode == 0, result.stderr
+    assert "skipped a real build" in result.stderr
+    assert (tmp_path / "install" / "lib" / "libfoo.a").read_text() == "from the cold build"
+
+
+def test_keep_artifacts_still_proves_this_run_produced_a_harness(tmp_path: Path) -> None:
+    """$OUT is emptied even when the library is kept, so the harness assertion cannot pass on a
+    binary left behind by an earlier invocation."""
+    _write_project(
+        tmp_path,
+        build_library=_GUARDED_BUILD_LIBRARY_SH,
+        compile_harnesses='#!/bin/bash\nset -euo pipefail\nmkdir -p "$OUT"\nexit 0\n',
+    )
+    (tmp_path / "install" / "lib").mkdir(parents=True)
+    (tmp_path / "install" / "include").mkdir(parents=True)
+    (tmp_path / "install" / "lib" / "libfoo.a").touch()
+    (tmp_path / "install" / "include" / "foo.h").touch()
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "stale_harness").touch()
+
+    result = _run_gate(tmp_path, "--keep-artifacts")
+
+    assert result.returncode != 0
+    assert "no harness binary was produced" in result.stderr
+
+
+def test_check_build_rejects_an_unknown_option(tmp_path: Path) -> None:
+    """A typo must fail loudly rather than silently reverting to a full wipe."""
+    result = _run_gate(tmp_path, "--keep-artifact")
+
+    assert result.returncode != 0
+    assert "Unknown option" in result.stderr
 
 
 def test_check_build_fails_when_no_static_library_is_produced(tmp_path: Path) -> None:

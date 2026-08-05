@@ -29,26 +29,32 @@ class VerificationResult(MergedOutput):
 
 
 def verification_command(
-    workspace: Path, *, environment: Environment, project_name: str
+    workspace: Path, *, environment: Environment, project_name: str, keep_artifacts: bool = False
 ) -> list[str]:
     """The gate invocation for workspace, without running it.
 
     Shared by run_verification and by callers that already know the answer — a probe that
     failed — and only need a command to report as "reproduce with".
 
+    keep_artifacts drops the gate's deletion of install/ and build/, so the library build is
+    skipped rather than repeated. Only for a caller that already built the library from
+    nothing; see the comment on that deletion in check_build.sh.
+
     The path is resolved because every gate script cds to the workspace it is handed while
     _run also sets cwd to it, so a relative path would be applied twice. It also makes the
     reported command runnable from any directory.
     """
     workspace = workspace.resolve()
+    options = ["--keep-artifacts"] if keep_artifacts else []
     if environment is Environment.OSS_FUZZ:
         return [
             "bash",
             str(agent_script("check_build_in_container.sh")),
             str(workspace),
             project_name,
+            *options,
         ]
-    return ["bash", str(agent_script("check_build.sh")), str(workspace)]
+    return ["bash", str(agent_script("check_build.sh")), str(workspace), *options]
 
 
 def run_verification(
@@ -56,10 +62,16 @@ def run_verification(
     *,
     environment: Environment,
     project_name: str,
+    keep_artifacts: bool = False,
     timeout: int = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> VerificationResult:
     """Run the gate for workspace in the given environment."""
-    command = verification_command(workspace, environment=environment, project_name=project_name)
+    command = verification_command(
+        workspace,
+        environment=environment,
+        project_name=project_name,
+        keep_artifacts=keep_artifacts,
+    )
     return _run(command, cwd=workspace.resolve(), timeout=timeout)
 
 

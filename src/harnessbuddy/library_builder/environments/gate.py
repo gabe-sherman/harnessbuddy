@@ -20,21 +20,34 @@ from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.models import HarnessExplorationResult
 
 
-def apply_to_harness_result(
+def apply_to_harness_result(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meaningful
     harness_result: HarnessExplorationResult,
     workdir: Path,
     *,
     environment: Environment,
     project_name: str,
+    library_llm_used: bool = False,
+    bypass_scratch_validation: bool = False,
 ) -> HarnessExplorationResult:
     """Gate a harness probe's outcome with agents/scripts/check_build.sh.
 
     Skipped when the probe already failed or had nothing to link against: the gate would only
     reconfirm the same failure at the cost of a full rebuild. Its command is still reported, so
     the diagnostic says how to reproduce it.
+
+    The gate rebuilds the library from nothing only when something changed since the last
+    cold build, which is exactly when a repair agent produced this one. On the deterministic
+    lane explore() already deleted build/ and install/ before building, so a rebuild here
+    would repeat that build to reach the same state -- the run's single largest avoidable
+    cost. bypass_scratch_validation drops the rebuild on the agent lane too, trading the
+    from-scratch guarantee for speed at the caller's explicit request.
     """
+    keep_artifacts = bypass_scratch_validation or not library_llm_used
     command = verification.verification_command(
-        workdir, environment=environment, project_name=project_name
+        workdir,
+        environment=environment,
+        project_name=project_name,
+        keep_artifacts=keep_artifacts,
     )
     if not harness_result.static_libs or not harness_result.succeeded:
         return dataclasses.replace(harness_result, command=command)
@@ -43,7 +56,10 @@ def apply_to_harness_result(
     # compiler environment may be in effect: each generated script bakes in its own.
     with neutral_compiler_environment(), compile_commands_capture_environment():
         result = verification.run_verification(
-            workdir, environment=environment, project_name=project_name
+            workdir,
+            environment=environment,
+            project_name=project_name,
+            keep_artifacts=keep_artifacts,
         )
     _localize_compile_commands(workdir, environment=environment)
     return dataclasses.replace(

@@ -52,6 +52,7 @@ class GenerationInputs:
     system_packages: list[str]
     environment: Environment
     agent_backend: str | None
+    scratch_validation_bypassed: bool = False
 
 
 def generate(workspace_dir: Path, output_path: Path, inputs: GenerationInputs) -> GenerationResult:
@@ -268,6 +269,13 @@ def write_readme(output_path: Path, inputs: GenerationInputs, *, build_tree: Pat
         )
     )
     harness_stub = f"{HARNESS_SOURCE_DIR}/default_fuzzer.*"
+    scratch_note = (
+        "\n- **Not proven from scratch.** This run used `--bypass-scratch-validation`, so the "
+        "library was never rebuilt into an empty tree to confirm the result. The artifacts "
+        "here are the ones the run produced, not ones shown to reproduce."
+        if inputs.scratch_validation_bypassed
+        else ""
+    )
     text = f"""# {analysis.project_name} — fuzzing build
 
 Prepared by HarnessBuddy. This directory is both an OSS-Fuzz project and a standalone
@@ -279,7 +287,7 @@ host build tree.
 - Build system: {analysis.build_system.value}
 - Repository: {analysis.clone_url} (ref: {analysis.repo_ref or "default branch"})
 - Repair agent: {inputs.agent_backend or "none"}
-- Verified with: `{" ".join(inputs.harness.command or inputs.build.command) or "n/a"}`
+- Verified with: `{" ".join(inputs.harness.command or inputs.build.command) or "n/a"}`{scratch_note}
 
 ## Run it on the host
 

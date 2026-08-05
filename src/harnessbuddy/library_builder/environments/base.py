@@ -77,6 +77,7 @@ class EnvironmentExecutor(Protocol):
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
         parameters: BuildParameters | None = None,
+        library_llm_used: bool = False,
     ) -> HarnessExplorationResult: ...
 
     def check_availability(self) -> None:

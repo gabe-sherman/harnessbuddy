@@ -157,7 +157,8 @@ def _build_body(  # noqa: PLR0913 -- one branch per build system; each needs eve
             '  -DCMAKE_C_FLAGS="$CFLAGS" \\\n'
             '  -DCMAKE_CXX_FLAGS="$CXXFLAGS" \\\n'
             f"  -DCMAKE_INSTALL_PREFIX={install_dir} \\\n"
-            f"  -DBUILD_SHARED_LIBS=OFF{extra}\n"
+            "  -DBUILD_SHARED_LIBS=OFF \\\n"
+            f"  -DBUILD_TESTING=OFF{extra}\n"
             f'cmake --build {build_dir} -- -j"$JOBS"\n'
             f"cmake --install {build_dir}\n"
         )

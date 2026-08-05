@@ -21,16 +21,20 @@ class LocalExecutor:
     """Runs each pipeline stage as a host subprocess.
 
     Each stage's pass/fail comes from its own probe. The shared gate (check_build.sh, the same
-    script a repair agent is told to run) runs once, after the harness probe succeeds: it
-    rebuilds the library from nothing and asserts the artifacts, so the published install/ and
-    out/ come from a verified from-scratch build rather than the probe's incremental one.
+    script a repair agent is told to run) runs once, after the harness probe succeeds: it runs
+    build.sh and asserts the artifacts, so the published install/ and out/ come from a build
+    the gate itself accepted. Whether it first deletes install/ and build/ depends on the lane
+    -- see gate.apply_to_harness_result.
     """
 
-    def __init__(self, *, base_image: str | None = None) -> None:
+    def __init__(
+        self, *, base_image: str | None = None, bypass_scratch_validation: bool = False
+    ) -> None:
         self._project_name: str | None = None
         # A local run never builds the generated Dockerfile, but the output ships it, so the
         # choice still has to be honoured here.
         self._base_image = base_image
+        self._bypass_scratch_validation = bypass_scratch_validation
 
     def check_availability(self) -> None:
         """The host is always available; nothing to check."""
@@ -44,7 +48,10 @@ class LocalExecutor:
         parameters: BuildParameters | None = None,
     ) -> BuildExplorationResult:
         from harnessbuddy.library_builder import workspace
-        from harnessbuddy.library_builder.build_parameters import BuildParameters
+        from harnessbuddy.library_builder.build_parameters import (
+            BuildParameters,
+            compile_commands_capture_environment,
+        )
         from harnessbuddy.library_builder.environments import verification
         from harnessbuddy.library_builder.exploration import explore
 
@@ -55,7 +62,9 @@ class LocalExecutor:
         # harness scaffold to exist whether or not a build was ever attempted.
         workspace.materialize(workdir, analysis, parameters=parameters, base_image=self._base_image)
 
-        with parameters.library_environment():
+        # Capture here and not only in the gate: CMake writes compile_commands.json during
+        # configure, and the gate skips the library build whenever this build already ran cold.
+        with parameters.library_environment(), compile_commands_capture_environment():
             result = explore(
                 analysis,
                 workdir,
@@ -83,6 +92,7 @@ class LocalExecutor:
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
         parameters: BuildParameters | None = None,
+        library_llm_used: bool = False,
     ) -> HarnessExplorationResult:
         from harnessbuddy.library_builder.build_parameters import BuildParameters
         from harnessbuddy.library_builder.environments import gate
@@ -104,4 +114,6 @@ class LocalExecutor:
             workdir,
             environment=Environment.LOCAL,
             project_name=self._project_name or workdir.name,
+            library_llm_used=library_llm_used,
+            bypass_scratch_validation=self._bypass_scratch_validation,
         )

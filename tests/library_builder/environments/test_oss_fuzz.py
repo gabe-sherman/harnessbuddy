@@ -841,7 +841,9 @@ def test_library_build_forwards_the_chosen_compiler_settings(tmp_path: Path) -> 
 
 def test_library_build_forwards_nothing_the_caller_did_not_choose(tmp_path: Path) -> None:
     """Forwarding an empty CFLAGS would replace the base image's sanitizer configuration with
-    nothing, which is worse than not forwarding at all."""
+    nothing, which is worse than not forwarding at all. The compile-commands capture is not a
+    compiler setting and is always forwarded, since `docker run` forwards no host environment.
+    """
     workdir = tmp_path / "work"
     (workdir / "src").mkdir(parents=True)
     with (
@@ -860,7 +862,9 @@ def test_library_build_forwards_nothing_the_caller_did_not_choose(tmp_path: Path
     ):
         OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
 
-    assert _docker_environment(mock_streaming.call_args[0][0]) == {}
+    assert _docker_environment(mock_streaming.call_args[0][0]) == {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+    }
 
 
 def test_harness_compile_does_not_replace_the_images_sanitizer_flags(tmp_path: Path) -> None:

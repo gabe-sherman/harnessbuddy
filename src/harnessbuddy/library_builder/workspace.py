@@ -220,8 +220,10 @@ def find_compile_commands(workdir: Path) -> Path | None:
     what lost it: the repair agents return a fresh result and had no field for it, so an
     agent-fixed build published none even though the gate had just written one.
 
-    check_build.sh wipes `install` and `build` and rebuilds from nothing on every lane, so
-    whichever of these exists describes the build that actually passed. `build/` comes first:
+    Whichever of these exists describes the build that actually passed. On the agent lane the
+    gate wipes `install` and `build` and rebuilds from nothing, so the capture is the gate's;
+    on the deterministic lane the gate skips the library build and the capture is the cold
+    build explore() ran, which is the same build the gate then accepted. `build/` comes first:
     when `bear` is installed both exist for a CMake project, and CMake's own export does not
     carry the compiler-probe entries (`CompilerIdC`, `TryCompile`) that bear observes.
     """

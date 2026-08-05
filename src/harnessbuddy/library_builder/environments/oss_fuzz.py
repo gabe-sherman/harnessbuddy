@@ -139,16 +139,25 @@ def _chosen_settings(values: dict[str, str], *, unchosen: dict[str, str]) -> dic
 
 
 def _container_build_environment(parameters: BuildParameters) -> dict[str, str]:
-    """The library-build compiler settings to forward into the container."""
-    return _chosen_settings(
-        {
-            "CC": parameters.cc,
-            "CXX": parameters.cxx,
-            "CFLAGS": parameters.library_cflags,
-            "CXXFLAGS": parameters.library_cxxflags,
-        },
-        unchosen=_UNCHOSEN_COMPILER_SETTINGS,
-    )
+    """The library-build settings to forward into the container.
+
+    CMAKE_EXPORT_COMPILE_COMMANDS is named here rather than left to the host process, because
+    `docker run` forwards nothing: compile_commands_capture_environment() sets it on the host
+    and CMake inside the container never sees it. Unconditional, unlike the compiler settings
+    -- it is capture configuration, not a build choice a user can make.
+    """
+    return {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        **_chosen_settings(
+            {
+                "CC": parameters.cc,
+                "CXX": parameters.cxx,
+                "CFLAGS": parameters.library_cflags,
+                "CXXFLAGS": parameters.library_cxxflags,
+            },
+            unchosen=_UNCHOSEN_COMPILER_SETTINGS,
+        ),
+    }
 
 
 def _container_harness_environment(parameters: BuildParameters) -> dict[str, str]:
@@ -290,10 +299,13 @@ class OssFuzzExecutor:
     gate can pass while the Dockerfile's own clone or apt layers are broken.
     """
 
-    def __init__(self, *, base_image: str | None = None) -> None:
+    def __init__(
+        self, *, base_image: str | None = None, bypass_scratch_validation: bool = False
+    ) -> None:
         self._image_tag: str | None = None
         self._project_name: str | None = None
         self._base_image = base_image
+        self._bypass_scratch_validation = bypass_scratch_validation
 
     def check_availability(self) -> None:
         result = run_command(["docker", "info"], Path.cwd(), _AVAILABILITY_TIMEOUT_SECONDS)
@@ -383,6 +395,7 @@ class OssFuzzExecutor:
         extra_include_paths: list[str] | None = None,
         extra_library_paths: list[str] | None = None,
         parameters: BuildParameters | None = None,
+        library_llm_used: bool = False,
     ) -> HarnessExplorationResult:
         from harnessbuddy.library_builder.build_parameters import BuildParameters
         from harnessbuddy.library_builder.environments import gate
@@ -412,6 +425,8 @@ class OssFuzzExecutor:
             workdir,
             environment=Environment.OSS_FUZZ,
             project_name=self._project_name,
+            library_llm_used=library_llm_used,
+            bypass_scratch_validation=self._bypass_scratch_validation,
         )
         if gated.llm_used is False and _is_environment_unavailable(gated.output):
             raise EnvironmentUnavailableError(

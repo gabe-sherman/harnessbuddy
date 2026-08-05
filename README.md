@@ -106,7 +106,10 @@ uv run harnessbuddy generate <REPO_URL> --environment oss-fuzz
 uv run harnessbuddy generate <REPO_URL> --no-agents
 
 # Pass build-system configure options (repeat for more than one)
-uv run harnessbuddy generate <REPO_URL> --library-configure-arg=-DBUILD_TESTING=OFF
+uv run harnessbuddy generate <REPO_URL> --library-configure-arg=-DCARES_STATIC=ON
+
+# Skip the from-scratch rebuild that validates an agent's repair, for a faster run
+uv run harnessbuddy generate <REPO_URL> --bypass-scratch-validation
 
 # Use distinct library and final-harness instrumentation defaults
 uv run harnessbuddy generate <REPO_URL> --environment local \
@@ -119,6 +122,12 @@ uv run harnessbuddy generate <REPO_URL> --environment local \
 
 Agent repair is on by default and calls a paid network service. `--agent claude` (the
 default) or `--agent codex` selects the backend; `--no-agents` turns it off.
+
+A run normally proves its result by rebuilding the library into an empty tree once. It only
+needs to do that when a repair agent changed the build, since the deterministic build already
+starts from nothing. `--bypass-scratch-validation` drops that rebuild on the agent lane too,
+and on `--environment oss-fuzz` also skips the unmounted Dockerfile build. The result is
+faster but unproven, so `stats.json` and the generated `README.md` both record that it ran.
 
 See `uv run harnessbuddy generate --help` for the full set of options (custom output
 location, pinning a branch/tag/commit, a different base image, etc).

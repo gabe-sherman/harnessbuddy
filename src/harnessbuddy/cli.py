@@ -121,6 +121,15 @@ def _configure_generate_parser(p: argparse.ArgumentParser) -> None:
         help="Disable agent repair; a failed build then simply fails the run.",
     )
     p.add_argument(
+        "--bypass-scratch-validation",
+        action="store_true",
+        help=(
+            "Turn off default behavior that builds the library in a fresh "
+            "environment to confirm that all agent-provided changes are reproducible "
+            "and OSS-Fuzz builds work from scratch."
+        ),
+    )
+    p.add_argument(
         "--quiet",
         action="store_true",
         help=(
@@ -308,6 +317,7 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
                 extra_include_paths=library_result.extra_include_paths,
                 extra_library_paths=library_result.extra_library_paths,
                 parameters=parameters,
+                library_llm_used=library_result.llm_used,
             )
         reporter.succeed() if result.succeeded else reporter.fail()
 
@@ -635,6 +645,8 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
     status: RunStatus,
     environment: Environment,
     parameters: BuildParameters,
+    *,
+    bypass_scratch_validation: bool = False,
 ) -> None:
     """Build and persist stats.json for this run, successful or not.
 
@@ -668,6 +680,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
             compile_commands_path=str(compile_commands) if compile_commands else None,
             verification_command=_command_str(command),
             build_parameters=parameters.to_dict(),
+            scratch_validation_bypassed=bypass_scratch_validation,
         ),
     )
 
@@ -682,6 +695,8 @@ def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a d
     harness_result: HarnessExplorationResult,
     environment: Environment,
     parameters: BuildParameters,
+    *,
+    bypass_scratch_validation: bool = False,
 ) -> int:
     """Record the run's outcome and report it, returning the exit code to hand back.
 
@@ -700,6 +715,7 @@ def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a d
         status,
         environment,
         parameters,
+        bypass_scratch_validation=bypass_scratch_validation,
     )
     if rc == 0:
         shutil.copy2(stats_path, output_path / "stats.json")
@@ -707,14 +723,18 @@ def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a d
     return rc
 
 
-def _select_executor(environment: Environment, base_image: str | None) -> EnvironmentExecutor:
+def _select_executor(
+    environment: Environment, base_image: str | None, *, bypass_scratch_validation: bool = False
+) -> EnvironmentExecutor:
     from harnessbuddy.library_builder.environments.base import Environment
     from harnessbuddy.library_builder.environments.local import LocalExecutor
     from harnessbuddy.library_builder.environments.oss_fuzz import OssFuzzExecutor
 
     if environment is Environment.OSS_FUZZ:
-        return OssFuzzExecutor(base_image=base_image)
-    return LocalExecutor(base_image=base_image)
+        return OssFuzzExecutor(
+            base_image=base_image, bypass_scratch_validation=bypass_scratch_validation
+        )
+    return LocalExecutor(base_image=base_image, bypass_scratch_validation=bypass_scratch_validation)
 
 
 def _check_environment_availability(
@@ -846,7 +866,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     start_time = time.monotonic()
     state_dir = default_state_dir()
     environment = Environment(args.environment)
-    executor = _select_executor(environment, args.base_image)
+    bypass_scratch_validation = args.bypass_scratch_validation
+    executor = _select_executor(
+        environment, args.base_image, bypass_scratch_validation=bypass_scratch_validation
+    )
     quiet = args.quiet
     debug = args.log_level == "debug"
     parameters = BuildParameters.from_args(args)
@@ -938,6 +961,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             RunStatus.FAILED_LIBRARY_BUILD,
             environment,
             parameters,
+            bypass_scratch_validation=bypass_scratch_validation,
         )
         _print_run_summary(RunStatus.FAILED_LIBRARY_BUILD)
         return 1
@@ -968,13 +992,16 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             RunStatus.FAILED_HARNESS_BUILD,
             environment,
             parameters,
+            bypass_scratch_validation=bypass_scratch_validation,
         )
         _print_run_summary(RunStatus.FAILED_HARNESS_BUILD)
         return 1
     _report_compile_commands(workspace, analysis.build_system)
 
-    if environment is Environment.OSS_FUZZ and not _verify_shipped_dockerfile(
-        workspace, analysis.project_name, quiet=quiet
+    if (
+        environment is Environment.OSS_FUZZ
+        and not bypass_scratch_validation
+        and not _verify_shipped_dockerfile(workspace, analysis.project_name, quiet=quiet)
     ):
         print(
             "The generated Dockerfile did not build and compile from scratch, so the "
@@ -990,6 +1017,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             RunStatus.FAILED_DOCKERFILE_VERIFICATION,
             environment,
             parameters,
+            bypass_scratch_validation=bypass_scratch_validation,
         )
         _print_run_summary(RunStatus.FAILED_DOCKERFILE_VERIFICATION)
         return 1
@@ -1008,6 +1036,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
                     agent_backend=(
                         agent if (build_result.llm_used or harness_result.llm_used) else None
                     ),
+                    scratch_validation_bypassed=bypass_scratch_validation,
                 ),
             )
         reporter.succeed() if rc == 0 else reporter.fail()
@@ -1022,6 +1051,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         harness_result,
         environment,
         parameters,
+        bypass_scratch_validation=bypass_scratch_validation,
     )
 
 

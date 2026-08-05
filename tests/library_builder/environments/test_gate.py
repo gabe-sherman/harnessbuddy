@@ -1,8 +1,9 @@
 """The shared build gate: what it runs the build with, and what it does with the capture.
 
-The gate is the one step that runs a full from-scratch build on every lane -- deterministic or
-agent-repaired -- so it is where compile_commands.json is asked for and where a container-built
-one is translated back to host paths.
+The gate is the last step on every lane -- deterministic or agent-repaired -- so it is where
+compile_commands.json is asked for and where a container-built one is translated back to host
+paths. Whether it first rebuilds the library from nothing depends on the lane; that decision is
+covered here too.
 """
 
 from __future__ import annotations
@@ -34,7 +35,14 @@ def _probe_succeeded(workdir: Path) -> HarnessExplorationResult:
     )
 
 
-def _run_gate(workdir: Path, *, environment: Environment, side_effect=None):  # type: ignore[no-untyped-def]
+def _run_gate(  # type: ignore[no-untyped-def]
+    workdir: Path,
+    *,
+    environment: Environment,
+    side_effect=None,
+    library_llm_used: bool = False,
+    bypass_scratch_validation: bool = False,
+):
     with patch(
         "harnessbuddy.library_builder.environments.verification.run_command_streaming",
         side_effect=side_effect,
@@ -45,6 +53,8 @@ def _run_gate(workdir: Path, *, environment: Environment, side_effect=None):  # 
             workdir,
             environment=environment,
             project_name="mylib",
+            library_llm_used=library_llm_used,
+            bypass_scratch_validation=bypass_scratch_validation,
         )
 
 
@@ -144,3 +154,62 @@ def test_gate_skipped_for_a_failed_probe_does_not_touch_a_capture(tmp_path: Path
 
     mock_run.assert_not_called()
     assert captured.read_text() == before
+
+
+def test_deterministic_lane_does_not_pay_for_a_second_cold_build(tmp_path: Path) -> None:
+    """explore() already deleted build/ and install/ before building, so a wipe here would
+    repeat that build to reach the same state -- the run's largest avoidable cost."""
+    result = _run_gate(tmp_path, environment=Environment.LOCAL, library_llm_used=False)
+
+    assert "--keep-artifacts" in result.command
+
+
+def test_agent_lane_still_rebuilds_from_nothing(tmp_path: Path) -> None:
+    """An agent changed the build since the last cold build, so its fix has to survive one."""
+    result = _run_gate(tmp_path, environment=Environment.LOCAL, library_llm_used=True)
+
+    assert "--keep-artifacts" not in result.command
+
+
+def test_bypass_drops_the_rebuild_on_the_agent_lane_too(tmp_path: Path) -> None:
+    result = _run_gate(
+        tmp_path,
+        environment=Environment.LOCAL,
+        library_llm_used=True,
+        bypass_scratch_validation=True,
+    )
+
+    assert "--keep-artifacts" in result.command
+
+
+def test_the_container_gate_carries_the_decision_too(tmp_path: Path) -> None:
+    """The flag has to reach check_build.sh inside the container, not stop at the wrapper."""
+    kept = _run_gate(tmp_path, environment=Environment.OSS_FUZZ, library_llm_used=False)
+    wiped = _run_gate(tmp_path, environment=Environment.OSS_FUZZ, library_llm_used=True)
+
+    assert kept.command[-1] == "--keep-artifacts"
+    assert "--keep-artifacts" not in wiped.command
+
+
+def test_a_reported_command_for_a_failed_probe_matches_the_lane(tmp_path: Path) -> None:
+    """The gate is skipped, but the command it reports is what a reader will run to reproduce,
+    so it must describe the same build the lane would have gated."""
+    failed = HarnessExplorationResult(
+        succeeded=False,
+        command=[],
+        static_libs=[Path("libmylib.a")],
+        include_dir=tmp_path / "install" / "include",
+        transitive_link_flags=[],
+        stdout="",
+        stderr="undefined reference",
+        exit_code=1,
+    )
+    result = gate.apply_to_harness_result(
+        failed,
+        tmp_path,
+        environment=Environment.LOCAL,
+        project_name="mylib",
+        library_llm_used=False,
+    )
+
+    assert "--keep-artifacts" in result.command

@@ -76,6 +76,8 @@ class RunStats:
     # The literal command the gate was invoked with, so a person can reproduce the result.
     verification_command: str | None = None
     build_parameters: dict[str, str | list[str]] | None = None
+    # True when --bypass-scratch-validation ran: no from-scratch rebuild proved this result.
+    scratch_validation_bypassed: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -87,6 +89,7 @@ class RunStats:
             "compile_commands_path": self.compile_commands_path,
             "verification_command": self.verification_command,
             "build_parameters": self.build_parameters,
+            "scratch_validation_bypassed": self.scratch_validation_bypassed,
         }
 
 

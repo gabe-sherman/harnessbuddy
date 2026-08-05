@@ -153,6 +153,7 @@ def test_write_run_stats_clean_success(tmp_path: Path) -> None:
         "compile_commands_path": None,
         "verification_command": None,
         "build_parameters": None,
+        "scratch_validation_bypassed": False,
     }
 
 
@@ -192,6 +193,7 @@ def test_write_run_stats_library_agent_repaired(tmp_path: Path) -> None:
         "compile_commands_path": None,
         "verification_command": None,
         "build_parameters": None,
+        "scratch_validation_bypassed": False,
     }
 
 
@@ -222,6 +224,7 @@ def test_write_run_stats_harness_agent_ran_but_reported_nothing(tmp_path: Path) 
         "compile_commands_path": None,
         "verification_command": None,
         "build_parameters": None,
+        "scratch_validation_bypassed": False,
     }
 
 

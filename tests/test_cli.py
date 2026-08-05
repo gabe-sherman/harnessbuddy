@@ -2463,3 +2463,168 @@ def test_a_configure_arg_is_not_folded_into_the_compiler_flags() -> None:
 
     assert "-DCARES_STATIC=ON" not in parameters.library_cflags
     assert "-DCARES_STATIC=ON" not in parameters.library_cxxflags
+
+
+# --bypass-scratch-validation
+
+
+def test_bypass_scratch_validation_defaults_off() -> None:
+    args = build_parser().parse_args(["generate", _REPO])
+    assert args.bypass_scratch_validation is False
+
+
+def test_a_clean_run_records_that_it_was_proven_from_scratch(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+        )
+
+    assert rc == 0
+    stats = json.loads((output_dir / "mylib" / "stats.json").read_text())
+    assert stats["scratch_validation_bypassed"] is False
+    assert "Not proven from scratch" not in (output_dir / "mylib" / "README.md").read_text()
+
+
+def test_bypassing_says_so_in_the_stats_and_the_readme(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    """The output must not imply a guarantee this run chose to skip."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    with patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()):
+        rc = main(
+            [
+                "generate",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--no-agents",
+                "--bypass-scratch-validation",
+            ]
+        )
+
+    assert rc == 0
+    stats = json.loads((output_dir / "mylib" / "stats.json").read_text())
+    assert stats["scratch_validation_bypassed"] is True
+    assert "Not proven from scratch" in (output_dir / "mylib" / "README.md").read_text()
+
+
+def test_bypassing_skips_the_from_scratch_dockerfile_check(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    """The unmounted Docker build is the most expensive from-scratch proof of all, so leaving it
+    on would make the flag pointless on the lane that needs it most."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch(
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
+            return_value=[],
+        ),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+        patch(
+            "harnessbuddy.library_builder.environments.verification"
+            ".run_from_scratch_docker_verification"
+        ) as mock_dockerfile_check,
+    ):
+        rc = main(
+            [
+                "generate",
+                "--no-agents",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+                "--bypass-scratch-validation",
+            ]
+        )
+
+    assert rc == 0
+    mock_dockerfile_check.assert_not_called()
+
+
+def test_the_dockerfile_check_still_runs_without_the_flag(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
+    with (
+        run_command_patch,
+        run_streaming_patch,
+        patch(
+            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
+            return_value=[],
+        ),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+        patch(
+            "harnessbuddy.library_builder.environments.verification"
+            ".run_from_scratch_docker_verification"
+        ) as mock_dockerfile_check,
+    ):
+        mock_dockerfile_check.return_value.passed = True
+        rc = main(
+            [
+                "generate",
+                "--no-agents",
+                str(local_repo_with_origin),
+                "--output",
+                str(output_dir),
+                "--environment",
+                "oss-fuzz",
+            ]
+        )
+
+    assert rc == 0
+    mock_dockerfile_check.assert_called_once()
+
+
+@pytest.mark.parametrize("llm_used", [False, True])
+def test_build_harness_tells_the_executor_which_lane_produced_the_library(
+    tmp_path: Path, llm_used: bool
+) -> None:
+    """The gate's rebuild decision hangs on this one value, and nothing downstream can recover
+    it: the harness result an agent returns carries its own llm_used, not the library's."""
+    from harnessbuddy.cli import build_harness
+    from harnessbuddy.library_builder.models import AnalysisResult, Language
+
+    analysis = AnalysisResult(
+        project_name="mylib",
+        source_path=tmp_path / "src",
+        build_system=BuildSystem.CMAKE,
+        language=Language.C,
+        clone_url=_REPO,
+        repo_ref=None,
+    )
+
+    library_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        llm_used=llm_used,
+    )
+    executor = MagicMock()
+    executor.run_harness_compile.return_value = _succeeded_harness_result()
+
+    build_harness(
+        analysis,
+        tmp_path / "install",
+        tmp_path,
+        library_result,
+        executor,
+        agent=None,
+    )
+
+    assert executor.run_harness_compile.call_args.kwargs["library_llm_used"] is llm_used
