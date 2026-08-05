@@ -34,6 +34,10 @@ _COPIED_FILES = ("project.yaml",)
 _DOCKERIGNORE = ("install/\n", "compile_commands.json\n", "stats.json\n", "logs/\n", "out/\n")
 
 
+class MissingInstallTreeError(Exception):
+    """Generation was asked to publish a build whose install tree it cannot find."""
+
+
 @dataclass(frozen=True)
 class GenerationInputs:
     """Everything generation needs beyond the workspace itself.
@@ -116,11 +120,20 @@ def _copy_install_tree(build: BuildExplorationResult, output_path: Path) -> None
     """Publish the built library — the artifact a user links their first harness against.
 
     Shipped for every environment: compile_harness.sh links against install/, so an output
-    directory without it hands the user a script that cannot run.
+    directory without it hands the user a script that cannot run. Raises rather than skipping,
+    because generation only runs after a verified build: a missing tree here means the result
+    lost track of one that exists, and skipping it published an unusable project as a success.
     """
     install_dir = build.install_dir
-    if install_dir is None or not install_dir.is_dir():
-        return
+    if install_dir is None:
+        msg = (
+            "the verified build result records no install tree, so the generated project has "
+            "no library for compile_harness.sh to link against"
+        )
+        raise MissingInstallTreeError(msg)
+    if not install_dir.is_dir():
+        msg = f"the verified build's install tree is missing at {install_dir}"
+        raise MissingInstallTreeError(msg)
     shutil.copytree(install_dir, output_path / "install", symlinks=True)
 
 

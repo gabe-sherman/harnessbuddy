@@ -14,6 +14,7 @@ class RunStatus(Enum):
     FAILED_LIBRARY_BUILD = "failed_library_build"
     FAILED_HARNESS_BUILD = "failed_harness_build"
     FAILED_DOCKERFILE_VERIFICATION = "failed_dockerfile_verification"
+    FAILED_OUTPUT_GENERATION = "failed_output_generation"
 
 
 @dataclass

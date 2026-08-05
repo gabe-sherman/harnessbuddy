@@ -257,6 +257,10 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         exit_code=result.exit_code,
         duration_seconds=result.duration_seconds,
         llm_used=True,
+        # Recorded on the agent lane too, not just the deterministic one: generation publishes
+        # this tree, and dropping it here shipped an output whose compile_harness.sh had no
+        # install/ to link against.
+        install_dir=(workdir / "install") if succeeded else None,
         script_path=(workdir / "build_library.sh") if succeeded else None,
         agent_stop_reason=stop_reason,
         validation_errors=validation_errors,

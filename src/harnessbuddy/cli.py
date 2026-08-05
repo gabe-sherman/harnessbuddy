@@ -592,13 +592,20 @@ def _verify_shipped_dockerfile(workspace: Path, project_name: str, *, quiet: boo
 
 def _generate_outputs(workspace: Path, output_path: Path, inputs: GenerationInputs) -> int:
     """Write the output directory, reporting what landed where."""
-    from harnessbuddy.library_builder.generation import generate
+    from harnessbuddy.library_builder.generation import MissingInstallTreeError, generate
 
     if output_path.exists():
         # Deferred until now, not done when the path was confirmed, so a run that fails
         # partway leaves the previous output in place.
         shutil.rmtree(output_path)
-    result = generate(workspace, output_path, inputs)
+    try:
+        result = generate(workspace, output_path, inputs)
+    except MissingInstallTreeError as exc:
+        # The half-written directory goes: publishing is all-or-nothing, and a partial one
+        # reads as a usable project to anything that only checks that it exists.
+        shutil.rmtree(output_path, ignore_errors=True)
+        print(f"Output generation failed: {exc}", file=sys.stderr)
+        return 1
 
     print(f"Environment:  {inputs.environment.value}")
     print(f"Output:       {result.output_path}")
@@ -656,6 +663,33 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
             build_parameters=parameters.to_dict(),
         ),
     )
+
+
+def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a distinct record field
+    rc: int,
+    stats_path: Path,
+    output_path: Path,
+    start_time: float,
+    build_result: BuildExplorationResult,
+    harness_result: HarnessExplorationResult,
+    environment: Environment,
+    parameters: BuildParameters,
+) -> int:
+    """Record the run's outcome and report it, returning the exit code to hand back.
+
+    The output copy of stats.json is only made when generation succeeded: a failed one removes
+    the directory it was writing, so there is nothing left to put it in.
+    """
+    from harnessbuddy.library_builder.stats import RunStatus
+
+    status = RunStatus.SUCCESS if rc == 0 else RunStatus.FAILED_OUTPUT_GENERATION
+    _write_run_stats(
+        stats_path, start_time, build_result, harness_result, status, environment, parameters
+    )
+    if rc == 0:
+        shutil.copy2(stats_path, output_path / "stats.json")
+    _print_run_summary(status)
+    return rc
 
 
 def _select_executor(environment: Environment, base_image: str | None) -> EnvironmentExecutor:
@@ -741,6 +775,7 @@ def _print_run_summary(status: RunStatus) -> None:
         RunStatus.FAILED_DOCKERFILE_VERIFICATION: (
             "the generated Dockerfile did not build from scratch"
         ),
+        RunStatus.FAILED_OUTPUT_GENERATION: "the output directory could not be published",
     }[status]
     print(f"Overall: FAILED ({reason} — see diagnostic above)", file=sys.stderr)
 
@@ -946,13 +981,16 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             )
         reporter.succeed() if rc == 0 else reporter.fail()
 
-    status = RunStatus.SUCCESS if rc == 0 else RunStatus.FAILED_HARNESS_BUILD
-    _write_run_stats(
-        stats_path, start_time, build_result, harness_result, status, environment, parameters
+    return _finish_generate_run(
+        rc,
+        stats_path,
+        output_path,
+        start_time,
+        build_result,
+        harness_result,
+        environment,
+        parameters,
     )
-    shutil.copy2(stats_path, output_path / "stats.json")
-    _print_run_summary(status)
-    return rc
 
 
 def _cmd_extract_features(args: argparse.Namespace) -> int:

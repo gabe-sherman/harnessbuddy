@@ -697,6 +697,22 @@ def test_library_agent_withholds_the_script_when_the_repair_failed(tmp_path: Pat
     assert result.script_path is None
 
 
+def test_library_agent_publishes_the_install_tree(tmp_path: Path) -> None:
+    """Generation copies this tree into the output directory. Left unset on the repair lane, an
+    agent-fixed build published a project whose compile_harness.sh had no library to link."""
+    workdir = _repaired_workdir(tmp_path)
+    result = _repair_result(tmp_path, workdir)
+    assert result.succeeded is True
+    assert result.install_dir == workdir / "install"
+
+
+def test_library_agent_withholds_the_install_tree_when_the_repair_failed(tmp_path: Path) -> None:
+    workdir = _repaired_workdir(tmp_path)
+    result = _repair_result(tmp_path, workdir, exit_code=1)
+    assert result.succeeded is False
+    assert result.install_dir is None
+
+
 # ACTION REQUIRED is read from the model's own text, not from its whole transcript
 
 

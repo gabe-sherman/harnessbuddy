@@ -20,6 +20,7 @@ from harnessbuddy.library_builder.build_parameters import BuildParameters
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.generation import (
     GenerationInputs,
+    MissingInstallTreeError,
     generate,
     rewrite_compile_commands_prefix,
 )
@@ -148,6 +149,26 @@ def test_install_tree_ships_for_both_environments(environment: Environment, tmp_
     output, _ = _generate(tmp_path, environment=environment)
     assert list((output / "install" / "lib").glob("*.a"))
     assert list((output / "install" / "include").iterdir())
+
+
+def test_generation_refuses_a_build_that_records_no_install_tree(tmp_path: Path) -> None:
+    """Generation only runs after a verified build, so an unset install_dir means the result lost
+    track of a tree that exists. Skipping it published an unusable project as a success."""
+    analysis = _analysis()
+    workspace = _verified_workspace(tmp_path, analysis)
+    inputs = _inputs(analysis, workspace)
+    inputs.build.install_dir = None
+    with pytest.raises(MissingInstallTreeError, match="no install tree"):
+        generate(workspace, tmp_path / "output" / "mylib", inputs)
+
+
+def test_generation_refuses_an_install_tree_that_is_not_on_disk(tmp_path: Path) -> None:
+    analysis = _analysis()
+    workspace = _verified_workspace(tmp_path, analysis)
+    inputs = _inputs(analysis, workspace)
+    inputs.build.install_dir = tmp_path / "gone"
+    with pytest.raises(MissingInstallTreeError, match="missing at"):
+        generate(workspace, tmp_path / "output" / "mylib", inputs)
 
 
 def test_generation_result_reports_the_project_and_path(tmp_path: Path) -> None:

@@ -54,11 +54,15 @@ def _materialized_workspace(project_name: str = "mylib") -> Path:
 def _stub_library_build(result: BuildExplorationResult):  # type: ignore[no-untyped-def]
     """Stand in for the library-build stage, materializing the workspace as it would.
 
-    A stub that only returned a result would leave generation with nothing to publish.
+    A stub that only returned a result would leave generation with nothing to publish. A passing
+    result also records where the install tree landed, which every real one does -- omitting it
+    let these tests pass while generation silently shipped a project without a library.
     """
 
     def _run(*_args: object, **_kwargs: object) -> BuildExplorationResult:
-        _materialized_workspace()
+        workdir = _materialized_workspace()
+        if result.succeeded:
+            result.install_dir = workdir / "install"
         return result
 
     return patch("harnessbuddy.cli.build_library", side_effect=_run)
@@ -815,6 +819,41 @@ def test_stats_json_has_the_same_shape_across_outcomes(
     assert _key_paths(success_stats) == _key_paths(failure_stats)
     assert success_stats["status"] == "success"
     assert failure_stats["status"] == "failed_library_build"
+
+
+def test_a_build_without_an_install_tree_fails_the_run_and_ships_nothing(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    """A verified build that records no install tree cannot be published: compile_harness.sh
+    would have no library to link. The run fails rather than shipping an unusable project."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    build_result = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["bash", "build_library.sh"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+    )
+
+    def _run(*_args: object, **_kwargs: object) -> BuildExplorationResult:
+        _materialized_workspace()
+        return build_result
+
+    with (
+        patch("harnessbuddy.cli.build_library", side_effect=_run),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(
+            ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+        )
+
+    assert rc == 1
+    assert not (output_dir / "mylib").exists()
+    stats = json.loads(_workspace_stats_json_path().read_text())
+    assert stats["status"] == "failed_output_generation"
 
 
 def test_stats_json_overwritten_on_rerun(local_repo_with_origin: Path, tmp_path: Path) -> None:
