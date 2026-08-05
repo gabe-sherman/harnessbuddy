@@ -42,7 +42,10 @@ def apply_to_harness_result(  # noqa: PLR0913 -- 4 keyword-only inputs, each ind
     cost. bypass_scratch_validation drops the rebuild on the agent lane too, trading the
     from-scratch guarantee for speed at the caller's explicit request.
     """
-    keep_artifacts = bypass_scratch_validation or not library_llm_used
+    keep_artifacts = verification.gate_keeps_artifacts(
+        library_llm_used=library_llm_used,
+        bypass_scratch_validation=bypass_scratch_validation,
+    )
     command = verification.verification_command(
         workdir,
         environment=environment,
@@ -50,7 +53,9 @@ def apply_to_harness_result(  # noqa: PLR0913 -- 4 keyword-only inputs, each ind
         keep_artifacts=keep_artifacts,
     )
     if not harness_result.static_libs or not harness_result.succeeded:
-        return dataclasses.replace(harness_result, command=command)
+        return dataclasses.replace(
+            harness_result, command=command, gate_keeps_artifacts=keep_artifacts
+        )
 
     # The gate builds the library and compiles harnesses in one invocation, so no stage's
     # compiler environment may be in effect: each generated script bakes in its own.
@@ -70,6 +75,7 @@ def apply_to_harness_result(  # noqa: PLR0913 -- 4 keyword-only inputs, each ind
         stderr=result.stderr,
         exit_code=0 if result.passed else 1,
         duration_seconds=result.duration_seconds,
+        gate_keeps_artifacts=keep_artifacts,
     )
 
 

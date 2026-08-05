@@ -15,6 +15,7 @@ from harnessbuddy.core.resources import skill_instructions
 # Imported as modules, not by name, so a test that patches an artifact check patches the
 # one this module calls too.
 from harnessbuddy.library_builder import exploration, harness_explorer
+from harnessbuddy.library_builder.build_parameters import neutral_compiler_environment
 from harnessbuddy.library_builder.environments import verification
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.exploration import read_agent_report
@@ -33,17 +34,30 @@ def _verification_command(
     *,
     workdir: Path,
     project_name: str,
+    keep_artifacts: bool = False,
 ) -> str:
     """The command that proves a fix works in the selected environment.
 
     Delegates to environments/verification.py, so an agent verifies its fix with the exact
-    command the pipeline gates on.
+    command the pipeline gates on -- including whether that gate rebuilds the library.
     """
     return " ".join(
         verification.verification_command(
-            workdir, environment=environment, project_name=project_name
+            workdir,
+            environment=environment,
+            project_name=project_name,
+            keep_artifacts=keep_artifacts,
         )
     )
+
+
+_KEEP_ARTIFACTS_NOTE = (
+    "`--keep-artifacts` reuses the install/ tree the library build already produced, so the "
+    "gate compiles the harnesses without rebuilding the library. Keep the option: the library "
+    "build is not what failed here, and rebuilding it costs the whole run's build time again. "
+    "If your fix changes build_library.sh or the Dockerfile, run the command again without "
+    "the option, because a change to the library build has to survive a cold build.\n"
+)
 
 
 _LOCAL_PACKAGE_POLICY = (
@@ -225,6 +239,9 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
 
     Streams agent output to the terminal. CWD is set to workdir, where build_library.sh
     lives; the agent can still read and modify the repo's build files via source_dir.
+
+    Runs with no compiler environment exported, for the reason given on
+    neutral_compiler_environment.
     """
     prompt = build_library_prompt(analysis, build_result, workdir, environment)
     if tool == "claude":
@@ -234,7 +251,8 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    result = run_agent_streaming(cmd, workdir, timeout, tool)
+    with neutral_compiler_environment():
+        result = run_agent_streaming(cmd, workdir, timeout, tool)
     _report_agent_run(workdir / "agent_library_build.log", tool, result)
     report = read_agent_report(workdir)
     stop_reason = _stop_reason(result)
@@ -283,7 +301,12 @@ def build_harness_prompt(
     workdir: Path,
     environment: Environment,
 ) -> str:
-    """Construct a Claude prompt for diagnosing and fixing a failed harness link probe."""
+    """Construct a Claude prompt for diagnosing and fixing a failed harness link probe.
+
+    The verification command carries the gate's own keep-artifacts decision, from
+    harness.gate_keeps_artifacts: the library tree this harness links against was built by an
+    earlier phase, and a harness fix does not invalidate it.
+    """
     instructions = skill_instructions("harness_builder")
     # Streaming Runners merge stderr into stdout and leave .stderr empty, so .output is what
     # reliably carries the diagnostic text.
@@ -292,7 +315,9 @@ def build_harness_prompt(
         environment,
         workdir=workdir,
         project_name=analysis.project_name,
+        keep_artifacts=harness.gate_keeps_artifacts,
     )
+    keep_artifacts_note = _KEEP_ARTIFACTS_NOTE if harness.gate_keeps_artifacts else ""
     return (
         f"{instructions}\n\n"
         f"## Harness compilation failure context\n\n"
@@ -311,6 +336,7 @@ def build_harness_prompt(
         f"### Verification\n\n"
         f"After applying a fix, verify it works by running this exact command:\n\n"
         f"    {verify_command}\n\n"
+        f"{keep_artifacts_note}\n"
         f"{_package_policy_note(environment)}"
     )
 
@@ -328,6 +354,9 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
 
     Streams agent output to the terminal. CWD is set to paths.workdir so the agent can read
     and modify compile_harness.sh and harness_source/ directly.
+
+    Runs with no compiler environment exported, for the reason given on
+    neutral_compiler_environment.
     """
     prompt = build_harness_prompt(analysis, harness, paths.install_dir, paths.workdir, environment)
     if tool == "claude":
@@ -337,7 +366,8 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
     else:
         raise ValueError(f"unknown agent tool: {tool!r}")
 
-    result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
+    with neutral_compiler_environment():
+        result = run_agent_streaming(cmd, paths.workdir, timeout, tool)
     _report_agent_run(paths.workdir / "agent_harness_build.log", tool, result)
     report = read_agent_report(paths.workdir)
     stop_reason = _stop_reason(result)
@@ -401,4 +431,5 @@ def invoke_harness_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=extra_library_paths,
         environment=environment,
+        gate_keeps_artifacts=harness.gate_keeps_artifacts,
     )

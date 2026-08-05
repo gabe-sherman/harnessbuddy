@@ -28,6 +28,20 @@ class VerificationResult(MergedOutput):
     duration_seconds: float
 
 
+def gate_keeps_artifacts(*, library_llm_used: bool, bypass_scratch_validation: bool) -> bool:
+    """Whether the gate may reuse the workspace's install/ instead of rebuilding the library.
+
+    True only when a valid install/ is already there and nothing has changed the build since:
+    the deterministic library build produced it, or the caller traded the from-scratch
+    guarantee for speed with --bypass-scratch-validation.
+
+    One definition, because two callers must reach the same answer -- the pipeline's own gate,
+    and the command a repair agent is told to run. When they disagreed, the agent paid a full
+    cold rebuild of the library the pipeline had deliberately decided to keep.
+    """
+    return bypass_scratch_validation or not library_llm_used
+
+
 def verification_command(
     workspace: Path, *, environment: Environment, project_name: str, keep_artifacts: bool = False
 ) -> list[str]:

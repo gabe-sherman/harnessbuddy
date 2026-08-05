@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -266,6 +267,59 @@ def _failed_harness(stderr: str) -> HarnessExplorationResult:
         stderr=stderr,
         exit_code=1,
     )
+
+
+def _gate_command_line(prompt: str) -> str:
+    """The verification command the prompt tells the agent to run.
+
+    Read from the command itself, not from the whole prompt: the explanation of
+    --keep-artifacts names the option too, so a prompt-wide search passes even when the command
+    omits it.
+    """
+    _, marker, after = prompt.partition("verify it works by running this exact command:")
+    assert marker, "the prompt no longer states a verification command"
+    return after.strip().splitlines()[0]
+
+
+def test_harness_prompt_keeps_the_install_tree_the_gate_kept(tmp_path: Path) -> None:
+    """The library was already built and a harness fix does not invalidate it, so the agent must
+    not be sent to rebuild it -- on VLC that repeats the run's entire build time."""
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        replace(_failed_harness(""), gate_keeps_artifacts=True),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    command = _gate_command_line(prompt)
+    assert "check_build.sh" in command
+    assert command.endswith("--keep-artifacts")
+    assert "build_library.sh or the Dockerfile" in prompt
+
+
+def test_harness_prompt_rebuilds_when_the_gate_would_have(tmp_path: Path) -> None:
+    """A library-repair agent changed the build since the last cold build, so the harness fix
+    has to survive one too."""
+    prompt = build_harness_prompt(
+        _analysis(tmp_path),
+        replace(_failed_harness(""), gate_keeps_artifacts=False),
+        tmp_path / "work" / "install",
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    assert "--keep-artifacts" not in prompt
+
+
+def test_library_prompt_always_rebuilds_from_nothing(tmp_path: Path) -> None:
+    """The library agent changes the library build itself, so its fix is only proven cold."""
+    prompt = build_library_prompt(
+        _analysis(tmp_path),
+        _failed_cmake_exploration(tmp_path),
+        tmp_path / "work",
+        Environment.LOCAL,
+    )
+    assert "check_build.sh" in _gate_command_line(prompt)
+    assert "--keep-artifacts" not in prompt
 
 
 def test_harness_prompt_tail_not_head_when_truncated(tmp_path: Path) -> None:
@@ -755,3 +809,54 @@ def test_marker_quoted_in_tool_output_does_not_fail_a_verified_harness(tmp_path:
             HarnessPaths(install_dir=workdir / "install", workdir=workdir),
         )
     assert result.succeeded is True
+
+
+def _environment_seen_by_the_agent() -> tuple[dict[str, str | None], object]:
+    """Patch run_agent_streaming to record the compiler variables its subprocess would inherit."""
+    seen: dict[str, str | None] = {}
+
+    def record(*_args: object, **_kwargs: object) -> AgentStreamResult:
+        seen.update({name: os.environ.get(name) for name in ("CC", "CXX", "CFLAGS", "CXXFLAGS")})
+        return AgentStreamResult(combined_text="fixed", exit_code=0, duration_seconds=1.0)
+
+    return seen, patch(
+        "harnessbuddy.library_builder.agents.run_agent_streaming", side_effect=record
+    )
+
+
+def test_library_agent_inherits_no_compiler_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent reaches build_library.sh through check_build.sh, whose scripts read
+    ${CFLAGS:-...}. Anything exported here overrides the flags those scripts bake in."""
+    monkeypatch.setenv("CFLAGS", "-fsanitize=fuzzer")
+    monkeypatch.setenv("CC", "clang")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    seen, patched = _environment_seen_by_the_agent()
+    with patched:
+        invoke_library_builder_agent(
+            _analysis(tmp_path), _failed_cmake_exploration(tmp_path), workdir
+        )
+    assert seen == {"CC": None, "CXX": None, "CFLAGS": None, "CXXFLAGS": None}
+    assert os.environ["CFLAGS"] == "-fsanitize=fuzzer"
+
+
+def test_harness_agent_inherits_no_compiler_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The harness lane is where this bit: its own flags carry -fsanitize=fuzzer, which supplies
+    a main and so fails the configure step of the library build the gate runs first."""
+    monkeypatch.setenv("CFLAGS", "-fsanitize=fuzzer")
+    monkeypatch.setenv("CXXFLAGS", "-fsanitize=fuzzer")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    seen, patched = _environment_seen_by_the_agent()
+    with patched:
+        invoke_harness_builder_agent(
+            _analysis(tmp_path),
+            _failed_harness("undefined reference to `foo'"),
+            HarnessPaths(install_dir=workdir / "install", workdir=workdir),
+        )
+    assert seen == {"CC": None, "CXX": None, "CFLAGS": None, "CXXFLAGS": None}
+    assert os.environ["CXXFLAGS"] == "-fsanitize=fuzzer"

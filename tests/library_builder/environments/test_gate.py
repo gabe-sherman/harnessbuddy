@@ -182,6 +182,16 @@ def test_bypass_drops_the_rebuild_on_the_agent_lane_too(tmp_path: Path) -> None:
     assert "--keep-artifacts" in result.command
 
 
+def test_the_decision_is_stamped_on_the_result_for_the_repair_agent(tmp_path: Path) -> None:
+    """The agent is told to run the gate, so it needs the same answer this gate used. Reading it
+    off the result is what keeps the two from drifting apart."""
+    kept = _run_gate(tmp_path, environment=Environment.LOCAL, library_llm_used=False)
+    wiped = _run_gate(tmp_path, environment=Environment.LOCAL, library_llm_used=True)
+
+    assert kept.gate_keeps_artifacts is True
+    assert wiped.gate_keeps_artifacts is False
+
+
 def test_the_container_gate_carries_the_decision_too(tmp_path: Path) -> None:
     """The flag has to reach check_build.sh inside the container, not stop at the wrapper."""
     kept = _run_gate(tmp_path, environment=Environment.OSS_FUZZ, library_llm_used=False)

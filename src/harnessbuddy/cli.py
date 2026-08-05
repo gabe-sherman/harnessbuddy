@@ -270,14 +270,13 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
     from harnessbuddy.library_builder.agents import invoke_library_builder_agent
 
     with PhaseReporter(Phase.AGENT_LIBRARY_REPAIR) as agent_reporter:
-        with parameters.library_environment():
-            result = invoke_library_builder_agent(
-                analysis,
-                result,
-                workspace,
-                tool=agent,
-                environment=result.environment,
-            )
+        result = invoke_library_builder_agent(
+            analysis,
+            result,
+            workspace,
+            tool=agent,
+            environment=result.environment,
+        )
         agent_reporter.succeed() if result.succeeded else agent_reporter.fail()
     return result
 
@@ -328,14 +327,13 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
     from harnessbuddy.library_builder.models import HarnessPaths
 
     with PhaseReporter(Phase.AGENT_HARNESS_REPAIR) as agent_reporter:
-        with parameters.harness_environment():
-            result = invoke_harness_builder_agent(
-                analysis,
-                result,
-                HarnessPaths(install_dir=install_dir, workdir=workspace),
-                tool=agent,
-                environment=result.environment,
-            )
+        result = invoke_harness_builder_agent(
+            analysis,
+            result,
+            HarnessPaths(install_dir=install_dir, workdir=workspace),
+            tool=agent,
+            environment=result.environment,
+        )
         agent_reporter.succeed() if result.succeeded else agent_reporter.fail()
     return result
 

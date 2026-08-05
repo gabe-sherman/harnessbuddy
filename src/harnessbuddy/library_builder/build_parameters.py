@@ -115,11 +115,12 @@ _COMPILER_ENVIRONMENT_NAMES = ("CC", "CXX", "CFLAGS", "CXXFLAGS")
 def neutral_compiler_environment() -> Iterator[None]:
     """Unset CC/CXX/CFLAGS/CXXFLAGS for the duration.
 
-    For the build gate, which runs the library build and the harness compile in one
-    invocation. Each generated script bakes in its own settings, so with nothing exported both
-    get the right ones. Leaving one stage's environment in place applies its flags to both, and
-    the harness flags in particular (`-fsanitize=fuzzer` supplies its own main) make cmake's
-    compiler check fail.
+    For anything that runs both the library build and the harness compile in one invocation:
+    the build gate, and a repair agent, which reaches the gate through check_build.sh and so
+    passes on whatever its own shell exports. Each generated script bakes in its own settings,
+    so with nothing exported both get the right ones. Leaving one stage's environment in place
+    applies its flags to both, and the harness flags in particular (`-fsanitize=fuzzer`
+    supplies its own main) make cmake's compiler check and autotools' configure link test fail.
     """
     original = {name: os.environ.pop(name, None) for name in _COMPILER_ENVIRONMENT_NAMES}
     try:

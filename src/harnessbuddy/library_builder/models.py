@@ -138,6 +138,12 @@ class HarnessExplorationResult(MergedOutput, AgentOutcome):
     exit_code: int
     missing_system_libs: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
+    # Whether the gate that produced this result reused the workspace's install/ rather than
+    # rebuilding the library from nothing. Stamped by environments/gate.py, so a repair agent
+    # is told to run the same gate the pipeline ran instead of recomputing the decision and
+    # paying for a cold rebuild the pipeline had decided to skip. See
+    # verification.gate_keeps_artifacts.
+    gate_keeps_artifacts: bool = False
 
 
 @dataclass
