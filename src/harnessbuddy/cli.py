@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from harnessbuddy.library_builder.models import (
         AnalysisResult,
         BuildExplorationResult,
+        BuildSystem,
         HarnessExplorationResult,
     )
     from harnessbuddy.library_builder.stats import RunStatus
@@ -239,11 +240,12 @@ def build_library(  # noqa: PLR0913 -- public API; all params are distinct requi
 
     parameters = parameters or BuildParameters.defaults()
     timeout = timeout if timeout is not None else DEFAULT_BUILD_TIMEOUT_SECONDS
-    static_log_path = logs_dir / f"{Phase.STATIC_LIBRARY_BUILD.value}.log" if logs_dir else None
-    with PhaseReporter(Phase.STATIC_LIBRARY_BUILD) as reporter:
+    log_name = f"{Phase.DETERMINISTIC_LIBRARY_BUILD.value}.log"
+    deterministic_log_path = logs_dir / log_name if logs_dir else None
+    with PhaseReporter(Phase.DETERMINISTIC_LIBRARY_BUILD) as reporter:
         with (
             parameters.library_environment(),
-            streaming_context(quiet=quiet, log_path=static_log_path),
+            streaming_context(quiet=quiet, log_path=deterministic_log_path),
         ):
             result = executor.run_library_build(
                 analysis, workspace, timeout=timeout, parameters=parameters
@@ -292,11 +294,12 @@ def build_harness(  # noqa: PLR0913 -- public API; all params are distinct requi
     from harnessbuddy.library_builder.build_parameters import BuildParameters
 
     parameters = parameters or BuildParameters.defaults()
-    static_log_path = logs_dir / f"{Phase.HARNESS_COMPILE_PROBE.value}.log" if logs_dir else None
+    log_name = f"{Phase.HARNESS_COMPILE_PROBE.value}.log"
+    deterministic_log_path = logs_dir / log_name if logs_dir else None
     with PhaseReporter(Phase.HARNESS_COMPILE_PROBE) as reporter:
         with (
             parameters.harness_environment(),
-            streaming_context(quiet=quiet, log_path=static_log_path),
+            streaming_context(quiet=quiet, log_path=deterministic_log_path),
         ):
             result = executor.run_harness_compile(
                 install_dir,
@@ -516,7 +519,7 @@ def _run_harness_phase(  # noqa: PLR0913 -- private helper; all params are disti
 
     # Covers both the libs the linker reported missing and the ones it resolved silently
     # because the exploration host already had them.
-    linker_deps = dependency_resolution.from_static_probe(
+    linker_deps = dependency_resolution.from_deterministic_probe(
         harness_result.missing_system_libs, harness_result.transitive_link_flags
     )
     # The harness-build agent names apt packages itself, bypassing the translation table.
@@ -625,6 +628,7 @@ def _command_str(command: list[str]) -> str | None:
 
 def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a distinct record field
     stats_path: Path,
+    workdir: Path,
     start_time: float,
     build_result: BuildExplorationResult,
     harness_result: HarnessExplorationResult | None,
@@ -632,16 +636,23 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
     environment: Environment,
     parameters: BuildParameters,
 ) -> None:
-    """Build and persist stats.json for this run, successful or not."""
+    """Build and persist stats.json for this run, successful or not.
+
+    The compile-commands path is resolved from workdir rather than read off a result, so it
+    records the capture the gate's build actually left behind -- including on the lane where a
+    repair agent produced that build.
+    """
     from harnessbuddy.library_builder.stats import (
         RunStats,
         agent_phase_stats,
         not_invoked_agent_stats,
         write_run_stats,
     )
+    from harnessbuddy.library_builder.workspace import find_compile_commands
 
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     command = (harness_result.command if harness_result else None) or build_result.command
+    compile_commands = find_compile_commands(workdir)
     write_run_stats(
         stats_path,
         RunStats(
@@ -654,11 +665,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
             ),
             status=status,
             environment=environment,
-            compile_commands_path=(
-                str(build_result.compile_commands_path)
-                if build_result.compile_commands_path
-                else None
-            ),
+            compile_commands_path=str(compile_commands) if compile_commands else None,
             verification_command=_command_str(command),
             build_parameters=parameters.to_dict(),
         ),
@@ -668,6 +675,7 @@ def _write_run_stats(  # noqa: PLR0913 -- private helper; every param is a disti
 def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a distinct record field
     rc: int,
     stats_path: Path,
+    workdir: Path,
     output_path: Path,
     start_time: float,
     build_result: BuildExplorationResult,
@@ -684,7 +692,14 @@ def _finish_generate_run(  # noqa: PLR0913 -- private helper; every param is a d
 
     status = RunStatus.SUCCESS if rc == 0 else RunStatus.FAILED_OUTPUT_GENERATION
     _write_run_stats(
-        stats_path, start_time, build_result, harness_result, status, environment, parameters
+        stats_path,
+        workdir,
+        start_time,
+        build_result,
+        harness_result,
+        status,
+        environment,
+        parameters,
     )
     if rc == 0:
         shutil.copy2(stats_path, output_path / "stats.json")
@@ -727,9 +742,9 @@ def _report_library_build_failure(
     One printer for one control path: a failed library build always stops the run, whether no
     agent was armed, the repair did not hold, or the agent stopped for a person to act.
     """
-    phase = Phase.AGENT_LIBRARY_REPAIR if result.llm_used else Phase.STATIC_LIBRARY_BUILD
+    phase = Phase.AGENT_LIBRARY_REPAIR if result.llm_used else Phase.DETERMINISTIC_LIBRARY_BUILD
     origin = "agent" if result.llm_used else "deterministic"
-    step = _agent_step(result) if result.llm_used else "static build command"
+    step = _agent_step(result) if result.llm_used else "deterministic build command"
     if result.validation_errors:
         message = _rejected_repair_message(result)
     elif result.llm_used and result.agent_summary:
@@ -749,13 +764,25 @@ def _report_library_build_failure(
         print(f"Reproduce with: {_command_str(result.command)}", file=sys.stderr)
 
 
-def _report_library_build_success(result: BuildExplorationResult) -> None:
+def _report_library_build_success() -> None:
     print("Successfully produced library build!")
-    if result.compile_commands_path is not None:
-        print(f"Compile commands: {result.compile_commands_path}")
+
+
+def _report_compile_commands(workdir: Path, build_system: BuildSystem) -> None:
+    """Report the capture, after the gate rather than after the library phase.
+
+    Reported here because the gate rebuilds from nothing and is the last thing to write the
+    file. Reported at the end of the library phase instead, it could only ever describe a build
+    the gate was about to redo -- and on the repair lane it had nothing to describe at all.
+    """
+    from harnessbuddy.library_builder.exploration import compile_commands_absent_reason
+    from harnessbuddy.library_builder.workspace import find_compile_commands
+
+    captured = find_compile_commands(workdir)
+    if captured is not None:
+        print(f"Compile commands: {captured}")
     else:
-        reason = result.compile_commands_error or "no reason recorded"
-        print(f"Compile commands: not captured ({reason})")
+        print(f"Compile commands: not captured ({compile_commands_absent_reason(build_system)})")
 
 
 def _print_run_summary(status: RunStatus) -> None:
@@ -770,7 +797,7 @@ def _print_run_summary(status: RunStatus) -> None:
         print("Overall: SUCCESS")
         return
     reason = {
-        RunStatus.FAILED_LIBRARY_BUILD: "static library build failed",
+        RunStatus.FAILED_LIBRARY_BUILD: "library build failed",
         RunStatus.FAILED_HARNESS_BUILD: "harness compile probe failed",
         RunStatus.FAILED_DOCKERFILE_VERIFICATION: (
             "the generated Dockerfile did not build from scratch"
@@ -899,11 +926,12 @@ def _cmd_generate(args: argparse.Namespace) -> int:
             log_path=(
                 build_result.transcript_path
                 if build_result.llm_used
-                else logs_dir / f"{Phase.STATIC_LIBRARY_BUILD.value}.log"
+                else logs_dir / f"{Phase.DETERMINISTIC_LIBRARY_BUILD.value}.log"
             ),
         )
         _write_run_stats(
             stats_path,
+            workspace,
             start_time,
             build_result,
             None,
@@ -913,7 +941,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
         _print_run_summary(RunStatus.FAILED_LIBRARY_BUILD)
         return 1
-    _report_library_build_success(build_result)
+    _report_library_build_success()
 
     harness_result = _run_harness_phase(
         analysis,
@@ -933,6 +961,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     if not harness_result.succeeded:
         _write_run_stats(
             stats_path,
+            workspace,
             start_time,
             build_result,
             harness_result,
@@ -942,6 +971,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
         _print_run_summary(RunStatus.FAILED_HARNESS_BUILD)
         return 1
+    _report_compile_commands(workspace, analysis.build_system)
 
     if environment is Environment.OSS_FUZZ and not _verify_shipped_dockerfile(
         workspace, analysis.project_name, quiet=quiet
@@ -953,6 +983,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         )
         _write_run_stats(
             stats_path,
+            workspace,
             start_time,
             build_result,
             harness_result,
@@ -984,6 +1015,7 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     return _finish_generate_run(
         rc,
         stats_path,
+        workspace,
         output_path,
         start_time,
         build_result,

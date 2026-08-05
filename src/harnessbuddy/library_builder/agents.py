@@ -273,9 +273,6 @@ def invoke_library_builder_agent(  # noqa: PLR0913 -- public API; all 6 params a
         extra_include_paths=report.extra_include_paths if report else [],
         extra_library_paths=report.extra_library_paths if report else [],
         environment=environment,
-        compile_commands_error=(
-            None if succeeded else "not captured: the agent did not produce a passing build"
-        ),
     )
 
 

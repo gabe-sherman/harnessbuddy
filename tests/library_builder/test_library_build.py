@@ -28,7 +28,7 @@ class LibSpec:
     url: str
     project_name: str
     build_system: BuildSystem
-    builds_static: bool
+    builds_deterministically: bool
 
 
 @dataclass
@@ -72,25 +72,30 @@ LIBS = [
     ),  # requires dbus-1
 ]
 
-_STATIC_LIBS = [lib for lib in LIBS if lib.builds_static]
-_AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_static]
+_DETERMINISTIC_LIBS = [lib for lib in LIBS if lib.builds_deterministically]
+_AGENTIC_LIBS = [lib for lib in LIBS if not lib.builds_deterministically]
 _AGENT = "claude"
 
-# Smoke subset: a fast cross-section of build systems that runs by default. The rest of
-# _STATIC_LIBS is real but slower coverage, opt-in via `-m build_matrix`.
-_SMOKE_PROJECT_NAMES = {"zlib", "lcms", "libplist", "file"}
-_SMOKE_STATIC_LIBS = [lib for lib in _STATIC_LIBS if lib.project_name in _SMOKE_PROJECT_NAMES]
-_EXTENDED_STATIC_LIBS = [
-    lib for lib in _STATIC_LIBS if lib.project_name not in _SMOKE_PROJECT_NAMES
+# Smoke subset: a fast cross-section of build systems that runs by default. It draws from both
+# lanes on purpose — zlib and libplist build deterministically, c-ares and libqrencode need the
+# repair agent — so `pytest -q` exercises agent repair rather than only the happy path. That
+# makes the default run cost real LLM tokens and need a Docker daemon. The rest of
+# _DETERMINISTIC_LIBS is real but slower coverage, opt-in via `-m build_matrix`.
+_SMOKE_PROJECTS = {"zlib", "c-ares", "libplist", "libqrencode"}
+_SMOKE_LIBS = [
+    lib for lib in _DETERMINISTIC_LIBS + _AGENTIC_LIBS if lib.project_name in _SMOKE_PROJECTS
+]
+_EXTENDED_DETERMINISTIC_LIBS = [
+    lib for lib in _DETERMINISTIC_LIBS if lib.project_name not in _SMOKE_PROJECTS
 ]
 
 # Round-robin the smoke libraries across environments, so both executors are exercised by
 # default without doubling the number of real builds. Everything unlisted stays LOCAL.
 _SMOKE_ENVIRONMENTS: dict[str, Environment] = {
     "zlib": Environment.OSS_FUZZ,
-    "lcms": Environment.OSS_FUZZ,
-    "file": Environment.LOCAL,
+    "c-ares": Environment.OSS_FUZZ,
     "libplist": Environment.LOCAL,
+    "libqrencode": Environment.LOCAL,
 }
 
 
@@ -175,18 +180,15 @@ def broken_cmake_build(
     return result, workdir
 
 
-# static (deterministic) library builds succeed and install artifacts
+# library builds succeed and install artifacts
 #
-# NB: class declaration order matters. real_library_build is session-scoped, so whichever test
-# runs first for a library is the one that triggers the build. The *LibraryBuildChecks classes
-# carry the _forbid_agent guard, so they must stay declared — and therefore run — before the
-# *HarnessBuildChecks and per-library classes below, or the guard is not yet active.
+# These checks assert the outcome, not how it was reached: every suite below runs with the
+# repair agent enabled, so a library may build deterministically or be repaired on the way.
+# `builds_deterministically` records only which of the two is expected, and drives which
+# libraries land in the opt-in agentic matrix.
 
 
-class _StaticLibraryBuildChecks:
-    global _AGENT
-    _AGENT = None
-
+class _LibraryBuildChecks:
     def test_library_builds(self, real_library_build: LibBuild) -> None:
         result = real_library_build.library_result
         assert result.succeeded, (
@@ -208,13 +210,18 @@ class _StaticLibraryBuildChecks:
         """The library stage's pass/fail comes from its own probe, so that is the command it
         reports. The gate runs once, after the harness stage."""
         cmd = real_library_build.library_result.command
-        assert cmd[0] in {"bash", "bear"}
+        assert cmd[0] in {"bash", "bear", "claude"}
         assert "build_library.sh" in cmd
 
-    def test_static_library_build_phase_log_written(self, real_library_build: LibBuild) -> None:
+    def test_deterministic_library_build_phase_log_written(
+        self, real_library_build: LibBuild
+    ) -> None:
         """A real build's full raw output stays retrievable from its per-phase log file,
-        whether or not it also streamed live to the console."""
-        log_path = real_library_build.logs_dir / "static_library_build.log"
+        whether or not it also streamed live to the console.
+
+        The deterministic phase always runs and always logs, even when it fails and the agent
+        goes on to repair the build."""
+        log_path = real_library_build.logs_dir / "deterministic_library_build.log"
         assert log_path.exists()
         assert log_path.stat().st_size > 0
 
@@ -222,24 +229,30 @@ class _StaticLibraryBuildChecks:
 @pytest.mark.smoke
 @pytest.mark.build_matrix
 @pytest.mark.parametrize(
-    "real_library_build", _SMOKE_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+    "real_library_build", _SMOKE_LIBS, indirect=True, ids=lambda lib: lib.project_name
 )
-class TestSmokeStaticLibraryBuilds(_StaticLibraryBuildChecks):
-    """Runs by default (pytest -q) — a fast cross-section of build systems."""
+class TestSmokeLibraryBuilds(_LibraryBuildChecks):
+    """Runs by default (pytest -q) — a fast cross-section of build systems.
+
+    Deliberately mixes libraries that build deterministically with ones that need the repair
+    agent, so the default run covers both lanes end to end."""
 
 
 @pytest.mark.build_matrix
 @pytest.mark.parametrize(
-    "real_library_build", _EXTENDED_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+    "real_library_build",
+    _EXTENDED_DETERMINISTIC_LIBS,
+    indirect=True,
+    ids=lambda lib: lib.project_name,
 )
-class TestExtendedStaticLibraryBuilds(_StaticLibraryBuildChecks):
-    """Opt-in only (`-m build_matrix`) — the rest of the static-build matrix."""
+class TestExtendedDeterministicLibraryBuilds(_LibraryBuildChecks):
+    """Opt-in only (`-m build_matrix`) — the rest of the deterministic-build matrix."""
 
 
 # harness-compile probe succeeds against those same install artifacts
 
 
-class _StaticHarnessBuildChecks:
+class _HarnessBuildChecks:
     def test_harness_compiles(self, real_library_build: LibBuild) -> None:
         result = real_library_build.harness_result
         assert result.succeeded, (
@@ -250,21 +263,24 @@ class _StaticHarnessBuildChecks:
 @pytest.mark.smoke
 @pytest.mark.build_matrix
 @pytest.mark.parametrize(
-    "real_library_build", _SMOKE_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+    "real_library_build", _SMOKE_LIBS, indirect=True, ids=lambda lib: lib.project_name
 )
-class TestSmokeStaticHarnessBuilds(_StaticHarnessBuildChecks):
+class TestSmokeHarnessBuilds(_HarnessBuildChecks):
     """Runs by default (pytest -q)."""
 
 
 @pytest.mark.build_matrix
 @pytest.mark.parametrize(
-    "real_library_build", _EXTENDED_STATIC_LIBS, indirect=True, ids=lambda lib: lib.project_name
+    "real_library_build",
+    _EXTENDED_DETERMINISTIC_LIBS,
+    indirect=True,
+    ids=lambda lib: lib.project_name,
 )
-class TestExtendedStaticHarnessBuilds(_StaticHarnessBuildChecks):
+class TestExtendedDeterministicHarnessBuilds(_HarnessBuildChecks):
     """Opt-in only (`-m build_matrix`)."""
 
 
-# agentic (non-deterministic) builds — the repair agent may be invoked to fix them
+# libraries whose deterministic build is expected to fail, so the repair agent has to fix them
 
 
 @pytest.mark.agentic
@@ -366,8 +382,9 @@ def test_broken_cmake_exit_code_nonzero(broken_cmake_build: tuple) -> None:
 
 # --library-configure-arg against a real library
 #
-# c-ares is in _AGENTIC_LIBS because -DBUILD_SHARED_LIBS=OFF alone does not make it install a
-# static library, so the deterministic build has nothing to link and the agent gets called. Its
+# c-ares has builds_deterministically=False because -DBUILD_SHARED_LIBS=OFF alone does not make
+# it install a static library, so the deterministic build has nothing to link and the agent is
+# called. Its
 # own -DCARES_STATIC is the switch that does, which makes it an honest test of whether a
 # caller-supplied configure option reaches the configure step: supply it and the same library
 # builds deterministically, with no agent involved.

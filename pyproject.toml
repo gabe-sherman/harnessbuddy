@@ -22,10 +22,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "agentic: invokes a live LLM agent subprocess (claude/codex); slow, requires agent CLI auth",
+    "agentic: the opt-in matrix of libraries whose deterministic build is expected to fail, so the run turns on repair. Note that 'smoke' also invokes agents; this marker selects the extra libraries, not the only ones that use an agent.",
     "build_matrix: clones and builds a real library from the LIBS matrix; slow, network-heavy, requires cmake/make/autotools/meson on PATH depending on the library. Only the 'smoke' subset of this runs by default; the rest is opt-in via `-m build_matrix`.",
-    "smoke: the small, fast, non-agentic subset of build_matrix that runs by default (pytest -q).",
-    "docker: requires a running Docker daemon (OssFuzzExecutor); slow, network-heavy",
+    "smoke: the small subset of build_matrix that runs by default (pytest -q). It spans both lanes deliberately, so it invokes a live LLM agent (requires agent CLI auth) and needs a Docker daemon for the OssFuzzExecutor libraries.",
+    "docker: requires a running Docker daemon (OssFuzzExecutor); slow, network-heavy. Some 'smoke' tests also need Docker without carrying this marker, since they run by default.",
 ]
 addopts = ["-m", "not agentic and not docker and not (build_matrix and not smoke)"]
 

@@ -23,7 +23,7 @@ class Phase(Enum):
 
     INGESTION = "ingestion"
     STATIC_ANALYSIS = "static_analysis"
-    STATIC_LIBRARY_BUILD = "static_library_build"
+    DETERMINISTIC_LIBRARY_BUILD = "deterministic_library_build"
     AGENT_LIBRARY_REPAIR = "agent_library_repair"
     HARNESS_COMPILE_PROBE = "harness_compile_probe"
     AGENT_HARNESS_REPAIR = "agent_harness_repair"
@@ -34,7 +34,7 @@ class Phase(Enum):
 _PHASE_LABELS: dict[Phase, str] = {
     Phase.INGESTION: "Repository ingestion",
     Phase.STATIC_ANALYSIS: "Static analysis",
-    Phase.STATIC_LIBRARY_BUILD: "Static library build",
+    Phase.DETERMINISTIC_LIBRARY_BUILD: "Deterministic library build",
     Phase.AGENT_LIBRARY_REPAIR: "Agent-assisted library repair",
     Phase.HARNESS_COMPILE_PROBE: "Harness compile probe",
     Phase.AGENT_HARNESS_REPAIR: "Agent-assisted harness repair",
@@ -178,7 +178,7 @@ class PhaseReporter:
 
     Use as a context manager::
 
-        with PhaseReporter(Phase.STATIC_LIBRARY_BUILD) as reporter:
+        with PhaseReporter(Phase.DETERMINISTIC_LIBRARY_BUILD) as reporter:
             result = do_the_thing()
         if result.succeeded:
             reporter.succeed()

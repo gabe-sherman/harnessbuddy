@@ -2,8 +2,8 @@
 
 There is one output shape, whichever environment verified it: the workspace copied verbatim,
 so the shipped scripts are the ones that passed, plus what only makes sense outside the
-workspace — `setup.sh`, the built `install/` tree, a self-contained `compile_commands.json`,
-and a README naming the environment this run actually exercised.
+workspace — `setup.sh`, the built `install/` tree, the build's `compile_commands.json`, and a
+README naming the environment this run actually exercised.
 """
 
 from __future__ import annotations
@@ -68,10 +68,12 @@ def generate(workspace_dir: Path, output_path: Path, inputs: GenerationInputs) -
         _write_dockerignore(output_path),
     ]
     _copy_install_tree(inputs.build, output_path)
-    compile_commands = _copy_compile_commands(inputs.build, workspace_dir, output_path)
+    compile_commands = _copy_compile_commands(workspace_dir, output_path)
     if compile_commands is not None:
         files.append(compile_commands)
-    files.append(write_readme(output_path, inputs))
+    files.append(
+        write_readme(output_path, inputs, build_tree=workspace_dir if compile_commands else None)
+    )
 
     return GenerationResult(
         project_name=inputs.analysis.project_name,
@@ -137,25 +139,20 @@ def _copy_install_tree(build: BuildExplorationResult, output_path: Path) -> None
     shutil.copytree(install_dir, output_path / "install", symlinks=True)
 
 
-def _copy_compile_commands(
-    build: BuildExplorationResult, workspace_dir: Path, output_path: Path
-) -> Path | None:
-    """Copy compile_commands.json into the output directory, rewritten to point at it.
+def _copy_compile_commands(workspace_dir: Path, output_path: Path) -> Path | None:
+    """Copy compile_commands.json into the output directory, keeping its workspace paths.
 
-    The captured file describes the workspace build, so its paths sit under
-    `.harnessbuddy/<project>/`. Tooling that consumes it chdirs into each entry's `directory`,
-    so rewriting the prefix on copy is what keeps the output directory self-contained.
+    A compilation database only means anything next to the build tree it describes, and the
+    output directory ships `install/` alone -- no `src/`, no `build/`. So the paths are left
+    pointing at `.harnessbuddy/<project>/`, where the tree that produced them still stands;
+    rewriting them to the output directory named files that were never copied there, and
+    tooling chdirs into each entry's `directory` before it reads anything.
     """
-    if build.compile_commands_path is None or not build.compile_commands_path.is_file():
+    captured = workspace.find_compile_commands(workspace_dir)
+    if captured is None:
         return None
     destination = output_path / "compile_commands.json"
-    destination.write_text(
-        rewrite_compile_commands_prefix(
-            build.compile_commands_path.read_text(),
-            source_prefix=str(workspace_dir.resolve()),
-            target_prefix=str(output_path.resolve()),
-        )
-    )
+    destination.write_text(usable_compile_commands(captured.read_text()))
     return destination
 
 
@@ -205,39 +202,61 @@ def _write_setup_sh(
     return write_executable(output_path / "setup.sh", "".join(lines))
 
 
-def rewrite_compile_commands_prefix(text: str, *, source_prefix: str, target_prefix: str) -> str:
-    """Rewrite every path under source_prefix to sit under target_prefix instead.
+def usable_compile_commands(text: str) -> str:
+    """Drop the entries a clang tool cannot replay, keeping the rest verbatim.
 
-    A run that verifies in a container rewrites these paths twice: /src back to the host
-    workspace on capture (environments/oss_fuzz.py), then the workspace to the output here.
+    `bear` records every compiler exec the build made, not just the ones that compiled library
+    sources. Three kinds of entry come back unusable, and each is fatal rather than noisy:
+    a `directory` CMake has since deleted (its `CMakeScratch/TryCompile-*` dirs) aborts the
+    whole run, because a clang tool chdirs there before it parses; a raw `-cc1` invocation is
+    rejected argument by argument when the driver is asked to replay it; and CMake's own
+    `CMakeFiles/` probe sources are not part of the library at all.
     """
     entries = json.loads(text)
-    for entry in entries:
-        for key in ("directory", "file"):
-            value = entry.get(key)
-            if isinstance(value, str):
-                entry[key] = _rewrite_path(value, source_prefix, target_prefix)
-        arguments = entry.get("arguments")
-        if isinstance(arguments, list):
-            entry["arguments"] = [
-                _rewrite_path(a, source_prefix, target_prefix) if isinstance(a, str) else a
-                for a in arguments
-            ]
-        command = entry.get("command")
-        if isinstance(command, str):
-            entry["command"] = _rewrite_path(command, source_prefix, target_prefix)
-    return json.dumps(entries, indent=2)
+    return json.dumps([entry for entry in entries if _entry_is_usable(entry)], indent=2)
 
 
-def _rewrite_path(value: str, source_prefix: str, target_prefix: str) -> str:
-    return value.replace(source_prefix, target_prefix)
+def _entry_is_usable(entry: dict) -> bool:
+    directory, file = entry.get("directory"), entry.get("file")
+    if not isinstance(directory, str) or not isinstance(file, str):
+        return False
+    if not Path(directory).is_dir() or not Path(file).is_file():
+        return False
+    if "CMakeFiles" in Path(file).parts:
+        return False
+    arguments = entry.get("arguments")
+    if isinstance(arguments, list) and "-cc1" in arguments:
+        return False
+    command = entry.get("command")
+    return not (isinstance(command, str) and "-cc1" in command.split())
 
 
-def write_readme(output_path: Path, inputs: GenerationInputs) -> Path:
+def _compile_commands_section(build_tree: Path | None) -> str:
+    """The README's account of where the shipped compilation database points.
+
+    A database is only readable next to the tree it describes, and this directory is not that
+    tree, so the section names the one it is — and says nothing at all when no database shipped.
+    """
+    if build_tree is None:
+        return ""
+    return f"""
+## compile_commands.json
+
+`compile_commands.json` describes the build this run made, so its paths point into that
+build tree at `{build_tree}` — not into this directory, which ships `install/` alone.
+It reads correctly for as long as that tree stands; re-run HarnessBuddy to refresh it.
+"""
+
+
+def write_readme(output_path: Path, inputs: GenerationInputs, *, build_tree: Path | None) -> Path:
     """Write README.md — what to run, and what this run actually proved.
 
     The directory provisions both environments but only one was exercised, so the README says
     which. Otherwise it implies the host scripts and the Dockerfile were both verified.
+
+    build_tree is the workspace the shipped compile_commands.json describes, or None when the
+    build captured none; naming it is what stops a reader from taking those paths for this
+    directory's own.
     """
     analysis = inputs.analysis
     verified, unverified = (
@@ -292,7 +311,7 @@ harness source into `{HARNESS_SOURCE_DIR}/` — `compile_harnesses.sh` compiles 
 Note that the link line was proven against the stub, so it confirms the static archives
 and their system dependencies link — not that the installed headers in `install/include`
 are usable.
-"""
+{_compile_commands_section(build_tree)}"""
     path = output_path / "README.md"
     path.write_text(text)
     return path

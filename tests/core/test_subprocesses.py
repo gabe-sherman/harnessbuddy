@@ -32,7 +32,7 @@ def test_streaming_context_quiet_suppresses_live_printing(
 
 
 def test_streaming_context_always_writes_log_regardless_of_quiet(tmp_path: Path) -> None:
-    log_path = tmp_path / "logs" / "static_library_build.log"
+    log_path = tmp_path / "logs" / "deterministic_library_build.log"
     with streaming_context(quiet=True, log_path=log_path):
         run_command_streaming(_ECHO_COMMAND, tmp_path, 10)
     assert log_path.exists()
@@ -44,7 +44,7 @@ def test_streaming_context_always_writes_log_regardless_of_quiet(tmp_path: Path)
 def test_streaming_context_writes_log_when_not_quiet_too(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    log_path = tmp_path / "logs" / "static_library_build.log"
+    log_path = tmp_path / "logs" / "deterministic_library_build.log"
     with streaming_context(quiet=False, log_path=log_path):
         run_command_streaming(_ECHO_COMMAND, tmp_path, 10)
     out = capsys.readouterr().out
@@ -65,7 +65,7 @@ def test_streaming_context_resets_after_exit(
 
 
 def test_run_command_streaming_writes_log_on_failed_command(tmp_path: Path) -> None:
-    log_path = tmp_path / "logs" / "static_library_build.log"
+    log_path = tmp_path / "logs" / "deterministic_library_build.log"
     fail_command = [sys.executable, "-c", "print('boom'); import sys; sys.exit(1)"]
     with streaming_context(quiet=True, log_path=log_path):
         result = run_command_streaming(fail_command, tmp_path, 10)

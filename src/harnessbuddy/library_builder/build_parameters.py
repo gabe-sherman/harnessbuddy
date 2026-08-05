@@ -131,6 +131,19 @@ def neutral_compiler_environment() -> Iterator[None]:
 
 
 @contextmanager
+def compile_commands_capture_environment() -> Iterator[None]:
+    """Ask CMake to write build/compile_commands.json for the duration.
+
+    CMake reads this as the default for the cache entry, so the flag never has to appear in the
+    generated build_library.sh -- capture stays something the harness applies, and the shipped
+    script is unaffected. Meson's Ninja backend writes the file unconditionally; Make and
+    Autotools have no equivalent and rely on the gate's `bear` wrap instead.
+    """
+    with _temporary_environment({"CMAKE_EXPORT_COMPILE_COMMANDS": "ON"}):
+        yield
+
+
+@contextmanager
 def _temporary_environment(values: dict[str, str]) -> Iterator[None]:
     original = {name: os.environ.get(name) for name in values}
     os.environ.update(values)

@@ -124,10 +124,6 @@ class BuildExplorationResult(MergedOutput, AgentOutcome):
     # The validated install tree. Set even when the source lives outside the workspace and
     # the build script therefore cannot be copied verbatim.
     install_dir: Path | None = None
-    # Mutually exclusive: the path is set when compile-commands capture succeeded, the error
-    # when it was skipped or failed (including because the build itself failed).
-    compile_commands_path: Path | None = None
-    compile_commands_error: str | None = None
 
 
 @dataclass
@@ -142,16 +138,6 @@ class HarnessExplorationResult(MergedOutput, AgentOutcome):
     exit_code: int
     missing_system_libs: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
-
-    @property
-    def link_configuration(self) -> LinkConfiguration:
-        """The link inputs this probe settled on, for regenerating compile_harness.sh."""
-        return LinkConfiguration(
-            static_libs=self.static_libs,
-            transitive_link_flags=self.transitive_link_flags,
-            extra_library_paths=self.extra_library_paths,
-            extra_include_paths=self.extra_include_paths,
-        )
 
 
 @dataclass

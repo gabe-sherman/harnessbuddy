@@ -51,18 +51,26 @@ def _materialized_workspace(project_name: str = "mylib") -> Path:
     return workdir
 
 
-def _stub_library_build(result: BuildExplorationResult):  # type: ignore[no-untyped-def]
+def _stub_library_build(  # type: ignore[no-untyped-def]
+    result: BuildExplorationResult, *, with_compile_commands: bool = False
+):
     """Stand in for the library-build stage, materializing the workspace as it would.
 
     A stub that only returned a result would leave generation with nothing to publish. A passing
     result also records where the install tree landed, which every real one does -- omitting it
     let these tests pass while generation silently shipped a project without a library.
+
+    with_compile_commands leaves one in the workspace, standing in for what the gate's build
+    writes there. It is read from the layout, not from the result, so a test cannot supply it by
+    pointing a field at a file outside the workspace.
     """
 
     def _run(*_args: object, **_kwargs: object) -> BuildExplorationResult:
         workdir = _materialized_workspace()
         if result.succeeded:
             result.install_dir = workdir / "install"
+        if with_compile_commands:
+            (workdir / "compile_commands.json").write_text("[]")
         return result
 
     return patch("harnessbuddy.cli.build_library", side_effect=_run)
@@ -1770,7 +1778,7 @@ def test_generate_success_prints_phase_banners_in_order(
     expected_labels = [
         "Repository ingestion",
         "Static analysis",
-        "Static library build",
+        "Deterministic library build",
         "Output generation",
     ]
     positions = [out.index(label) for label in expected_labels]
@@ -1788,7 +1796,7 @@ def test_generate_quiet_still_prints_phase_banners(
         rc = main(["generate", str(local_repo_with_origin), "--output", str(output_dir), "--quiet"])
     assert rc == 0
     out = capsys.readouterr().out
-    for label in ("Repository ingestion", "Static library build", "Output generation"):
+    for label in ("Repository ingestion", "Deterministic library build", "Output generation"):
         assert label in out
 
 
@@ -1831,7 +1839,7 @@ def test_generate_failed_library_build_prints_diagnostic(
     assert rc != 0
     err = capsys.readouterr().err
     assert "FAILURE" in err
-    assert "Static library build" in err
+    assert "Deterministic library build" in err
     assert "configure error: missing libfoo" in err
     assert "deterministic" in err.lower() or "build step failed" in err.lower()
 
@@ -2036,8 +2044,6 @@ def test_generate_ships_compile_commands_inside_the_project_directory(
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    workspace_compile_commands = tmp_path / "workspace_compile_commands.json"
-    workspace_compile_commands.write_text("[]")
     fake_build_result = BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=True,
@@ -2046,10 +2052,9 @@ def test_generate_ships_compile_commands_inside_the_project_directory(
         stderr="",
         exit_code=0,
         duration_seconds=1.0,
-        compile_commands_path=workspace_compile_commands,
     )
     with (
-        _stub_library_build(fake_build_result),
+        _stub_library_build(fake_build_result, with_compile_commands=True),
         patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
     ):
         rc = main(
@@ -2065,6 +2070,42 @@ def test_generate_ships_compile_commands_inside_the_project_directory(
     dest = output_dir / "mylib" / "compile_commands.json"
     assert dest.exists()
     assert json.loads(dest.read_text()) == []
+
+
+def test_an_agent_repaired_library_build_still_ships_compile_commands(
+    local_repo_with_origin: Path, tmp_path: Path
+) -> None:
+    """The regression this lane lost: a repaired build's result carries none of the deterministic
+    one's bookkeeping, so anything read off that result went missing. The capture is read from
+    the workspace, where the gate's build leaves it, so the two lanes cannot diverge."""
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    repaired = BuildExplorationResult(
+        build_system=BuildSystem.CMAKE,
+        succeeded=True,
+        command=["claude", "--print", "fix the build"],
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=12.5,
+        llm_used=True,
+        cost_usd=0.91,
+        agent_summary="Initialized the submodules the build needs.",
+    )
+    with (
+        _stub_library_build(repaired, with_compile_commands=True),
+        patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
+    ):
+        rc = main(
+            ["generate", str(local_repo_with_origin), "--output", str(output_dir), "--no-agents"]
+        )
+
+    assert rc == 0
+    assert (output_dir / "mylib" / "compile_commands.json").is_file()
+    stats = json.loads(_workspace_stats_json_path().read_text())
+    assert stats["status"] == "success"
+    assert stats["compile_commands_path"] is not None
+    assert stats["library_build_agent"]["invoked"] is True
 
 
 def test_generate_never_creates_feature_extractor_output(
@@ -2267,8 +2308,6 @@ def test_generate_oss_fuzz_ships_compile_commands_inside_the_project_directory(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     workspace = _oss_fuzz_workspace()
-    workspace_compile_commands = tmp_path / "workspace_compile_commands.json"
-    workspace_compile_commands.write_text("[]")
     fake_build_result = BuildExplorationResult(
         build_system=BuildSystem.CMAKE,
         succeeded=True,
@@ -2279,13 +2318,12 @@ def test_generate_oss_fuzz_ships_compile_commands_inside_the_project_directory(
         duration_seconds=1.0,
         environment=Environment.OSS_FUZZ,
         script_path=workspace / "build_library.sh",
-        compile_commands_path=workspace_compile_commands,
     )
     run_command_patch, run_streaming_patch = _mock_oss_fuzz_docker()
     with (
         run_command_patch,
         run_streaming_patch,
-        _stub_library_build(fake_build_result),
+        _stub_library_build(fake_build_result, with_compile_commands=True),
         patch("harnessbuddy.cli.build_harness", return_value=_succeeded_harness_result()),
     ):
         rc = main(

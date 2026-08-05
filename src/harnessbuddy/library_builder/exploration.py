@@ -117,7 +117,7 @@ def explore(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meani
             environment=environment,
         )
 
-    command, bear_missing_error = _build_command(analysis.build_system, environment, script_path)
+    command = _build_command(analysis.build_system, environment, script_path)
 
     runner = run if run is not None else run_command_streaming
     result = runner(command, workdir, timeout)
@@ -130,13 +130,6 @@ def explore(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meani
             succeeded = False
             stderr += "\n" + "\n".join(validation_errors)
 
-    compile_commands_path: Path | None = None
-    compile_commands_error: str | None = None
-    if succeeded:
-        compile_commands_path, compile_commands_error = _capture_compile_commands(
-            analysis, workdir, runner, timeout, bear_missing_error, standard_layout=standard_layout
-        )
-
     return BuildExplorationResult(
         build_system=analysis.build_system,
         succeeded=succeeded,
@@ -148,85 +141,36 @@ def explore(  # noqa: PLR0913 -- 4 keyword-only inputs, each independently meani
         install_dir=install_dir,
         script_path=script_path if standard_layout else None,
         environment=environment,
-        compile_commands_path=compile_commands_path,
-        compile_commands_error=compile_commands_error,
     )
 
 
 def _build_command(
     build_system: BuildSystem, environment: Environment, script_path: Path
-) -> tuple[list[str], str | None]:
+) -> list[str]:
     """Choose the canonical build invocation, wrapping Make/Autotools with `bear --`.
 
-    Returns (command, bear_missing_error). The wrap is unconditional in the oss-fuzz
-    environment, where bear is always present. On the local host it is best-effort: a missing
-    bear must not fail the build, so bear_missing_error is set for the caller to report once
-    the build itself has succeeded.
+    The wrap is unconditional in the oss-fuzz environment, where bear is always present. On the
+    local host it is best-effort: a missing bear must not fail the build, and it is the gate's
+    own bear wrap that decides whether a capture ships (see workspace.find_compile_commands).
     """
     plain = ["bash", str(script_path.name)]
     if build_system not in _MAKE_LIKE_SYSTEMS:
-        return plain, None
+        return plain
     if environment is Environment.OSS_FUZZ or shutil.which("bear") is not None:
-        return ["bear", "--", *plain], None
-    return plain, _BEAR_NOT_FOUND_ERROR
+        return ["bear", "--", *plain]
+    return plain
 
 
-def _capture_compile_commands(  # noqa: PLR0913 -- standard_layout is keyword-only and independently meaningful
-    analysis: AnalysisResult,
-    workdir: Path,
-    runner: Runner,
-    timeout: int,
-    bear_missing_error: str | None,
-    *,
-    standard_layout: bool,
-) -> tuple[Path | None, str | None]:
-    """Capture compile_commands.json as a byproduct of the build that just succeeded.
+def compile_commands_absent_reason(build_system: BuildSystem) -> str:
+    """Why the gate's build left no compile_commands.json behind.
 
-    Returns (path, error) — exactly one is non-None. CMake re-configures with
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, which needs no rebuild since CMake writes the file
-    during configure. Meson's Ninja backend already wrote it. Make/Autotools relies on the
-    `bear --` wrap explore() applied, or on bear_missing_error if it could not.
-
-    The CMake configure below runs with cwd=workdir, and the oss-fuzz runner bind-mounts
-    workdir at /src, so a standard-layout source must be referenced as cwd-relative "src".
-    A non-standard-layout source keeps its absolute host path, which is mounted separately.
+    CMake and Meson emit one themselves, so for those a missing file means the build did not
+    reach the point of writing it. Make and Autotools have no equivalent and need bear, which
+    is only best-effort on a host.
     """
-    build_dir = workdir / "build"
-    build_arg = "build"
-    target = workdir / "compile_commands.json"
-
-    if analysis.build_system == BuildSystem.CMAKE:
-        source_arg = "src" if standard_layout else str(analysis.source_path.resolve())
-        configure_command = [
-            "cmake",
-            "-B",
-            build_arg,
-            "-S",
-            source_arg,
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-        ]
-        configure_result = runner(configure_command, workdir, timeout)
-        source = build_dir / "compile_commands.json"
-        if configure_result.exit_code != 0 or not source.exists():
-            return None, "cmake re-configure did not produce compile_commands.json"
-        shutil.copy2(source, target)
-        return target, None
-
-    if analysis.build_system == BuildSystem.MESON:
-        source = build_dir / "compile_commands.json"
-        if not source.exists():
-            return None, "meson build did not produce compile_commands.json"
-        shutil.copy2(source, target)
-        return target, None
-
-    if analysis.build_system in _MAKE_LIKE_SYSTEMS:
-        if bear_missing_error is not None:
-            return None, bear_missing_error
-        if not target.exists():
-            return None, "bear did not produce compile_commands.json"
-        return target, None
-
-    return None, None
+    if build_system in _MAKE_LIKE_SYSTEMS and shutil.which("bear") is None:
+        return _BEAR_NOT_FOUND_ERROR
+    return "the build produced none"
 
 
 def _string_list(value: object) -> list[str]:

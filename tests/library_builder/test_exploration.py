@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from harnessbuddy.core.subprocesses import RunResult
 from harnessbuddy.library_builder.environments.base import Environment
 from harnessbuddy.library_builder.exploration import (
+    compile_commands_absent_reason,
     explore,
     is_standard_source_layout,
     read_agent_report,
@@ -202,7 +205,9 @@ def test_read_agent_report_deletes_file_after_read_when_malformed(tmp_path: Path
     assert not (tmp_path / "agent_report.json").exists()
 
 
-# compile_commands.json capture dispatch
+# the bear wrap — Make and Autotools have no build-system compile_commands.json, so the
+# invocation is wrapped. Whether a capture ships is decided later, from the workspace layout
+# (workspace.find_compile_commands), not from a field on this result.
 
 
 def _run_explore_with(  # noqa: PLR0913 -- test helper; all 6 params are distinct fixture knobs
@@ -231,156 +236,40 @@ def _run_explore_with(  # noqa: PLR0913 -- test helper; all 6 params are distinc
         return explore(_analysis(source_path, build_system), workdir, environment=environment)
 
 
-def test_cmake_capture_reconfigures_and_copies_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("build_system", [BuildSystem.MAKEFILE, BuildSystem.AUTOTOOLS])
+def test_make_like_build_is_wrapped_with_bear(build_system: BuildSystem, tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
 
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        if command[0] == "cmake":
-            (cwd / "build" / "compile_commands.json").write_text("[]")
-        return _ok_result()
-
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.CMAKE, side_effect=side_effect
-    )
-    assert result.succeeded is True
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
-    assert result.compile_commands_error is None
-    assert (workdir / "compile_commands.json").read_text() == "[]"
-
-
-def test_cmake_capture_reconfigure_uses_relative_paths_for_standard_layout(
-    tmp_path: Path,
-) -> None:
-    """The oss-fuzz runner bind-mounts workdir at /src, not at its own host path, so an
-    absolute host path would not resolve in the container: -B/-S must be cwd-relative when the
-    source lives at the standard workdir/src."""
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
-    seen_commands: list[list[str]] = []
-
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        seen_commands.append(command)
-        if command[0] == "cmake":
-            (cwd / "build" / "compile_commands.json").write_text("[]")
-        return _ok_result()
-
-    _run_explore_with(workdir, source, build_system=BuildSystem.CMAKE, side_effect=side_effect)
-
-    configure_command = next(c for c in seen_commands if c[0] == "cmake")
-    assert "-B" in configure_command
-    assert configure_command[configure_command.index("-B") + 1] == "build"
-    assert "-S" in configure_command
-    assert configure_command[configure_command.index("-S") + 1] == "src"
-    assert str(workdir.resolve()) not in " ".join(configure_command)
-
-
-def test_cmake_capture_reconfigure_uses_absolute_source_for_non_standard_layout(
-    tmp_path: Path,
-) -> None:
-    """A source outside workdir is mounted separately at its own absolute path, so it must keep
-    using that path here."""
-    workdir = tmp_path / "work"
-    source = tmp_path / "elsewhere" / "src"
-    source.mkdir(parents=True)
-    seen_commands: list[list[str]] = []
-
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        seen_commands.append(command)
-        if command[0] == "cmake":
-            (cwd / "build" / "compile_commands.json").write_text("[]")
-        return _ok_result()
-
-    _run_explore_with(workdir, source, build_system=BuildSystem.CMAKE, side_effect=side_effect)
-
-    configure_command = next(c for c in seen_commands if c[0] == "cmake")
-    assert configure_command[configure_command.index("-S") + 1] == str(source.resolve())
-
-
-def test_cmake_capture_records_error_when_reconfigure_produces_no_file(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
-
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.CMAKE, side_effect=lambda *_a: _ok_result()
-    )
-    assert result.succeeded is True
-    assert result.compile_commands_path is None
-    assert result.compile_commands_error is not None
-    assert not (workdir / "compile_commands.json").exists()
-
-
-def test_meson_capture_copies_file_ninja_already_wrote(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
-
-    def side_effect(_command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        (cwd / "build" / "compile_commands.json").write_text("[]")
-        return _ok_result()
-
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.MESON, side_effect=side_effect
-    )
-    assert result.succeeded is True
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
-    assert result.compile_commands_error is None
-
-
-def test_meson_capture_records_error_when_file_absent(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
-
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.MESON, side_effect=lambda *_a: _ok_result()
-    )
-    assert result.succeeded is True
-    assert result.compile_commands_path is None
-    assert result.compile_commands_error is not None
-
-
-def test_make_capture_wraps_with_bear_and_captures_direct_output(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
-
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
+    def side_effect(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
         assert command[:2] == ["bear", "--"]
-        (cwd / "compile_commands.json").write_text("[]")
         return _ok_result()
 
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.MAKEFILE, side_effect=side_effect
-    )
+    result = _run_explore_with(workdir, source, build_system=build_system, side_effect=side_effect)
     assert result.succeeded is True
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
-    assert result.compile_commands_error is None
 
 
-def test_autotools_capture_wraps_with_bear(tmp_path: Path) -> None:
+@pytest.mark.parametrize("build_system", [BuildSystem.CMAKE, BuildSystem.MESON])
+def test_build_systems_that_emit_their_own_are_not_wrapped(
+    build_system: BuildSystem, tmp_path: Path
+) -> None:
+    """CMake and Meson write compile_commands.json themselves, so bear would only add its
+    compiler-probe entries to what they already record."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
 
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        assert command[:2] == ["bear", "--"]
-        (cwd / "compile_commands.json").write_text("[]")
+    def side_effect(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
+        assert command == ["bash", "build_library.sh"]
         return _ok_result()
 
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.AUTOTOOLS, side_effect=side_effect
-    )
+    result = _run_explore_with(workdir, source, build_system=build_system, side_effect=side_effect)
     assert result.succeeded is True
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
 
 
-def test_make_capture_best_effort_when_bear_missing_on_host(tmp_path: Path) -> None:
-    """A missing bear on the local host must not fail the build: only the capture is skipped,
-    with an actionable message recorded."""
+def test_missing_bear_on_the_host_does_not_fail_a_make_build(tmp_path: Path) -> None:
+    """A missing bear on the local host must not fail the build: only the capture is skipped."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
@@ -397,23 +286,17 @@ def test_make_capture_best_effort_when_bear_missing_on_host(tmp_path: Path) -> N
         which_bear=None,
     )
     assert result.succeeded is True
-    assert result.compile_commands_path is None
-    assert result.compile_commands_error is not None
-    assert "bear" in result.compile_commands_error
 
 
-def test_make_capture_bear_always_wrapped_in_oss_fuzz_even_without_local_bear(
-    tmp_path: Path,
-) -> None:
+def test_bear_always_wrapped_in_oss_fuzz_even_without_local_bear(tmp_path: Path) -> None:
     """The oss-fuzz environment skips the shutil.which check, since bear is always present
-    there, so capture is attempted unconditionally."""
+    in the probe image."""
     workdir = tmp_path / "work"
     source = workdir / "src"
     source.mkdir(parents=True)
 
-    def side_effect(command: list[str], cwd: Path, _timeout: int) -> RunResult:
+    def side_effect(command: list[str], _cwd: Path, _timeout: int) -> RunResult:
         assert command[:2] == ["bear", "--"]
-        (cwd / "compile_commands.json").write_text("[]")
         return _ok_result()
 
     result = _run_explore_with(
@@ -425,18 +308,18 @@ def test_make_capture_bear_always_wrapped_in_oss_fuzz_even_without_local_bear(
         environment=Environment.OSS_FUZZ,
     )
     assert result.succeeded is True
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
 
 
-def test_compile_commands_not_set_when_build_fails(tmp_path: Path) -> None:
-    workdir = tmp_path / "work"
-    source = workdir / "src"
-    source.mkdir(parents=True)
+# compile_commands_absent_reason — the message the run summary prints when nothing was captured
 
-    failing_result = RunResult(stdout="", stderr="boom", exit_code=1, duration_seconds=0.1)
-    result = _run_explore_with(
-        workdir, source, build_system=BuildSystem.CMAKE, side_effect=lambda *_a: failing_result
-    )
-    assert result.succeeded is False
-    assert result.compile_commands_path is None
-    assert result.compile_commands_error is None
+
+def test_absent_reason_names_bear_for_make_like_without_bear() -> None:
+    with patch("harnessbuddy.library_builder.exploration.shutil.which", return_value=None):
+        reason = compile_commands_absent_reason(BuildSystem.MAKEFILE)
+    assert "bear" in reason
+
+
+def test_absent_reason_does_not_blame_bear_when_cmake_emits_its_own() -> None:
+    with patch("harnessbuddy.library_builder.exploration.shutil.which", return_value=None):
+        reason = compile_commands_absent_reason(BuildSystem.CMAKE)
+    assert "bear" not in reason

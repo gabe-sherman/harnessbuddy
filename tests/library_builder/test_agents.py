@@ -245,23 +245,6 @@ def test_budget_limit_is_reported_as_a_failed_result(tmp_path: Path) -> None:
     assert result.agent_summary is None
 
 
-def test_a_failed_library_repair_records_why_compile_commands_are_absent(tmp_path: Path) -> None:
-    """compile_commands_path and compile_commands_error are mutually exclusive; without the
-    error set, the printed line reads "not captured (None)"."""
-    (tmp_path / "work").mkdir()
-    with patch(
-        "harnessbuddy.library_builder.agents.run_agent_streaming",
-        return_value=AgentStreamResult(combined_text="gave up", exit_code=1, duration_seconds=1.0),
-    ):
-        result = invoke_library_builder_agent(
-            _analysis(tmp_path),
-            _failed_cmake_exploration(tmp_path),
-            tmp_path / "work",
-        )
-    assert result.compile_commands_path is None
-    assert result.compile_commands_error is not None
-
-
 def test_unknown_tool_raises_valueerror(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown agent tool"):
         invoke_library_builder_agent(

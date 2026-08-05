@@ -174,3 +174,7 @@ uv run harnessbuddy generate-yaml <BUILD_PATH> zlib.h zconf.h
 ```
 
 Run `uv run harnessbuddy --help` for details.
+
+### Other Command Prerequisites
+- `libclang-20` is required for feature extraction functionality.
+

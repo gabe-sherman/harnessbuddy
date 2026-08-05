@@ -90,7 +90,7 @@ def merge(state: DependencyState, dependencies: list[LibraryDependency]) -> None
         state.sources[source_tag] = list(dict.fromkeys(existing + apt_names))
 
 
-def from_static_probe(
+def from_deterministic_probe(
     missing_system_libs: list[str], transitive_link_flags: list[str]
 ) -> list[LibraryDependency]:
     """Translate the deterministic harness-link probe's outputs into LibraryDependency entries.

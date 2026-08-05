@@ -254,9 +254,11 @@ def _rewrite_compile_commands_entry(entry: dict, host_prefix: str) -> bool:
     return any(results)
 
 
-def _rewrite_compile_commands_paths(compile_commands_path: Path, host_workdir: Path) -> None:
+def rewrite_compile_commands_paths(compile_commands_path: Path, host_workdir: Path) -> None:
     """Rewrite the /src paths a docker-mounted build baked into compile_commands.json back
     to their host-side workdir path.
+
+    Called from environments/gate.py, right after the container build that wrote those paths.
 
     The native feature extractor runs as a plain host subprocess and fatal-errors trying to
     chdir into a /src path that doesn't exist there. host_workdir <-> /src is a fixed
@@ -359,8 +361,6 @@ class OssFuzzExecutor:
             run=run,
             parameters=parameters,
         )
-        if exploration_result.compile_commands_path is not None:
-            _rewrite_compile_commands_paths(exploration_result.compile_commands_path, workdir)
         if exploration_result.command:
             return exploration_result
         # No build was attempted (unidentified build system), so there is no command to

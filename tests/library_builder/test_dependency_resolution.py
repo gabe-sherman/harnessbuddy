@@ -8,7 +8,7 @@ from harnessbuddy.library_builder.dependency_resolution import (
     DependencyState,
     LibraryDependency,
     from_agent_report,
-    from_static_probe,
+    from_deterministic_probe,
     load_state,
     merge,
     save_state,
@@ -147,7 +147,7 @@ def test_merge_supports_a_hypothetical_new_discovery_source() -> None:
 
 
 def test_sources_keys_match_dependency_source_value_for_each_producer() -> None:
-    linker_deps = from_static_probe([], ["-lzstd"])
+    linker_deps = from_deterministic_probe([], ["-lzstd"])
     state = DependencyState()
     merge(state, linker_deps)
     assert set(state.sources) == {"linker"}
@@ -167,11 +167,13 @@ def test_sources_keys_match_dependency_source_value_for_each_producer() -> None:
     assert set(state.sources) == {"harness_agent"}
 
 
-# from_static_probe
+# from_deterministic_probe
 
 
-def test_from_static_probe_resolves_known_library() -> None:
-    dependencies = from_static_probe(missing_system_libs=[], transitive_link_flags=["-lzstd"])
+def test_from_deterministic_probe_resolves_known_library() -> None:
+    dependencies = from_deterministic_probe(
+        missing_system_libs=[], transitive_link_flags=["-lzstd"]
+    )
     assert dependencies == [
         LibraryDependency(
             source=DependencySource.LINKER,
@@ -181,8 +183,8 @@ def test_from_static_probe_resolves_known_library() -> None:
     ]
 
 
-def test_from_static_probe_places_unmapped_library_for_unknown_handling() -> None:
-    dependencies = from_static_probe(
+def test_from_deterministic_probe_places_unmapped_library_for_unknown_handling() -> None:
+    dependencies = from_deterministic_probe(
         missing_system_libs=["nonexistentlib"], transitive_link_flags=[]
     )
     assert dependencies == [
@@ -190,13 +192,17 @@ def test_from_static_probe_places_unmapped_library_for_unknown_handling() -> Non
     ]
 
 
-def test_from_static_probe_drops_system_libraries() -> None:
-    dependencies = from_static_probe(missing_system_libs=["pthread"], transitive_link_flags=[])
+def test_from_deterministic_probe_drops_system_libraries() -> None:
+    dependencies = from_deterministic_probe(
+        missing_system_libs=["pthread"], transitive_link_flags=[]
+    )
     assert dependencies == []
 
 
-def test_from_static_probe_unions_missing_libs_and_link_flags() -> None:
-    dependencies = from_static_probe(missing_system_libs=["zstd"], transitive_link_flags=["-lz"])
+def test_from_deterministic_probe_unions_missing_libs_and_link_flags() -> None:
+    dependencies = from_deterministic_probe(
+        missing_system_libs=["zstd"], transitive_link_flags=["-lz"]
+    )
     names = {dep.name for dep in dependencies}
     assert names == {"zstd", "z"}
 

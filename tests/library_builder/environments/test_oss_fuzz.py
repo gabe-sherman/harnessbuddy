@@ -14,13 +14,14 @@ from harnessbuddy.library_builder.environments.base import (
 )
 from harnessbuddy.library_builder.environments.oss_fuzz import (
     OssFuzzExecutor,
-    _rewrite_compile_commands_paths,
+    rewrite_compile_commands_paths,
 )
 from harnessbuddy.library_builder.models import (
     AnalysisResult,
     BuildSystem,
     Language,
 )
+from harnessbuddy.library_builder.workspace import find_compile_commands
 
 _FAKE_URL = "https://github.com/example/testlib.git"
 
@@ -285,7 +286,7 @@ def test_docker_run_invocation_mounts_workdir_and_uses_bash_entrypoint(tmp_path:
     assert docker_command[docker_command.index("-w") + 1] == "/src"
 
 
-# _rewrite_compile_commands_paths — container /src paths rewritten to the host workdir, since
+# rewrite_compile_commands_paths — container /src paths rewritten to the host workdir, since
 # the native feature extractor runs as a host subprocess and fatal-errors trying to chdir into
 # a /src path that does not exist there.
 
@@ -306,7 +307,7 @@ def test_rewrite_compile_commands_paths_rewrites_directory_and_file(tmp_path: Pa
         )
     )
 
-    _rewrite_compile_commands_paths(compile_commands, workdir)
+    rewrite_compile_commands_paths(compile_commands, workdir)
 
     host_prefix = str(workdir.resolve())
     entry = json.loads(compile_commands.read_text())[0]
@@ -342,7 +343,7 @@ def test_rewrite_compile_commands_paths_rewrites_glued_flag_prefixes(tmp_path: P
         )
     )
 
-    _rewrite_compile_commands_paths(compile_commands, workdir)
+    rewrite_compile_commands_paths(compile_commands, workdir)
 
     host_prefix = str(workdir.resolve())
     entry = json.loads(compile_commands.read_text())[0]
@@ -373,7 +374,7 @@ def test_rewrite_compile_commands_paths_leaves_unrelated_paths_alone(tmp_path: P
     ]
     compile_commands.write_text(json.dumps(original))
 
-    _rewrite_compile_commands_paths(compile_commands, workdir)
+    rewrite_compile_commands_paths(compile_commands, workdir)
 
     assert json.loads(compile_commands.read_text()) == original
 
@@ -387,60 +388,9 @@ def test_rewrite_compile_commands_paths_no_op_when_no_src_paths_present(tmp_path
     )
     compile_commands.write_text(original_text)
 
-    _rewrite_compile_commands_paths(compile_commands, workdir)
+    rewrite_compile_commands_paths(compile_commands, workdir)
 
     assert compile_commands.read_text() == original_text
-
-
-def test_run_library_build_rewrites_src_paths_in_captured_compile_commands(
-    tmp_path: Path,
-) -> None:
-    """End-to-end wiring: the compile_commands.json run_library_build captures from the
-    docker-mounted cmake reconfigure has its /src paths rewritten before it is returned."""
-    workdir = tmp_path / "work"
-    (workdir / "src").mkdir(parents=True)
-
-    def fake_run_command_streaming(command: list[str], cwd: Path, _timeout: int) -> RunResult:
-        joined = command[-1] if command else ""
-        if "CMAKE_EXPORT_COMPILE_COMMANDS" in joined:
-            build_dir = cwd / "build"
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "compile_commands.json").write_text(
-                json.dumps(
-                    [
-                        {
-                            "directory": "/src/build",
-                            "file": "/src/src/foo.c",
-                            "command": "cc -I/src/install/include -c /src/src/foo.c",
-                        }
-                    ]
-                )
-            )
-        return RunResult(stdout="build ok", stderr="", exit_code=0, duration_seconds=0.1)
-
-    with (
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command",
-            return_value=RunResult(stdout="", stderr="", exit_code=0, duration_seconds=0.1),
-        ),
-        patch(
-            "harnessbuddy.library_builder.environments.oss_fuzz.run_command_streaming",
-            side_effect=fake_run_command_streaming,
-        ),
-        patch(
-            "harnessbuddy.library_builder.exploration.validate_install_artifacts",
-            return_value=[],
-        ),
-        _patch_verification(),
-    ):
-        result = OssFuzzExecutor().run_library_build(_analysis(workdir / "src"), workdir)
-
-    assert result.compile_commands_path is not None
-    host_prefix = str(workdir.resolve())
-    entry = json.loads(result.compile_commands_path.read_text())[0]
-    assert entry["directory"] == f"{host_prefix}/build"
-    assert entry["file"] == f"{host_prefix}/src/foo.c"
-    assert entry["command"] == f"cc -I{host_prefix}/install/include -c {host_prefix}/src/foo.c"
 
 
 # _ensure_probe_image — bear is a hard requirement in the probe image
@@ -838,10 +788,11 @@ def test_run_library_build_captures_compile_commands_for_make_fixture(tmp_path: 
     result = OssFuzzExecutor().run_library_build(analysis, workdir)
     assert result.succeeded is True
     assert result.environment is Environment.OSS_FUZZ
-    assert result.compile_commands_error is None
-    assert result.compile_commands_path is not None
-    assert result.compile_commands_path == workdir.resolve() / "compile_commands.json"
-    entries = json.loads(result.compile_commands_path.read_text())
+    # Read from the workspace, not the result: the capture is a file the build leaves behind.
+    # The /src paths it carries are rewritten by the gate, which this stage does not run.
+    captured = find_compile_commands(workdir)
+    assert captured == workdir.resolve() / "compile_commands.json"
+    entries = json.loads(captured.read_text())
     assert any(entry["file"].endswith(".c") for entry in entries)
 
 

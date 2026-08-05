@@ -213,9 +213,31 @@ def strip_bear_dependency(dockerfile_content: str) -> str:
     return "".join(lines)
 
 
+def find_compile_commands(workdir: Path) -> Path | None:
+    """The compile_commands.json the gate's build left in workdir, or None if it left none.
+
+    Read from the layout rather than threaded through a result object, because threading it is
+    what lost it: the repair agents return a fresh result and had no field for it, so an
+    agent-fixed build published none even though the gate had just written one.
+
+    check_build.sh wipes `install` and `build` and rebuilds from nothing on every lane, so
+    whichever of these exists describes the build that actually passed. `build/` comes first:
+    when `bear` is installed both exist for a CMake project, and CMake's own export does not
+    carry the compiler-probe entries (`CompilerIdC`, `TryCompile`) that bear observes.
+    """
+    for candidate in (
+        workdir / "build" / "compile_commands.json",
+        workdir / "compile_commands.json",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 __all__ = [
     "APT_INSTALL_PREFIX",
     "DEFAULT_BASE_IMAGE",
+    "find_compile_commands",
     "inject_apt_packages",
     "materialize",
     "strip_bear_dependency",
